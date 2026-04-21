@@ -8,6 +8,17 @@ export const AGENTS_MD_TEMPLATE = `# Verse8 Project — Agent Instructions
 > Read this file in full at session start. It is installed by verse8-mcp
 > (\`verse8_attach\`) and also serves as the attachment marker. Do not delete.
 
+## 🚨 First action rule (before anything else)
+
+For ANY verse8-related user request — create a game, modify this project,
+preview, commit, fix a bug, even just "what should I do?" — FIRST call
+\`verse8_bootstrap({userRequest: "<user's verbatim message>"})\`. It returns
+\`workflow.nextTool\` (one of \`verse8_login_start\`, \`verse8_new_project_start\`,
+\`verse8_attach\`, or \`null\`) along with \`workflow.instructions\`. Call the
+named tool next and honor the instructions verbatim. Never infer workflow
+state from filesystem inspection. When \`workflow.nextAction === "ready"\`,
+proceed with the user's request and follow the TOP RULES below.
+
 ## 🚨 TOP RULES (violating these will break the project)
 
 1. **Never run \`bun run dev\` / \`vite\` via Bash.** The \`verse8_preview\` MCP

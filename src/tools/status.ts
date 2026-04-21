@@ -4,8 +4,13 @@ import { verifyToken, type VerifyResponse } from "../api/v8MemeApi.js";
 import { detectAttachment, type AttachmentState } from "../context/attachment.js";
 import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
+import { detectWorkspace } from "../context/workspace.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
+import {
+  computeBootstrapWorkflow,
+  type BootstrapWorkflow,
+} from "./bootstrap.js";
 
 export const statusInputSchema = z.object({}).strict();
 
@@ -66,16 +71,27 @@ export type StatusResult =
       ok: true;
       profile: VerifyResponse;
       project: ProjectStatus;
+      /** Bootstrap state-machine routing — mirrors verse8_bootstrap's
+       *  `workflow` shape so any agent that reaches for status first gets
+       *  the same deterministic nextTool signal. */
+      workflow: BootstrapWorkflow;
       warnings?: string[];
       tokenExpiresAt?: string;
     }
-  | { ok: false; error: "not_logged_in"; hint: string; project?: ProjectStatus }
+  | {
+      ok: false;
+      error: "not_logged_in";
+      hint: string;
+      project?: ProjectStatus;
+      workflow: BootstrapWorkflow;
+    }
   | {
       ok: false;
       error: "token_invalid";
       hint: string;
       status: number;
       project?: ProjectStatus;
+      workflow: BootstrapWorkflow;
     };
 
 const TOKEN_EXPIRES_SOON_MS = 7 * 24 * 60 * 60 * 1000;
@@ -141,6 +157,7 @@ function buildProjectStatus(cwd: string): ProjectStatus {
 
 export async function runStatus(cwd: string = process.cwd()): Promise<StatusResult> {
   const project = buildProjectStatus(cwd);
+  const workspaceMode = detectWorkspace(cwd).workspaceMode;
   const token = loadToken(cwd);
   if (!token) {
     return {
@@ -148,6 +165,7 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
       error: "not_logged_in",
       hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
       project,
+      workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),
     };
   }
 
@@ -156,7 +174,12 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     const { expiresAt, expiresSoon } = evaluateExpiry(
       typeof resp.profile.exp === "number" ? resp.profile.exp : undefined,
     );
-    const result: StatusResult = { ok: true, profile: resp.profile, project };
+    const result: StatusResult = {
+      ok: true,
+      profile: resp.profile,
+      project,
+      workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: true }),
+    };
     if (expiresAt) result.tokenExpiresAt = expiresAt;
     if (expiresSoon) result.warnings = ["token_expires_soon"];
     return result;
@@ -172,5 +195,6 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     hint: "token rejected by /v1/auth/verify; re-login via verse8_login_start + verse8_login_complete",
     status: resp.status,
     project,
+    workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),
   };
 }

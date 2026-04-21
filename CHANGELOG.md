@@ -5,6 +5,72 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.0] — 2026-04-21
+
+### Added — bootstrap state machine (Codex UX gap closure)
+
+- **New tool `verse8_bootstrap`** — the single always-first entry-point
+  for any Verse8 user request. Returns
+  `{workspaceMode, workflow:{nextAction, nextTool, reason, instructions},
+  diagnostics}` so MCP hosts (Claude Code, **Codex**, Cursor, …) can
+  deterministically route "verse8으로 게임 만들어줘" to the right tool
+  without inferring workflow state from prose. Decision table covers
+  `empty`, `unattached_clone`, `attached`, `non_verse_dir` modes crossed
+  with token presence.
+- `src/context/workspace.ts` — new `detectWorkspace()` returning
+  `{hasGit, originHost, hasProjectMarker, projectId, attached,
+  workspaceMode}`. Replaces the fragile "needs BOTH marker AND matching
+  origin" predicate that mis-classified fresh `gitlab.verse8.io` clones.
+- **`verse8_status` response gains `workflow`** — same shape as
+  `verse8_bootstrap.workflow`. An agent that called `status` first still
+  gets `nextAction` / `nextTool` routing on every branch
+  (`ok:true` / `not_logged_in` / `token_invalid`). Zero additional HTTP
+  calls — routing runs against the existing `verifyToken` response.
+- **Tool descriptions rewritten to imperative** in `src/server.ts`:
+  - `verse8_bootstrap` starts with "CALL THIS FIRST".
+  - `verse8_login_start` / `verse8_new_project_start` / `verse8_attach`
+    lead with "Call this when `workflow.nextTool` from verse8_bootstrap
+    is …" so LLMs follow the state machine by tool contract.
+- **AGENTS.md template** (`src/prompts/agentsMdTemplate.ts`) prepends a
+  new "First action rule" section so even after attach, agents default
+  back to `verse8_bootstrap` when the workflow state is ambiguous.
+
+### Root cause addressed
+
+Codex (unlike Claude Code) does **not** auto-load project-root
+`AGENTS.md` / `CLAUDE.md` into its system prompt, and the MCP prompt
+`verse8-new-project-bootstrap` is opt-in only. Previously this meant a
+fresh Codex session with an empty directory had **zero** verse-specific
+guidance: the agent would see the BASE_TOOLS list with declarative
+descriptions and generate a game arbitrarily instead of routing to
+`verse8_new_project_start`. The 0.5.0 bootstrap tool makes routing a
+tool contract rather than prose.
+
+### Tests
+
+- `tests/unit/workspaceDetect.test.mjs` — 9 cases covering all
+  `(hasGit × originHost × hasProjectMarker × attached)` combinations.
+- `tests/unit/bootstrap.test.mjs` — 10 cases for `computeBootstrapWorkflow`
+  + `runBootstrap` (empty, non-verse, unattached clone, attached, userRequest
+  redaction).
+- `tests/unit/statusWorkflow.test.mjs` — 4 cases asserting `verse8_status`
+  carries the same `workflow` object across all modes.
+- `tests/unit/bootstrapRouting.test.mjs` — grep-level guards on tool
+  descriptions so a future weakening of the imperative phrasing fails the
+  build.
+- `tests/unit/dispatchAudit.test.mjs` — `verse8_bootstrap` emits exactly
+  one audit line (AC-OBSERVABILITY-1 parity with other tools).
+
+Total: 318 → 346 unit tests.
+
+### Non-breaking
+
+- All existing `verse8_*` tool signatures unchanged.
+- `StatusResult` gains a required `workflow` field. This is a type-level
+  addition — JSON consumers that ignore unknown fields keep working.
+  Existing tests (statusExpiresSoon, dispatch, …) are unaffected.
+- `detectVerseProject` + `verseProject.ts` kept as-is for back-compat.
+
 ## [0.4.1] — 2026-04-21
 
 ### Docs

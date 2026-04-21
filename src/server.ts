@@ -14,6 +14,7 @@ import { safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
 import { loadToken } from "./context/token.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
+import { bootstrapInputSchema, runBootstrap } from "./tools/bootstrap.js";
 import {
   checkpointInputSchema,
   runCheckpoint,
@@ -48,32 +49,38 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.4.0",
+  version: "0.5.0",
 };
 
 const BASE_TOOLS: Tool[] = [
   {
+    name: "verse8_bootstrap",
+    description:
+      "CALL THIS FIRST whenever the user mentions verse8, asks to create / modify / preview a Verse8 game, or you see a gitlab.verse8.io repo. Returns {workflow:{nextAction, nextTool, reason, instructions}, diagnostics, workspaceMode}. The `nextTool` field names the exact Verse8 tool you MUST call next — follow it verbatim and honor `workflow.instructions`. Do NOT generate game code, edit files, or guess a workflow before calling this tool. Optional args: `userRequest` (user's verbatim message, echoed back into instructions) and `projectDir` (override cwd).",
+    inputSchema: zodToJsonSchema(bootstrapInputSchema),
+  },
+  {
     name: "verse8_login_start",
     description:
-      "Begin Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete and user_code to the user, (2) wait for them to confirm they have approved in the browser, (3) call verse8_login_complete with the same device_code. Do NOT call verse8_login_start again before completing — each call issues a fresh device_code.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_login_start'. Begins Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete and user_code to the user, (2) wait for browser approval, (3) call verse8_login_complete with the same device_code. Do NOT re-call verse8_login_start before completing — each call issues a fresh device_code.",
     inputSchema: zodToJsonSchema(loginStartInputSchema),
   },
   {
     name: "verse8_login_complete",
     description:
-      "Finish Verse8 device-flow login. Polls the token endpoint for up to max_wait_seconds (default 120) and, on success, writes the access token to ~/.config/verse8/token. Pass the device_code returned by verse8_login_start. Safe to call multiple times with the same device_code if the user is still authorizing — device_code is valid for ~30 minutes.",
+      "Finish Verse8 device-flow login. Polls the token endpoint for up to max_wait_seconds (default 120) and, on success, writes the access token to ${XDG_CONFIG_HOME:-~/.config}/verse8/token (mode 0600). Pass the device_code returned by verse8_login_start. Safe to call multiple times with the same device_code if the user is still authorizing — device_code is valid for ~30 minutes.",
     inputSchema: zodToJsonSchema(loginCompleteInputSchema),
   },
   {
     name: "verse8_status",
     description:
-      "Return the current Verse8 profile via GET /v1/auth/verify. Returns {error:'not_logged_in'} when no token is available.",
+      "Return the current Verse8 profile via GET /v1/auth/verify plus cwd attachment state and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info.",
     inputSchema: zodToJsonSchema(statusInputSchema),
   },
   {
     name: "verse8_new_project_start",
     description:
-      "Phase 1 of the Verse8 new-project flow. Calls /api/startcall with the user's verbatim request and returns the proposed template (name, label, description, tags), suggestedTitle, suggestedProjectRepo, nextActionSuggestion, and a `startCallId` correlation id. Show the template to the user, ask whether to proceed (and whether to override title/projectRepo), THEN call verse8_new_project_confirm with the returned values verbatim. NEVER fabricate templateName/repo/path.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_new_project_start'. Phase 1 of the Verse8 new-project flow — calls /api/startcall with the user's verbatim request and returns {templateName, repo, path, suggestedTitle, suggestedProjectRepo, nextActionSuggestion, startCallId}. Show the template to the user, wait for confirmation (or override title/projectRepo), THEN call verse8_new_project_confirm with the returned values verbatim. NEVER fabricate templateName/repo/path. DO NOT start generating game code directly — the Verse8 backend mints the project repo.",
     inputSchema: zodToJsonSchema(newProjectStartInputSchema),
   },
   {
@@ -85,7 +92,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_attach",
     description:
-      "Bring an already-cloned gitlab.verse8.io project under verse8-mcp governance. Installs the pre-commit + commit-msg git hooks, writes AGENTS.md / CLAUDE.md (including a dynamic catalog of every bundled Verse8 skill), copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` with a hash fingerprint so user edits are preserved across re-attach, and ensures .verse8/project.json exists. Idempotent. Optional flags: `overwriteAgentsDoc` (force AGENTS.md refresh), `overwriteAllSkills` (force every skill copy regardless of drift), `pruneOrphanedSkills` (remove `.claude/skills/<name>/` dirs whose skill is no longer bundled — only removes files that still carry the verse8-mcp hash marker, so user-edited skills and unrelated custom skills are preserved). Call this when `verse8_status` reports `project.attached: false`, when `verse8_checkpoint` returns `project_needs_attach`, or after a `git subtree pull` on the vendored skills to propagate upstream changes into the project.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (removes only files bearing our hash marker), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
     inputSchema: zodToJsonSchema(attachInputSchema),
   },
 ];
@@ -159,6 +166,17 @@ export function createServer(): Server {
 
     const result = await (async () => {
     try {
+      if (name === "verse8_bootstrap") {
+        const parsed = bootstrapInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(
+          name,
+          () => runBootstrap(parsed, cwd),
+          { projectDir: pd },
+        );
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
       if (name === "verse8_login_start") {
         loginStartInputSchema.parse(args ?? {});
         const result = await dispatchTool(name, () => runLoginStart());

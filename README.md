@@ -6,6 +6,29 @@ Verse8 MCP meta-server — auto-detects `gitlab.verse8.io` projects and exposes 
 - **Binary**: `verse8-mcp` (stdio MCP server)
 - **Invocation**: `npx -y @verse8/mcp` (single-bin package — npx picks `verse8-mcp` automatically)
 
+## How agents discover the workflow
+
+Every Verse8-related user request ("verse8으로 게임 만들어줘", "commit this", "fix this bug") routes through a **single always-first entry point**: `verse8_bootstrap`. It returns a deterministic state machine:
+
+```jsonc
+{
+  "ok": true,
+  "workspaceMode": "empty" | "unattached_clone" | "attached" | "non_verse_dir",
+  "workflow": {
+    "nextAction": "login" | "new_project" | "attach" | "ready",
+    "nextTool":  "verse8_login_start" | "verse8_new_project_start" | "verse8_attach" | null,
+    "reason":    "...",
+    "instructions": "..."  // imperative guidance for the LLM
+  },
+  "diagnostics": { "hasGit": bool, "originHost": str|null, "hasProjectMarker": bool,
+                   "hasToken": bool, "attached": bool }
+}
+```
+
+The agent calls `workflow.nextTool` next and follows `workflow.instructions` verbatim. This matters because hosts like **Codex** do not auto-load `AGENTS.md` / `CLAUDE.md` into their system prompt — without a tool-contract state machine, they would see only the BASE_TOOLS list with declarative descriptions and generate game code arbitrarily instead of routing through Verse8's new-project flow.
+
+`verse8_status` returns the same `workflow` shape, so an agent that already called status does not need to repeat the bootstrap call.
+
 ## Install
 
 ### Quick install (CLI one-liners)
@@ -149,6 +172,7 @@ On transient failures (`token_grant_failed`, `clone_failed`, …) the error enve
 
 | Tool | Purpose | When exposed |
 |------|---------|--------------|
+| `verse8_bootstrap` | **Always call first.** Returns the state-machine `workflow.nextTool` (+ `instructions`) so the agent routes deterministically without inferring workflow state from filesystem inspection. See [How agents discover the workflow](#how-agents-discover-the-workflow). | Always |
 | `verse8_login_start` | Request RFC 8628 device code. Returns `verification_uri_complete` + `user_code` + `device_code` immediately (no polling). Display URL/code to the user, wait for browser approval, then call complete. | Always |
 | `verse8_login_complete` | Poll the token endpoint for up to `max_wait_seconds` (default 120, max 1800). Writes token on success. Safe to retry with the same `device_code`. | Always |
 | `verse8_status` | Check token validity, profile, project attachment, MCP proxy state. When the token's `exp` claim is within 7 days, the result carries `warnings: ["token_expires_soon"]` and `tokenExpiresAt` (ISO). | Always |

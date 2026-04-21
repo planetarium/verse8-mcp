@@ -137,6 +137,27 @@ test("AC-OBSERVABILITY-3: projectDirDigest in audit line is sha256 prefix, not r
   });
 });
 
+test("AC-OBSERVABILITY-1: verse8_bootstrap dispatch emits exactly one audit line", async () => {
+  await withIsolatedAuditLog(async ({ logPath }) => {
+    const server = createServer();
+    const handler = getHandler(server, "tools/call");
+    const result = await handler(
+      {
+        method: "tools/call",
+        params: { name: "verse8_bootstrap", arguments: {} },
+      },
+      {},
+    );
+    assert.ok(result);
+    const lines = readLines(logPath);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].tool, "verse8_bootstrap");
+    assert.ok(typeof lines[0].correlationId === "string");
+    assert.equal(lines[0].outcome, "ok");
+    assert.match(lines[0].projectDirDigest, /^[0-9a-f]{12}$/);
+  });
+});
+
 test("dispatch: sequential calls accumulate one audit line each", async () => {
   await withIsolatedAuditLog(async ({ logPath }) => {
     const server = createServer();
