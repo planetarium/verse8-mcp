@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "task": "Execute M2 (Security hardening / 0.3.3) from .omc/plans/production-hardening-review.md — defensive only; build on M0 trust-boundary patch + M1a dedup utilities.",
+  "scope": "M2 only (6 stories). M1b/M3/M4 are out of scope; future ralph runs.",
+  "constraints": [
+    "verse8-mcp is not a standalone git repo in this workspace; skills-vendor SHA pin uses content-hash approach (sha256 over sorted file list).",
+    "Verification is unit-test based; no git-dependent smoke tests in this ralph run.",
+    "Multi-process state (Maps) is documented limitation per Principle 6 — rate-limit (M2.4) is process-local and explicitly best-effort.",
+    "All 11 invariants in .omc/INVARIANTS.md must remain intact; verify-invariants.sh must continue to pass."
+  ],
+  "stories": [
+    {
+      "id": "US-M2-1",
+      "title": "Shared util/childEnv.ts — sanitize spawned child-process env",
+      "priority": 1,
+      "passes": true,
+      "files": [
+        "src/util/childEnv.ts (new)",
+        "src/tools/preview.ts (callsite migration of sanitizedChildEnv)",
+        "tests/unit/childEnv.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/childEnv.ts exists and exports `sanitizeChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv`. Default `env` is `process.env`.",
+        "sanitizeChildEnv strips: VERSE8_ACCESS_TOKEN, every key matching /^VERSE8_.*_MCP_URL$/, VERSE8_API_URL, VERSE8_AGENT8_BACKEND_URL, VERSE8_CREATE_URL.",
+        "sanitizeChildEnv returns a NEW object (does not mutate the input).",
+        "src/tools/preview.ts no longer defines its own `sanitizedChildEnv`; the spawn call (line ~662) uses the shared helper.",
+        "tests/unit/childEnv.test.mjs has at least 5 cases: VERSE8_ACCESS_TOKEN stripped, VERSE8_IMAGE_MCP_URL stripped, VERSE8_API_URL stripped, unrelated env passed through, input not mutated.",
+        "All childEnv tests pass via node --test against dist/.",
+        "Existing previewPreflight + previewReadiness tests continue to pass.",
+        "tsc compiles cleanly."
+      ]
+    },
+    {
+      "id": "US-M2-2",
+      "title": "Attach writes .verse8/.gitignore stanza covering log files + .env.tmp leftovers",
+      "priority": 2,
+      "passes": true,
+      "files": [
+        "src/context/gitIgnore.ts (new, ~40 LOC)",
+        "src/tools/attach.ts (call from applyAttachmentArtifacts)",
+        "tests/unit/gitIgnore.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/context/gitIgnore.ts exports `ensureVerse8GitIgnore(projectDir: string): { status: 'created' | 'updated' | 'already-present', path: string }`.",
+        "ensureVerse8GitIgnore writes/updates `<projectDir>/.verse8/.gitignore` with these entries (one per line): `preview.log`, `mcp.log`, `mcp.log.*`, `mcp.log.link`, `*.env.tmp-*`, `.env.tmp-*`.",
+        "When `.verse8/.gitignore` already exists, ensureVerse8GitIgnore APPENDS missing entries (preserves existing user-added lines); never duplicates entries.",
+        "Idempotent: running twice on the same dir returns `already-present` on the second call.",
+        "applyAttachmentArtifacts (in src/tools/attach.ts) calls ensureVerse8GitIgnore as part of the attach sequence; result envelope gains an `installed.gitIgnore` field.",
+        "AttachResult type updated to include the new field (TypeScript narrowing intact).",
+        "tests/unit/gitIgnore.test.mjs has at least 6 cases: created on fresh dir, idempotent re-run returns already-present, existing user entries preserved, missing entries appended, no duplicates after partial coverage, mode 0644.",
+        "Existing skillWriter / envFile tests continue to pass.",
+        "tsc compiles cleanly."
+      ]
+    },
+    {
+      "id": "US-M2-3",
+      "title": "Skills-vendor subtree SHA pin (content-hash, not git-sha — verse8-mcp not in own git repo here)",
+      "priority": 3,
+      "passes": true,
+      "files": [
+        "package.json (new top-level field `verse8.skillsVendor.sha`)",
+        "scripts/check-subtree-sha.sh (new)",
+        "scripts/compute-subtree-sha.sh (new helper for maintainers)"
+      ],
+      "acceptanceCriteria": [
+        "scripts/compute-subtree-sha.sh computes a deterministic SHA over `skills-vendor/` (sorted file list + per-file sha256 of content), prints the digest to stdout.",
+        "scripts/check-subtree-sha.sh recomputes the SHA and compares against `package.json :: verse8.skillsVendor.sha`. Exits 0 on match; exits 1 with diff guidance on mismatch.",
+        "package.json gains a top-level `verse8` object with `skillsVendor.sha` set to the current computed digest (recorded as the pinned baseline).",
+        "package.json gains an `npm run check:subtree-sha` script that invokes scripts/check-subtree-sha.sh.",
+        "Running `npm run check:subtree-sha` from the repo root succeeds (exit 0).",
+        "Running `npm run check:subtree-sha` after artificially modifying any file in skills-vendor exits 1 with an actionable error pointing at the recompute command."
+      ]
+    },
+    {
+      "id": "US-M2-4",
+      "title": "Best-effort rate-limit on verse8_new_project_start (5 calls / 60s rolling per process)",
+      "priority": 4,
+      "passes": true,
+      "files": [
+        "src/tools/newProject.ts (rolling-window rate-limit)",
+        "tests/unit/newProjectConfirm.test.mjs (extend, or new tests/unit/newProjectStartRateLimit.test.mjs)"
+      ],
+      "acceptanceCriteria": [
+        "src/tools/newProject.ts gains a process-local rolling-window rate-limit of 5 calls per 60s for runNewProjectStart.",
+        "When exceeded, runNewProjectStart returns a new error code `rate_limited` with a hint stating the window length and that it resets on a per-process basis.",
+        "Inside the 5-call window, calls succeed normally.",
+        "After the 60s window slides past the oldest call, capacity is restored.",
+        "Test-only helper `_resetNewProjectStateForTests` clears the rate-limit window in addition to existing state.",
+        "tests/unit (existing or new file) has at least 3 cases: under-limit calls succeed (mocked HTTP), 6th call within window returns rate_limited, after-window-slide call succeeds again. Use a fake clock or short window override (e.g. via env VERSE8_RATE_WINDOW_MS for testing).",
+        "NewProjectStartResult type updated to include the new error variant.",
+        "Existing newProjectConfirm tests continue to pass.",
+        "tsc compiles cleanly."
+      ]
+    },
+    {
+      "id": "US-M2-5",
+      "title": "MCP-restart troubleshooting docs (README + AGENTS.md template)",
+      "priority": 5,
+      "passes": true,
+      "files": [
+        "README.md (new section)",
+        "src/tools/attach.ts (AGENTS_MD_TEMPLATE additions)"
+      ],
+      "acceptanceCriteria": [
+        "README.md gains a section titled exactly `## MCP server restarted mid-flow` (or `### MCP server restarted...`) explaining: in-process state (startCallMemo, rate-limit window) is lost on restart; users seeing template_mismatch with a known startCallId should re-run verse8_new_project_start.",
+        "AGENTS_MD_TEMPLATE in src/tools/attach.ts gains a paragraph in the new-project section noting the same recovery path.",
+        "AC-MULTI-PROCESS-DOC-style regression: a unit test greps each file for the documented sentence/paragraph (so a future doc rewrite that drops the guidance fails the test).",
+        "tests/unit (new tests/unit/restartDocs.test.mjs or extension of an existing file) verifies both files contain the required substring."
+      ]
+    },
+    {
+      "id": "US-M2-6",
+      "title": "template_mismatch hint mentions restart recovery (paired with US-M2-5 docs)",
+      "priority": 6,
+      "passes": true,
+      "files": [
+        "src/tools/newProject.ts (hint text in 2 template_mismatch branches)",
+        "tests/unit/newProjectConfirm.test.mjs (extend existing test cases)"
+      ],
+      "acceptanceCriteria": [
+        "Both `template_mismatch` returns in runNewProjectConfirm (unknown startCallId; digest mismatch) include hint text mentioning that the MCP server may have restarted and the recovery is to re-run verse8_new_project_start.",
+        "Existing newProjectConfirm tests asserting template_mismatch hint shape are updated to verify the new substring.",
+        "Existing test coverage of template_mismatch path continues to pass."
+      ]
+    }
+  ],
+  "verification": {
+    "gates": [
+      "All M2 ACs verified by reviewer (oh-my-claudecode:architect default)",
+      "tsc compiles entire src/ cleanly",
+      "node --test tests/unit/*.test.mjs runs all tests including new ones — 100% pass",
+      "bash scripts/verify-invariants.sh exit 0 (M1a deliverable still resolves)",
+      "bash scripts/check-subtree-sha.sh exit 0 (new M2.3 deliverable)",
+      "Mandatory deslop pass on changed files",
+      "Post-deslop regression re-run passes (npm run build && node --test tests/unit/*.test.mjs)"
+    ]
+  },
+  "out_of_scope_for_this_ralph": [
+    "Smoke tests (require git operations / mock servers — verified separately by user)",
+    "Live e2e tests against prod (manual)",
+    "M1b (structural extraction), M3 (observability), M4 (operational) — future ralph runs",
+    "ADR / changelog updates to README/CHANGELOG for 0.3.3 release notes (user owns release ceremony)",
+    "Persistent rate-limit store (process-local Map is the documented 0.3.x choice; persistent is 0.4.x follow-up)"
+  ]
+}

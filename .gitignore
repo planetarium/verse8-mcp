@@ -1,0 +1,26 @@
+node_modules/
+sample/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+coverage/
+
+# OMC / Claude Code ephemeral + personal state
+.claude/
+.omc/state/
+.omc/sessions/
+.omc/project-memory.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.verse8/token
+
+# IDE / editor
+.idea/
+.vscode/
+
+# NPM pack artifacts
+*.tgz

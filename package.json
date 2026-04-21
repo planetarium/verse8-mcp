@@ -1,0 +1,62 @@
+{
+  "name": "@verse8/mcp",
+  "version": "0.4.0",
+  "description": "Verse8 MCP meta-server — auto-detects gitlab.verse8.io projects and exposes verse8 skills, image MCP proxy, and git checkpoint tools to host LLMs (Claude, Codex, Cursor, opencode, etc.)",
+  "keywords": [
+    "mcp",
+    "verse8",
+    "agent8",
+    "claude",
+    "game-dev"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "verse8-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "hooks/",
+    "skills/",
+    "skills-vendor/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "bash tests/smoke.sh && npm run test:unit",
+    "test:smoke": "bash tests/smoke.sh",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "clean": "rm -rf dist",
+    "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
+    "audit": "npm audit --audit-level=high",
+    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "verse8": {
+    "skillsVendor": {
+      "sha": "68cc89692ae2ad45ec7c2de1ec027ab69161652734feeac3baab4c87dbc0a92b"
+    },
+    "gameserverPin": {
+      "gameserver-node": "latest",
+      "deploy": "latest"
+    }
+  }
+}

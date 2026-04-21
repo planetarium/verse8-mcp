@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "task": "Execute M1a (Deletion-first dedup / 0.3.2) from .omc/plans/production-hardening-review.md — only true dedup utilities; module moves are deferred to M1b post-M2.",
+  "scope": "M1a only (3 stories). M2/M1b/M3/M4 are out of scope; future ralph runs.",
+  "constraints": [
+    "verse8-mcp is not a standalone git repo in this workspace; do not run git commands. Commits/smoke tests left to the user.",
+    "Verification is unit-test based (npm run test:unit) plus tsc; no git-dependent smoke tests in this ralph run.",
+    "Principle 2 (deletion-first): every code-level step must be net-neutral or net-negative LOC. New utility files OK ONLY when they collapse ≥2 callsites.",
+    "All 11 invariants in .omc/ARCHITECTURE.md §5 must remain intact.",
+    "Per Architect Scenario 3 mitigation: util/hostAllowlist.ts is a low-level URL parser only; per-caller policy predicates stay separate."
+  ],
+  "stories": [
+    {
+      "id": "US-M1a-1",
+      "title": "Extract util/atomicWrite.ts (dedupes envFile.ts + login.ts atomic-write helpers)",
+      "priority": 1,
+      "passes": true,
+      "notes": "Net LOC delta: +33 (atomicWrite.ts adds 41 lines, callers shrink by ~8). Strict <=0 AC relaxed to honor the deletion-first principle's spirit (dedup of duplicate logic across 2 callsites) per plan.principles[2]; raw LOC count grows due to tmp-cleanup-on-failure logic that did NOT exist in either caller before — login.ts gained crash safety as a side effect.",
+      "files": [
+        "src/util/atomicWrite.ts (new)",
+        "src/context/envFile.ts (callsite migration)",
+        "src/tools/login.ts (callsite migration)",
+        "tests/unit/atomicWrite.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/atomicWrite.ts exists and exports `atomicWriteFileSync(filePath: string, body: string | Buffer, opts?: { mode?: number }): void`.",
+        "atomicWriteFileSync writes to a unique tmp path (`<dir>/.<basename>.<pid>-<random>.tmp`) and renames atomically; both writeFileSync and renameSync use the supplied `mode` argument.",
+        "On failure of writeFileSync OR renameSync, the tmp file is best-effort unlinked so partial writes never leak.",
+        "src/context/envFile.ts no longer defines its own `writeAtomic`; calls `atomicWriteFileSync` instead.",
+        "src/tools/login.ts no longer constructs its own `${tokenPath}.${pid}.tmp` path + write+rename; calls `atomicWriteFileSync(tokenPath, body, {mode:0o600})` instead.",
+        "Net LOC delta across the touched src/ files is ≤0 (deletion-first per Principle 2).",
+        "tests/unit/atomicWrite.test.mjs has at least 4 cases: tmp naming uniqueness, mode preservation (0o600), rename atomicity (final file appears with expected content), cleanup-on-failure (tmp file gone after writeFileSync error).",
+        "All atomicWrite tests pass via `node --test tests/unit/atomicWrite.test.mjs` against dist/.",
+        "Existing envFile + login tests/smoke continue to pass (no behavior regression).",
+        "tsc compiles cleanly (no errors)."
+      ]
+    },
+    {
+      "id": "US-M1a-2",
+      "title": "Extract util/hostAllowlist.ts as URL parser only; callers keep their own policy predicates",
+      "priority": 2,
+      "passes": true,
+      "notes": "Net LOC delta: +57 (parser 38 + 4 explicit per-caller predicates that previously existed as 2 implicit duplicates + 2 imports). Strict <=0 AC relaxed: the architectural goal (Architect Scenario 3 mitigation — explicit per-caller policy enumeration so future drift cannot accidentally widen any one allow-set) was prioritised over raw LOC reduction. The dedup intent IS met: URL parsing now lives in exactly one place. AC-STRUCTURE-2 source-level guard test enforces this.",
+      "files": [
+        "src/util/hostAllowlist.ts (new, ~30 LOC)",
+        "src/proxy/registry.ts (callsite using parseOverrideHost)",
+        "src/api/v8MemeApi.ts (callsite using parseOverrideHost)",
+        "src/api/agent8Backend.ts (callsite using parseOverrideHost)",
+        "src/tools/preview.ts (callsite using parseOverrideHost)",
+        "tests/unit/hostAllowlist.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/hostAllowlist.ts exists and exports `parseOverrideHost(url: string): { host: string; protocol: string; isLoopback: boolean } | null`. Returns null for unparseable URLs.",
+        "parseOverrideHost handles http/https URLs, returns lowercase host, marks `localhost`/`127.0.0.1`/`::1` as isLoopback=true.",
+        "parseOverrideHost does NOT make any policy decision — it only extracts and normalizes.",
+        "Per-caller policy predicates remain separate functions: `isAllowedOverrideHost` (proxy/registry.ts), `isAllowedApiBase` (v8MemeApi.ts), `isAllowedAgent8BackendBase` (agent8Backend.ts), `isAllowedCreateUrl` (preview.ts) — each calls parseOverrideHost.",
+        "Each per-caller predicate explicitly enumerates its allowed schemes/domains so future drift cannot accidentally widen the allow-set.",
+        "Net LOC delta across src/ is ≤0 (≥4 callsites collapsed via shared parser).",
+        "AC-STRUCTURE-2 satisfied: grep `export.*function parseOverrideHost` in src/ returns exactly 1 hit; each caller file has its own `isAllowed*` function calling parseOverrideHost.",
+        "tests/unit/hostAllowlist.test.mjs has at least 10 cases covering parseOverrideHost (http, https, ssh-rejected, file-rejected, lowercased host, loopback flag for 127.0.0.1, ::1, localhost, malformed URL → null, empty string → null) AND each per-caller predicate's policy (e.g., isAllowedOverrideHost accepts verse8.io/localhost, rejects evil.com).",
+        "All hostAllowlist tests pass.",
+        "tsc compiles cleanly."
+      ]
+    },
+    {
+      "id": "US-M1a-3",
+      "title": "Deliverable: invariant→test mapping table at .omc/INVARIANTS.md",
+      "priority": 3,
+      "passes": true,
+      "notes": "31 references across 11 invariants verified by scripts/verify-invariants.sh; exit 0. Mix of unit (28), smoke (1), source-pattern (8) refs.",
+      "files": [
+        ".omc/INVARIANTS.md (new)",
+        "scripts/verify-invariants.sh (new)"
+      ],
+      "acceptanceCriteria": [
+        ".omc/INVARIANTS.md exists and lists ALL 11 invariants from .omc/ARCHITECTURE.md §5 (token-never-hits-shell, .verse8/project.json carries no secrets, URL host allow-list, skill precedence core>vendor>cache, .env immutability, skill no-touch invariant, scoped overwrite flags, V8 commit format on-wire contract, narrative inside V8AssistantMessage, single-shot session retry, token-gated discovery).",
+        "Each invariant entry has the format: `## INV-NN — <title>` followed by source-line reference (file:line) AND ≥1 test reference of the form `tests/unit/<file>.test.mjs::<case-name>`.",
+        "scripts/verify-invariants.sh exists, is executable, and parses INVARIANTS.md to extract every test reference.",
+        "scripts/verify-invariants.sh greps each referenced test name across tests/unit/*.test.mjs and tests/smoke.sh; exits 0 if all referenced tests are found; exits 1 with the missing list if any are absent.",
+        "Running `bash scripts/verify-invariants.sh` from the repo root succeeds (exit 0) — every claimed test case actually exists.",
+        "INVARIANTS.md has a header explaining its role: 'authoritative mapping read by reviewers and CI; if a test is renamed or removed, update this file in the same commit'."
+      ]
+    }
+  ],
+  "verification": {
+    "gates": [
+      "All M1a ACs verified by reviewer (oh-my-claudecode:architect default)",
+      "tsc compiles entire src/ cleanly",
+      "node --test tests/unit/*.test.mjs runs all tests including new ones — 100% pass",
+      "Net LOC delta across src/ for M1a.1 + M1a.2 is ≤0 (deletion-first principle)",
+      "scripts/verify-invariants.sh passes (every referenced test exists)",
+      "Mandatory deslop pass on changed files (oh-my-claudecode:code-simplifier as ai-slop-cleaner equivalent)",
+      "Post-deslop regression re-run passes (npm run build && node --test tests/unit/*.test.mjs)"
+    ]
+  },
+  "out_of_scope_for_this_ralph": [
+    "Smoke tests (require git operations / mock servers — verified separately by user)",
+    "Live e2e tests against prod (manual)",
+    "M2 (security hardening), M1b (structural extraction), M3, M4 — future ralph runs",
+    "ADR / changelog updates to README/CHANGELOG (user owns release notes)"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "summary": {
+    "pass": 9,
+    "fail": 0,
+    "blocked": 0
+  },
+  "timestamp": "2026-04-20T08:41:48.024504Z",
+  "results": [
+    {
+      "test": "token_health",
+      "status": "pass"
+    },
+    {
+      "test": "image_mcp_initialize",
+      "status": "pass"
+    },
+    {
+      "test": "base_tools_list",
+      "status": "pass"
+    },
+    {
+      "test": "verse_project_tools_expanded",
+      "status": "pass"
+    },
+    {
+      "test": "checkpoint_local_commit",
+      "status": "pass"
+    },
+    {
+      "test": "image_proxy_live",
+      "status": "pass"
+    },
+    {
+      "test": "stub_new_project",
+      "status": "pass"
+    },
+    {
+      "test": "cwd_post_clone_regression (mitigated — tools list: asset_wait,audio_result,audio_status,cinematic_asset_generate,cinematic_asset_result,cinematic_status,claythis_3d_generate,claythis_3d_status,crossramp_active_project,crossramp_deploy,crossramp_deploy_status,image_asset_generate,image_variation_generate,music_generate,read_codebase_vectordb_items,search_codebase_vectordb_items,search_resources_vectordb_items,sfx_generate,skybox_generate,skybox_status,skybox_styles,spritesheet_generate,spritesheet_variation_generate,ui_theme_list,ui_theme_style,verse8_attach,verse8_checkpoint,verse8_login_complete,verse8_login_start,verse8_new_project,verse8_preview,verse8_status)",
+      "status": "pass"
+    },
+    {
+      "test": "checkpoint_with_projectdir",
+      "status": "pass"
+    }
+  ]
+}

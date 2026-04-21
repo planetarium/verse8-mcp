@@ -1,0 +1,2 @@
+#!/bin/sh
+exec verse8-mcp hook pre-commit "$@"

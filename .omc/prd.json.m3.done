@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "task": "Execute M3 (Observability + types + atomicity / 0.4.x) from .omc/plans/production-hardening-review.md §6 M3. 9 stories: auditLog, errors, toolDispatch, 3 missing unit tests, zodJsonSchema decision, rollback design, audit test promotion.",
+  "scope": "M3 only (9 stories). M4 (operational, 6 stories) will follow in the next PRD cycle.",
+  "constraints": [
+    "verse8-mcp is not a standalone git repo here; verification = unit tests + tsc + scripts only. No commits, no smoke tests (user owns those).",
+    "Node16 module resolution — TS imports MUST end in .js.",
+    "console.error for stderr; never console.log (stdio MCP protocol).",
+    "All tool results are discriminated unions {ok:true,...} | {ok:false, error: ErrorCode, hint, ...}.",
+    "zod schemas use .strict().",
+    "Tests are .mjs, import from dist/.",
+    "All 11 invariants in .omc/INVARIANTS.md must remain intact. verify-invariants.sh must continue to pass.",
+    "Baseline: 213 unit tests. Target: at least +54 (attachment 10 + v8CallLog 8 + login 6 + auditLog 6 + errorCodeCoverage 3 + attachRollback 4 + jsonSchema 30 case round-trip counts as N cases ≤ 10 test blocks). Floor: 213 + 37 new minimum."
+  ],
+  "stories": [
+    {
+      "id": "US-M3-1",
+      "title": "util/auditLog.ts — rotating JSONL at $XDG_STATE_HOME/verse8/mcp.log (+ tests/unit/auditLog.test.mjs)",
+      "priority": 1,
+      "passes": true,
+      "files": [
+        "src/util/auditLog.ts (new)",
+        "tests/unit/auditLog.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/auditLog.ts exports: (a) getAuditLogPath(): string returning $XDG_STATE_HOME/verse8/mcp.log with ~/.local/state/verse8/mcp.log fallback; (b) projectDirDigest(projectDir: string): string returning sha256(projectDir).slice(0,12); (c) appendAuditLine(entry: AuditEntry): void that writes one JSON line and rotates when size >= 1MB.",
+        "File is opened with mode 0o600; directories are created with mode 0o700.",
+        "Rotation: when pre-write size >= 1MB, rename current to mcp.log.1 (replacing any existing .1), then start fresh mcp.log. Only one rotated file retained.",
+        "All I/O errors are swallowed (non-fatal) — writer returns without throwing. Audit failure must never block tool path.",
+        "projectDirDigest('/tmp/foo/bar') returns a deterministic 12-char hex prefix of sha256('/tmp/foo/bar').",
+        "Audit entries contain at minimum: ts (ISO), tool, outcome ('ok'|'error'), durationMs (number), projectDirDigest (string|undefined), correlationId (string), error (ErrorCode|undefined). Never raw projectDir. Never tokens (writer routes `hint`-like fields through util/redact safeHint).",
+        "tests/unit/auditLog.test.mjs has ≥6 cases covering: digest determinism, write+read one line, rotation at 1MB threshold (drops old .1), non-fatal when directory is read-only, environment override VERSE8_AUDIT_LOG_PATH, appendAuditLine redacts token-shaped values in entry.hint.",
+        "VERSE8_AUDIT_LOG_PATH env override supported (test uses it to isolate each case in a tmpdir).",
+        "tsc compiles cleanly.",
+        "AC-OBSERVABILITY-2 + AC-OBSERVABILITY-3 met (rotation + digest)."
+      ]
+    },
+    {
+      "id": "US-M3-2",
+      "title": "util/errors.ts — ErrorCode string-literal union + AST coverage test",
+      "priority": 2,
+      "passes": true,
+      "files": [
+        "src/util/errors.ts (new)",
+        "tests/unit/errorCodeCoverage.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/errors.ts exports `ErrorCode` as a string-literal union type enumerating every error code used in tool result unions across src/ (minimum set: invalid_input, invalid_parent, not_logged_in, not_verse_project, attach_failed, template_mismatch, confirm_in_flight, startcall_failed, select_template_failed, token_check_failed, token_grant_failed, clone_target_exists, clone_parse_failed, clone_failed, tool_renamed, no_token, token_invalid, token_expired, token_expires_soon, preflight_failed, preview_failed, checkpoint_failed, unknown_tool, unknown_uri, unknown_prompt, tool_exception, hook_failed, not_implemented).",
+        "src/util/errors.ts exports `ERROR_CODES` as a `ReadonlyArray<ErrorCode>` matching the union — single source of truth.",
+        "src/util/errors.ts exports `isErrorCode(v: unknown): v is ErrorCode` predicate.",
+        "tests/unit/errorCodeCoverage.test.mjs exists and has at least 3 cases: (a) ERROR_CODES matches the ErrorCode union via ts-morph / ts AST inspection (no drift between array and type), (b) every tool result type in src/tools/*.ts that has `error: '...'` literal fields uses only ErrorCode members, (c) isErrorCode narrows correctly on known/unknown values.",
+        "If ts-morph is not a dev dependency, the test falls back to a plain TypeScript Compiler API (typescript package) implementation. The test MUST NOT add a runtime dependency — ts-morph or typescript stays devDependencies only. If neither is available, the test uses regex-based AST extraction from built dist/ .d.ts files.",
+        "tsc compiles cleanly.",
+        "All existing 213 unit tests still pass.",
+        "AC-TYPES-1 met."
+      ]
+    },
+    {
+      "id": "US-M3-3",
+      "title": "util/toolDispatch.ts — correlation-id + duration + audit sink wrapper for CallToolRequestSchema handler",
+      "priority": 3,
+      "passes": true,
+      "files": [
+        "src/util/toolDispatch.ts (new)",
+        "src/server.ts (inline try/catch replaced; audit sink wired; correlationId threaded)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/toolDispatch.ts exports `dispatchTool<T>(name: string, args: unknown, runner: (args, ctx) => Promise<T>, opts: { projectDir?: string }): Promise<T>` that: generates correlationId (crypto.randomUUID), measures duration, emits exactly one audit line on completion, routes thrown exceptions through util/redact.safeErrorHint AND re-throws after audit.",
+        "src/server.ts CallToolRequestSchema handler uses dispatchTool for every tool branch except schema-parse-failure and unknown_tool paths (so those do NOT emit audit lines per AC-OBSERVABILITY-1).",
+        "Existing v8CallLog.recordToolCall bucket alignment is preserved (dispatchTool calls recordToolCall on success for tools that currently record).",
+        "Response envelopes for thrown errors still flow through safeErrorHint (no regression of AC-MCP-REDACTION).",
+        "tsc compiles cleanly; all 213 existing unit tests still pass.",
+        "AC-OBSERVABILITY-1 met: integration test or v8CallLog-style unit test asserts one audit line per tool call, zero lines for unknown_tool and for zod-parse-failure cases."
+      ]
+    },
+    {
+      "id": "US-M3-4",
+      "title": "tests/unit/attachment.test.mjs — ≥10 cases for detectAttachment + resolveHooksDir",
+      "priority": 4,
+      "passes": true,
+      "files": [
+        "tests/unit/attachment.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "tests/unit/attachment.test.mjs has ≥10 test cases.",
+        "Cases include: custom core.hooksPath resolution (both absolute and relative form); missing .git dir returns attached:false gracefully; AGENTS.md signature true-positive; AGENTS.md signature false-positive reject (e.g. partial substring without verse8-mcp marker does not mark attached); missing hooks dir (fresh git init, no hooks yet) returns attached:false without throwing; hooks present but AGENTS.md missing → partial; AGENTS.md present but hooks missing → partial; both present → attached:true; pre-commit hook with alternate script body but verse8-mcp in it still detected; commit-msg hook missing but pre-commit present is NOT attached:true.",
+        "All cases pass.",
+        "tsc compiles cleanly. All prior unit tests still pass.",
+        "AC-TESTS-1 met (≥10 attachment cases)."
+      ]
+    },
+    {
+      "id": "US-M3-5",
+      "title": "tests/unit/v8CallLog.test.mjs — ≥8 cases covering cross-project isolation, capacity eviction, drain idempotency",
+      "priority": 5,
+      "passes": true,
+      "files": [
+        "tests/unit/v8CallLog.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "tests/unit/v8CallLog.test.mjs has ≥8 cases.",
+        "Cases include: recordToolCall then drainForProject returns the recorded entry; drain a second time returns []; two projects are isolated (drain one does not return the other's entries); capacity eviction after N entries (FIFO); drain returns entries in recording order; recordToolCall for a projectDir that was never drained still works; drainForProject is stable under interleaved recordToolCall calls; drainForProject returns a defensive copy (mutating the result does not mutate internal state).",
+        "All cases pass.",
+        "tsc clean. All prior tests still pass.",
+        "AC-TESTS-2 met (≥8 v8CallLog cases)."
+      ]
+    },
+    {
+      "id": "US-M3-6",
+      "title": "tests/unit/login.test.mjs — ≥6 cases exercising device flow via mock",
+      "priority": 6,
+      "passes": true,
+      "files": [
+        "tests/unit/login.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "tests/unit/login.test.mjs has ≥6 test cases.",
+        "Cases include: verse8_login_start happy path returns verificationUrl + deviceCode + userCode; verse8_login_complete happy path writes ~/.config/verse8/token (redirected via env to a tmpdir) with mode 0600; verse8_login_complete with authorization_pending error returns {ok:false, error:'token_grant_failed'|'authorization_pending'-like code} per current code; verse8_login_complete with slow_down returns structured error; verse8_login_complete with access_denied returns structured error; verse8_login_complete with expired_token returns structured error.",
+        "Each test spawns or imports a minimal mock for v8-meme-api; use XDG_CONFIG_HOME env to redirect token writes to a tmpdir so the developer's real token is never touched.",
+        "Token file on success has mode 0600 (fs.statSync check).",
+        "All cases pass.",
+        "tsc clean. All prior tests still pass.",
+        "AC-TESTS-3 met (≥6 login cases)."
+      ]
+    },
+    {
+      "id": "US-M3-7",
+      "title": "jsonSchema adapter decision: pin custom adapter + 30-case round-trip test",
+      "priority": 7,
+      "passes": true,
+      "files": [
+        "tests/unit/jsonSchema.test.mjs (new)",
+        "src/util/jsonSchema.ts (no code change expected; test coverage only)"
+      ],
+      "acceptanceCriteria": [
+        "Decision recorded: keep current hand-rolled util/jsonSchema.ts adapter. No new dependency added.",
+        "tests/unit/jsonSchema.test.mjs exists and has ≥30 distinct zod schema round-trip assertions covering: string (plain, min/max, enum, regex), number (int, min/max), boolean, object (strict, optional fields, passthrough), array (of strings, of objects, min/max items), union of literals, nullable, default values, nested objects, record, tuple-like array of mixed types. Each case runs zodToJsonSchema(schema) and asserts type+required+constraint shape matches the zod definition.",
+        "If any unsupported zod variant (e.g. discriminatedUnion with >3 branches) is exercised, the test documents the limitation as expected output shape.",
+        "All 30 cases pass.",
+        "tsc clean. All prior tests still pass."
+      ]
+    },
+    {
+      "id": "US-M3-8",
+      "title": "applyAttachmentArtifacts rollback — util/rollback.ts + LIFO reverse on mid-sequence failure",
+      "priority": 8,
+      "passes": true,
+      "files": [
+        "src/util/rollback.ts (new)",
+        "src/tools/attach.ts (applyAttachmentArtifacts refactored to use rollback journal)",
+        "tests/unit/attachRollback.test.mjs (new)"
+      ],
+      "acceptanceCriteria": [
+        "src/util/rollback.ts exports a RollbackJournal class: `new RollbackJournal()`, `.record(reverse: () => void | Promise<void>): void`, `.rollback(): Promise<void>` (LIFO order; catches individual reverse errors and stderrs them without throwing).",
+        "src/tools/attach.ts applyAttachmentArtifacts constructs a journal, records a reverse op after each successful sub-install step (hooks/agents/marker/skills/env), and calls journal.rollback() in its catch block before re-throwing.",
+        "Reverse ops delete NEW files created by the step; for steps that MODIFY an existing file, the journal captures the prior content and restores it. Steps that were no-ops (e.g. already-present) record a no-op reverse (or no record).",
+        "tests/unit/attachRollback.test.mjs has ≥4 cases: (a) success path — journal reverses 0 ops because no error; (b) synthetic failure in skill-install step rolls back hooks + AGENTS.md + marker to pre-attach on-disk state; (c) attachIdempotent remains green (idempotent re-run still byte-identical); (d) rollback preserves pre-existing user-authored AGENTS.md (does NOT delete a file it didn't create).",
+        "All 4 cases pass plus the pre-existing attachIdempotent test still passes.",
+        "tsc clean. All prior tests still pass.",
+        "AC-ATOMICITY met (M3.8): on mid-sequence failure, on-disk state diff vs pre-attach state is empty."
+      ]
+    },
+    {
+      "id": "US-M3-9",
+      "title": "Promote audit-log validation from shell to unit test — covered in US-M3-1 auditLog.test.mjs",
+      "priority": 9,
+      "passes": true,
+      "files": [
+        "tests/unit/auditLog.test.mjs (already delivered in US-M3-1)"
+      ],
+      "acceptanceCriteria": [
+        "tests/unit/auditLog.test.mjs (from US-M3-1) covers at minimum: one-line-per-tool assertion (integration between appendAuditLine and dispatchTool), rotation at 1MB threshold, mode 0600 file permission, non-blocking on I/O failure, projectDirDigest determinism.",
+        "No new shell script (verify-audit-log.sh) is introduced. If a stub exists in scripts/ from an earlier draft, it is either removed or becomes a one-line wrapper that invokes `node --test tests/unit/auditLog.test.mjs` so the source of truth is the unit test.",
+        "All audit-log behavior is exercised by Node tests.",
+        "AC-OBSERVABILITY-2 + AC-OBSERVABILITY-3 verification runs in `npm run test:unit`, not in a standalone shell script.",
+        "All prior tests plus new audit tests pass."
+      ]
+    }
+  ],
+  "verification": {
+    "gates": [
+      "All M3 ACs verified by reviewer (oh-my-claudecode:architect default)",
+      "tsc compiles entire src/ cleanly",
+      "node --test tests/unit/*.test.mjs runs all tests (≥213+37 = ≥250 cases) — 100% pass",
+      "bash scripts/verify-invariants.sh exit 0 (all 11 invariants still resolve)",
+      "bash scripts/check-subtree-sha.sh exit 0",
+      "Mandatory deslop pass on changed files",
+      "Post-deslop regression re-run passes"
+    ]
+  },
+  "out_of_scope_for_this_ralph": [
+    "Smoke tests (user-owned)",
+    "M4 (operational) — delivered in the next PRD cycle within the same ralph session",
+    "README / CHANGELOG updates for 0.4.x release notes (user owns release ceremony)",
+    "Removal of proxy/imageMcp.ts back-compat shim (keep until 0.5.0)"
+  ]
+}
