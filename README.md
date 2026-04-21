@@ -8,7 +8,43 @@ Verse8 MCP meta-server — auto-detects `gitlab.verse8.io` projects and exposes 
 
 ## Install
 
-Every MCP-compatible host shares the same JSON server config schema. Add this entry:
+### Quick install (CLI one-liners)
+
+If your MCP host ships a CLI helper, one command is enough:
+
+```bash
+# Claude Code
+claude mcp add verse8 -- npx -y @verse8/mcp
+
+# Codex
+codex mcp add verse8 -- npx -y @verse8/mcp
+```
+
+Both helpers write the same underlying JSON config for you. Restart the host (or open a new session) and `verse8_login_start` / `verse8_status` / etc. show up in the tool list.
+
+**Pinned version (recommended for production):**
+
+```bash
+claude mcp add verse8 -- npx -y @verse8/mcp@0.4.0
+codex  mcp add verse8 -- npx -y @verse8/mcp@0.4.0
+```
+
+**Project-scoped instead of user-global** (shared via `.mcp.json` with teammates):
+
+```bash
+claude mcp add verse8 --scope project -- npx -y @verse8/mcp
+```
+
+**Remove:**
+
+```bash
+claude mcp remove verse8
+codex  mcp remove verse8
+```
+
+### Manual install (generic MCP JSON)
+
+Every MCP-compatible host shares the same JSON server config schema. Add this entry to your host's MCP config file:
 
 ```json
 {
@@ -37,7 +73,7 @@ That's the minimum. Add env vars only when you need to override defaults:
 }
 ```
 
-### Pin a version (recommended for production)
+Pin a version for reproducibility:
 
 ```json
 "args": ["-y", "@verse8/mcp@0.4.0"]
@@ -45,16 +81,25 @@ That's the minimum. Add env vars only when you need to override defaults:
 
 ### Where each MCP host reads this config
 
-| Host | Config file | Notes |
-|------|-------------|-------|
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Windows) | Restart the app after editing. |
-| Claude Code (CLI) | `~/.claude.json` (or `claude mcp add verse8 -- npx -y @verse8/mcp`) | The `claude mcp add` helper writes the same JSON for you. |
-| Codex | `~/.config/codex/config.toml` (`[mcp_servers.verse8]` section) | Same fields; TOML instead of JSON. |
-| Cursor | `<project>/.cursor/mcp.json` or `~/.cursor/mcp.json` | Per-project entry picked up on startup. |
-| opencode | `~/.config/opencode/mcp.json` | Same shape as the generic JSON above. |
-| Continue (VS Code) | `~/.continue/config.json` → `mcpServers` | Reload the window after editing. |
+| Host | CLI helper | Config file |
+|------|-----------|-------------|
+| Claude Code | `claude mcp add verse8 -- npx -y @verse8/mcp` | `~/.claude.json` (user) or `.mcp.json` (project) |
+| Claude Desktop | — (manual JSON only) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Windows); restart app after editing |
+| Codex | `codex mcp add verse8 -- npx -y @verse8/mcp` | `~/.config/codex/config.toml` (`[mcp_servers.verse8]` section) |
+| Cursor | — (manual JSON only) | `<project>/.cursor/mcp.json` or `~/.cursor/mcp.json` |
+| opencode | — (manual JSON only) | `~/.config/opencode/mcp.json` |
+| Continue (VS Code) | — (manual JSON only) | `~/.continue/config.json` → `mcpServers`; reload the window after editing |
 
 Any host that speaks MCP over stdio works — if it accepts a `command` / `args` config for MCP servers, drop in the snippet above.
+
+### Verify the install
+
+```bash
+claude mcp list     # Claude Code
+codex  mcp list     # Codex
+```
+
+You should see `verse8: npx -y @verse8/mcp - ✓ Connected` (or equivalent). The first time the server starts, it will `npx`-fetch the package into the local npm cache (one-time, a few seconds).
 
 ## One-time login
 

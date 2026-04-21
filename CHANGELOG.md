@@ -5,6 +5,17 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.4.1] — 2026-04-21
+
+### Docs
+- README: add a dedicated **Quick install** section at the top with one-liners
+  for Claude Code (`claude mcp add verse8 -- npx -y @verse8/mcp`) and Codex
+  (`codex mcp add verse8 -- npx -y @verse8/mcp`), plus version-pin, project
+  scope, and remove variants.
+- The per-host config table now surfaces CLI-helper availability and adds a
+  **Verify the install** section (`claude mcp list` / `codex mcp list`).
+- No code change — only the published README on the npm page is updated.
+
 ## [0.4.0] — 2026-04-21
 
 ### Changed — BREAKING
