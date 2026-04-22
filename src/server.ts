@@ -57,7 +57,7 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.5.3",
+  version: "0.5.4",
 };
 
 /**
@@ -164,12 +164,27 @@ function jsonContent(value: unknown): { type: "text"; text: string }[] {
 export function createServer(): Server {
   const server = new Server(SERVER_INFO, {
     capabilities: {
-      tools: {},
+      // listChanged:true tells clients to re-request tools/list when the
+      // server emits `notifications/tools/list_changed`. The set of
+      // verse8 tools surfaced depends on (a) cwd being a verse project
+      // and (b) a valid token — both of which can flip mid-session
+      // after verse8_attach / verse8_login_complete / verse8_new_project_confirm.
+      tools: { listChanged: true },
       resources: {},
       prompts: {},
     },
     instructions: SERVER_INSTRUCTIONS,
   });
+
+  // Fire a tools/list_changed notification when the dynamic tool set
+  // may have changed. Best-effort — a failed notify must never break
+  // the tool call. Guarded by a try/catch because sendToolListChanged
+  // throws on transports that aren't connected yet.
+  const notifyToolListChanged = (): void => {
+    Promise.resolve(server.sendToolListChanged()).catch(() => {
+      /* best-effort; client will refresh on next tools/list anyway */
+    });
+  };
 
   // tools/list — re-evaluate token every call so project-scoped tools
   // appear as soon as the user logs in (no server restart needed).
@@ -221,6 +236,9 @@ export function createServer(): Server {
       if (name === "verse8_login_complete") {
         const parsed = loginCompleteInputSchema.parse(args ?? {});
         const result = await dispatchTool(name, () => runLoginComplete(parsed));
+        // Token state likely changed → re-enumerate tools so
+        // verse8_checkpoint / verse8_preview / image_* surface.
+        if (result.ok) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }
 
@@ -245,6 +263,10 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () =>
           runNewProjectConfirm(parsed, cwd),
         );
+        // Project was just created + cloned + attached; tool surface
+        // may have expanded (preview/checkpoint/image_* if token was
+        // minted during confirm).
+        if (result.ok) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }
 
@@ -254,6 +276,9 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runAttach(parsed, cwd), {
           projectDir: pd,
         });
+        // Attachment state flipped → bootstrap routing changes and
+        // verse8_checkpoint/preview become callable. Nudge the client.
+        if (result.ok) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }
 

@@ -5,6 +5,51 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.4] — 2026-04-21
+
+### Fixed — tool-list refresh after attach / login / new-project
+
+User report: fresh session → `/verse8:attach` succeeded → device-flow
+login succeeded → `verse8_bootstrap` returned `nextAction: "ready"` →
+but `verse8_checkpoint` / `verse8_preview` / image-proxy tools were
+**still not surfaced** in the client's tool catalog. The agent
+(correctly) diagnosed this as a "MCP server registered tools based on
+pre-attach / pre-login state" problem and asked the user to restart the
+session. No session restart should have been necessary.
+
+Root cause: `ListToolsRequestSchema` is dynamic (re-evaluated on every
+call), but MCP hosts cache the tool list from session start and only
+re-fetch when the server pushes a `notifications/tools/list_changed`
+event. Our server declared `capabilities.tools = {}` — no
+`listChanged: true` — and never called
+`server.sendToolListChanged()`, so clients had no way to learn that
+the token-gated tools had become available.
+
+### Changed
+- `src/server.ts`
+  - `capabilities.tools` → `{ listChanged: true }` to advertise that
+    the server emits list-change notifications.
+  - `notifyToolListChanged()` helper fires `sendToolListChanged()`
+    (best-effort) after the three state-flipping dispatches:
+    - `verse8_login_complete` (token appears → checkpoint/preview/image
+      tools become callable)
+    - `verse8_attach` (attachment state flips; bootstrap routing
+      changes)
+    - `verse8_new_project_confirm` (project is created + cloned +
+      attached + token is minted — maximum state change)
+  - All three callsites gate the notification on `result.ok` so a
+    failed attach/login/confirm does not spuriously re-enumerate.
+
+### Compatibility
+- Clients that ignore `notifications/tools/list_changed` fall back to
+  the cached tool list, unchanged from 0.5.3 behavior. The notification
+  is additive.
+- No API / output shape change. Existing tests (352) still pass.
+- The bug only manifested mid-session (login / attach / new-project
+  flow). Attached projects started from a fresh session never hit it,
+  because token + attach state was already correct at `tools/list`
+  time.
+
 ## [0.5.3] — 2026-04-21
 
 ### Fixed — enforce verse8 flow at MCP session level, not just per-tool
