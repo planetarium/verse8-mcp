@@ -68,10 +68,10 @@ test("verse8_bootstrap description contains imperative 'CALL THIS FIRST' hook", 
     const boot = tools.find((t) => t.name === "verse8_bootstrap");
     assert.ok(boot);
     assert.match(boot.description, /CALL THIS FIRST/);
-    // Description must reference the workflow shape (nextTool) that LLMs
-    // are expected to read from the response.
     assert.match(boot.description, /nextTool/);
-    assert.match(boot.description, /Do NOT generate game code/i);
+    // Strong guardrail — agents must NOT start editing files before
+    // bootstrap returns a classification.
+    assert.match(boot.description, /BEFORE any Edit\/Write\/Bash/i);
   });
 });
 

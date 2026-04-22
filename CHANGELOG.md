@@ -5,6 +5,65 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.2] — 2026-04-21
+
+### Fixed — bootstrap must be called for any task, not just verse8-keyword requests
+
+User report: Cloned a verse8 project from the web to local, asked the
+agent "콤보 효과가 너무 쎕니다" (please tune the combo effect). The agent
+skipped `verse8_bootstrap` entirely and edited 5 files + ran build
+directly via native tools — never recognizing the workspace as a verse8
+project. Root cause was two-fold:
+
+1. **Tool description was too narrow.** The old description said
+   "CALL THIS FIRST whenever the user mentions verse8 / ... / gitlab.verse8.io"
+   so the agent skipped it for ordinary bug-fix language. Now the
+   description says to call bootstrap at the start of **ANY**
+   file-modifying / code-generating task (bug fix, feature add,
+   performance tuning, …) **BEFORE any Edit/Write/Bash command** — it's
+   a cheap (~10ms, no network) classifier that returns `nextTool: null`
+   when the cwd is NOT a Verse8 project, so it's safe to always call.
+
+2. **`non_verse_dir` + `empty` cases incorrectly forced
+   `verse8_new_project_start`.** This meant a user asking for a ppt in
+   an empty folder, or editing a GitHub repo unrelated to verse8, would
+   get routed into the new-project flow. Now those cases return
+   `nextAction: "not_verse_project"` with `nextTool: null` and
+   instructions telling the agent to proceed with its usual tools.
+   Verse8 new-project is OPT-IN — only engaged when the user explicitly
+   mentions verse8 / Verse8 / 버스8.
+
+### User-facing decision table
+
+| Cwd state | Token? | `nextAction` | `nextTool` |
+|-----------|--------|--------------|------------|
+| Empty / non-verse git repo | — | `not_verse_project` | `null` (agent proceeds normally) |
+| `gitlab.verse8.io` clone, not attached | missing | `login` | `verse8_login_start` |
+| `gitlab.verse8.io` clone, not attached | present | `attach` | `verse8_attach` |
+| Attached verse8 project | missing | `login` | `verse8_login_start` |
+| Attached verse8 project | present | `ready` | `null` (proceed with verse8_checkpoint / preview) |
+
+### Changed
+- `src/tools/bootstrap.ts` — new `BootstrapNextAction` value
+  `"not_verse_project"` and reshaped decision table per above.
+- `src/server.ts` — `verse8_bootstrap` description rewritten to be
+  imperative, aggressive-first-call, but with explicit "safe to call
+  in non-verse workspaces" reassurance so agents don't hesitate.
+- `src/prompts/agentsMdTemplate.ts` — "First action rule" rewritten
+  around the four nextAction outcomes (ready / attach / login /
+  not_verse_project).
+- Tests updated: `tests/unit/bootstrap.test.mjs`,
+  `tests/unit/statusWorkflow.test.mjs`, `tests/unit/bootstrapRouting.test.mjs`.
+  346 → 347 unit tests (one new case).
+
+### Compatibility
+- `BootstrapResult` / `StatusResult` types gain a new union member on
+  `workflow.nextAction`. JSON consumers that enumerate actions must
+  handle `"not_verse_project"`.
+- `workflow.nextTool === null` is now meaningful for two distinct
+  actions (`"ready"` and `"not_verse_project"`) — agents must read
+  `nextAction` to disambiguate.
+
 ## [0.5.1] — 2026-04-21
 
 ### Docs / template

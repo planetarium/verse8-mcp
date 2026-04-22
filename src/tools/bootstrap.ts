@@ -36,7 +36,12 @@ export const bootstrapInputSchema = z
 
 export type BootstrapInput = z.infer<typeof bootstrapInputSchema>;
 
-export type BootstrapNextAction = "login" | "new_project" | "attach" | "ready";
+export type BootstrapNextAction =
+  | "login"
+  | "new_project"
+  | "attach"
+  | "ready"
+  | "not_verse_project";
 export type BootstrapNextTool =
   | "verse8_login_start"
   | "verse8_new_project_start"
@@ -73,27 +78,29 @@ export function computeBootstrapWorkflow(params: {
   const { workspaceMode, hasToken, userRequest } = params;
   const echo = userRequest ? ` User request: "${safeHint(userRequest)}".` : "";
 
-  if (!hasToken) {
-    return {
-      nextAction: "login",
-      nextTool: "verse8_login_start",
-      reason:
-        "No Verse8 access token found (env VERSE8_ACCESS_TOKEN unset, no token file at <cwd>/.verse8/token or $XDG_CONFIG_HOME/verse8/token).",
-      instructions:
-        `Call verse8_login_start with no arguments FIRST. Display the returned verification_uri_complete + user_code to the user, wait for browser approval, then call verse8_login_complete with the returned device_code. Do NOT generate any game code or edit files before login.${echo}`,
-    };
-  }
-  if (workspaceMode === "attached") {
-    return {
-      nextAction: "ready",
-      nextTool: null,
-      reason:
-        "Workspace is an attached verse8 project — hooks and AGENTS.md are installed; token is present.",
-      instructions:
-        `Proceed with the user's request directly. Use verse8_checkpoint to commit + push when a change is ready, and verse8_preview when the user should visually verify.${echo}`,
-    };
-  }
-  if (workspaceMode === "unattached_clone") {
+  // verse8 workspace detected — force verse8 flow even if no token.
+  if (workspaceMode === "attached" || workspaceMode === "unattached_clone") {
+    if (!hasToken) {
+      return {
+        nextAction: "login",
+        nextTool: "verse8_login_start",
+        reason:
+          "Workspace is a verse8 project but no access token was found. Login is required before attach / checkpoint / preview.",
+        instructions:
+          `Call verse8_login_start with no arguments FIRST. Display the returned verification_uri_complete + user_code to the user, wait for browser approval, then call verse8_login_complete. After login, re-call verse8_bootstrap to get the next routing step.${echo}`,
+      };
+    }
+    if (workspaceMode === "attached") {
+      return {
+        nextAction: "ready",
+        nextTool: null,
+        reason:
+          "Workspace is an attached verse8 project — hooks and AGENTS.md are installed; token is present.",
+        instructions:
+          `Proceed with the user's request directly. Use verse8_checkpoint to commit + push when a change is ready, and verse8_preview when the user should visually verify.${echo}`,
+      };
+    }
+    // unattached_clone
     return {
       nextAction: "attach",
       nextTool: "verse8_attach",
@@ -103,16 +110,31 @@ export function computeBootstrapWorkflow(params: {
         `Call verse8_attach({projectDir: <cwd>}) FIRST. It installs hooks + AGENTS.md / CLAUDE.md and copies bundled skills. Then re-call verse8_bootstrap to confirm nextAction === "ready" before implementing anything.${echo}`,
     };
   }
-  // "empty" | "non_verse_dir" with a token → new project flow.
+
+  // Non-verse workspace (empty dir OR unrelated git repo). Bootstrap stays
+  // silent and returns null — the agent proceeds with its usual tools.
+  // Verse8 new-project is offered only when the user explicitly asks for it.
+  if (!hasToken) {
+    return {
+      nextAction: "not_verse_project",
+      nextTool: null,
+      reason:
+        workspaceMode === "empty"
+          ? "Cwd is empty (no .git) and no Verse8 access token is available. Treating as a non-verse workspace."
+          : "Cwd is a git repo whose origin is not gitlab.verse8.io, and no Verse8 access token is available. Treating as a non-verse workspace.",
+      instructions:
+        `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, etc.). If the user EXPLICITLY asks to create a Verse8 game (mentions "verse8" / "Verse8 / 버스8"), call verse8_login_start then verse8_new_project_start.${echo}`,
+    };
+  }
   return {
-    nextAction: "new_project",
-    nextTool: "verse8_new_project_start",
+    nextAction: "not_verse_project",
+    nextTool: null,
     reason:
       workspaceMode === "empty"
-        ? "Cwd has no .git directory — user wants a fresh verse8 project."
-        : "Cwd is a git repo but its origin is not gitlab.verse8.io — this is not a verse8 project.",
+        ? "Cwd has no .git directory. Treating as a non-verse workspace — Verse8 new-project is opt-in, not the default."
+        : "Cwd is a git repo but its origin is not gitlab.verse8.io. This is not a verse8 project.",
     instructions:
-      `Call verse8_new_project_start({userRequest: <user's verbatim message>}) FIRST. It returns a proposed template + startCallId for user review. Show the proposal, wait for confirmation, then call verse8_new_project_confirm. DO NOT start generating game code directly — the Verse8 backend mints the project repo and grants the access token.${echo}`,
+      `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, build, etc.) — do NOT call Verse8 checkpoint / preview / attach. If the user EXPLICITLY asks to create a Verse8 game (they mention "verse8" / "Verse8" / "버스8"), call verse8_new_project_start({userRequest}) to start the new-project flow.${echo}`,
   };
 }
 

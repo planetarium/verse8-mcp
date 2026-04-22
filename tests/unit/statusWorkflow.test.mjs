@@ -53,7 +53,7 @@ function isolateEnv() {
   };
 }
 
-test("verse8_status: workflow present and nextTool=verse8_login_start on not_logged_in", async () => {
+test("verse8_status: not_logged_in + non-verse cwd → workflow.nextAction=not_verse_project (no unnecessary login nag)", async () => {
   const restore = isolateEnv();
   const xdg = tmpdir();
   const cwd = tmpdir();
@@ -64,8 +64,9 @@ test("verse8_status: workflow present and nextTool=verse8_login_start on not_log
     assert.equal(r.ok, false);
     assert.equal(r.error, "not_logged_in");
     assert.ok(r.workflow);
-    assert.equal(r.workflow.nextAction, "login");
-    assert.equal(r.workflow.nextTool, "verse8_login_start");
+    // Not in a verse8 project → agent shouldn't be forced to log in.
+    assert.equal(r.workflow.nextAction, "not_verse_project");
+    assert.equal(r.workflow.nextTool, null);
   } finally {
     cleanup(xdg);
     cleanup(cwd);
@@ -73,7 +74,7 @@ test("verse8_status: workflow present and nextTool=verse8_login_start on not_log
   }
 });
 
-test("verse8_status: empty cwd + valid token → workflow.nextTool=verse8_new_project_start", async () => {
+test("verse8_status: empty cwd + valid token → workflow.nextAction=not_verse_project (no forced verse8 creation)", async () => {
   const restore = isolateEnv();
   const xdg = tmpdir();
   const cwd = tmpdir();
@@ -87,8 +88,8 @@ test("verse8_status: empty cwd + valid token → workflow.nextTool=verse8_new_pr
     process.env.VERSE8_API_URL = mock.baseUrl;
     const r = await runStatus(cwd);
     assert.equal(r.ok, true);
-    assert.equal(r.workflow.nextAction, "new_project");
-    assert.equal(r.workflow.nextTool, "verse8_new_project_start");
+    assert.equal(r.workflow.nextAction, "not_verse_project");
+    assert.equal(r.workflow.nextTool, null);
   } finally {
     await mock.close();
     cleanup(xdg);

@@ -36,28 +36,39 @@ function withIsolatedEnv(fn) {
   }
 }
 
-test("computeBootstrapWorkflow: no token → login (regardless of mode)", () => {
-  for (const mode of ["empty", "non_verse_dir", "unattached_clone", "attached"]) {
+test("computeBootstrapWorkflow: no token + verse workspace → login", () => {
+  for (const mode of ["unattached_clone", "attached"]) {
     const w = computeBootstrapWorkflow({ workspaceMode: mode, hasToken: false });
     assert.equal(w.nextAction, "login");
     assert.equal(w.nextTool, "verse8_login_start");
   }
 });
 
-test("computeBootstrapWorkflow: empty + token → new_project", () => {
-  const w = computeBootstrapWorkflow({ workspaceMode: "empty", hasToken: true });
-  assert.equal(w.nextAction, "new_project");
-  assert.equal(w.nextTool, "verse8_new_project_start");
-  assert.match(w.instructions, /verse8_new_project_start/);
+test("computeBootstrapWorkflow: no token + non-verse workspace → not_verse_project (agent proceeds normally)", () => {
+  for (const mode of ["empty", "non_verse_dir"]) {
+    const w = computeBootstrapWorkflow({ workspaceMode: mode, hasToken: false });
+    assert.equal(w.nextAction, "not_verse_project");
+    assert.equal(w.nextTool, null);
+    assert.match(w.instructions, /NOT a Verse8 project/);
+  }
 });
 
-test("computeBootstrapWorkflow: non_verse_dir + token → new_project", () => {
+test("computeBootstrapWorkflow: empty + token → not_verse_project (no forced verse8 creation)", () => {
+  const w = computeBootstrapWorkflow({ workspaceMode: "empty", hasToken: true });
+  assert.equal(w.nextAction, "not_verse_project");
+  assert.equal(w.nextTool, null);
+  // Verse8 new-project is OPT-IN — only suggested if user explicitly asks.
+  assert.match(w.instructions, /EXPLICITLY asks to create a Verse8 game/);
+});
+
+test("computeBootstrapWorkflow: non_verse_dir + token → not_verse_project (agent uses usual tools)", () => {
   const w = computeBootstrapWorkflow({
     workspaceMode: "non_verse_dir",
     hasToken: true,
   });
-  assert.equal(w.nextAction, "new_project");
-  assert.equal(w.nextTool, "verse8_new_project_start");
+  assert.equal(w.nextAction, "not_verse_project");
+  assert.equal(w.nextTool, null);
+  assert.match(w.instructions, /usual tools/);
 });
 
 test("computeBootstrapWorkflow: unattached_clone + token → attach", () => {
@@ -90,14 +101,15 @@ test("computeBootstrapWorkflow: userRequest is redacted + echoed in instructions
   assert.doesNotMatch(w.instructions, /leakthisTokenAbCdEf123/);
 });
 
-test("runBootstrap: empty dir, no token → login", async () => {
+test("runBootstrap: empty dir, no token → not_verse_project (agent uses own tools)", async () => {
   await withIsolatedEnv(async () => {
     const root = tmpdir();
     try {
       const r = await runBootstrap({ projectDir: root }, root);
       assert.equal(r.ok, true);
       assert.equal(r.workspaceMode, "empty");
-      assert.equal(r.workflow.nextTool, "verse8_login_start");
+      assert.equal(r.workflow.nextAction, "not_verse_project");
+      assert.equal(r.workflow.nextTool, null);
       assert.equal(r.diagnostics.hasToken, false);
       assert.equal(r.diagnostics.hasGit, false);
     } finally {
@@ -179,7 +191,7 @@ test("runBootstrap: gitlab.verse8.io clone without hooks + token → attach", as
   });
 });
 
-test("runBootstrap: non-verse git repo + token → new_project", async () => {
+test("runBootstrap: non-verse git repo + token → not_verse_project (agent stays out of verse8 flow)", async () => {
   await withIsolatedEnv(async (xdgTmp) => {
     const tokDir = path.join(xdgTmp, "xdg", "verse8");
     fs.mkdirSync(tokDir, { recursive: true });
@@ -198,8 +210,12 @@ test("runBootstrap: non-verse git repo + token → new_project", async () => {
         root,
       );
       assert.equal(r.workspaceMode, "non_verse_dir");
-      assert.equal(r.workflow.nextTool, "verse8_new_project_start");
+      assert.equal(r.workflow.nextAction, "not_verse_project");
+      assert.equal(r.workflow.nextTool, null);
+      // userRequest still echoes into instructions for context (redacted).
       assert.match(r.workflow.instructions, /틱택토 게임 만들어줘/);
+      // Explicit opt-in path referenced when user wants a Verse8 game.
+      assert.match(r.workflow.instructions, /verse8_new_project_start/);
     } finally {
       cleanup(root);
     }

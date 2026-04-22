@@ -10,14 +10,25 @@ export const AGENTS_MD_TEMPLATE = `# Verse8 Project — Agent Instructions
 
 ## 🚨 First action rule (before anything else)
 
-For ANY verse8-related user request — create a game, modify this project,
-preview, commit, fix a bug, even just "what should I do?" — FIRST call
-\`verse8_bootstrap({userRequest: "<user's verbatim message>"})\`. It returns
-\`workflow.nextTool\` (one of \`verse8_login_start\`, \`verse8_new_project_start\`,
-\`verse8_attach\`, or \`null\`) along with \`workflow.instructions\`. Call the
-named tool next and honor the instructions verbatim. Never infer workflow
-state from filesystem inspection. When \`workflow.nextAction === "ready"\`,
-proceed with the user's request and follow the TOP RULES below.
+At the **START of every turn** — even bug fixes, UI tweaks, performance
+tuning, "just change this number" — call
+\`verse8_bootstrap({userRequest: "<user's verbatim message>"})\` BEFORE
+any Edit / Write / Bash / build command. It is a cheap (~10ms, no
+network) classifier that returns:
+
+- \`workflow.nextAction === "ready"\` → this is an attached Verse8
+  project; proceed with the user's request and follow the TOP RULES
+  below (use \`verse8_checkpoint\` / \`verse8_preview\` for commits &
+  previews, NEVER raw \`git commit\` or \`bun run dev\`).
+- \`workflow.nextAction === "attach"\` → call \`verse8_attach\` first,
+  then re-call bootstrap.
+- \`workflow.nextAction === "login"\` → call \`verse8_login_start\` first,
+  then re-call bootstrap.
+- \`workflow.nextAction === "not_verse_project"\` → this cwd is NOT a
+  Verse8 workspace; proceed with your usual tools.
+
+Never infer workflow state from filesystem inspection. The bootstrap
+tool is the single source of truth.
 
 ## 🚨 TOP RULES (violating these will break the project)
 

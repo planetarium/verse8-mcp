@@ -49,14 +49,14 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.5.1",
+  version: "0.5.2",
 };
 
 const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_bootstrap",
     description:
-      "CALL THIS FIRST whenever the user mentions verse8, asks to create / modify / preview a Verse8 game, or you see a gitlab.verse8.io repo. Returns {workflow:{nextAction, nextTool, reason, instructions}, diagnostics, workspaceMode}. The `nextTool` field names the exact Verse8 tool you MUST call next — follow it verbatim and honor `workflow.instructions`. Do NOT generate game code, edit files, or guess a workflow before calling this tool. Optional args: `userRequest` (user's verbatim message, echoed back into instructions) and `projectDir` (override cwd).",
+      "CALL THIS FIRST at the start of ANY file-modifying or code-generating task — bug fix, feature add, performance tuning, refactor, build, deploy — BEFORE any Edit/Write/Bash/etc. It is a cheap (~10ms, no network) workspace classifier. Returns {workflow:{nextAction, nextTool, reason, instructions}, diagnostics, workspaceMode}. When the cwd is NOT a Verse8 project (no gitlab.verse8.io origin, no .verse8/project.json marker), `nextTool` is `null` and `instructions` tell you to proceed with your usual tools — safe to ignore the rest of the Verse8 MCP surface. When the cwd IS a Verse8 project, `nextTool` names the exact next tool (verse8_attach / verse8_login_start / etc.) — follow it verbatim. Also call this when the user mentions verse8 / gitlab.verse8.io / 버스8 or asks to create / preview a game in any workspace. Args: `userRequest` (user's verbatim message, echoed into instructions) and `projectDir` (override cwd).",
     inputSchema: zodToJsonSchema(bootstrapInputSchema),
   },
   {
