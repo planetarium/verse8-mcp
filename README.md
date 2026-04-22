@@ -1,99 +1,90 @@
 # @verse8/mcp
 
-MCP에 연결하면 AI 에이전트에게 한마디로 Verse8 게임 제작을 시작할 수 있는 서버입니다.
+MCP server that lets any AI agent (Claude Code, Codex, Cursor, opencode, …) build Verse8 games from a single natural-language prompt.
 
 ---
 
-## 1분 시작
+## Quick start
 
-**1단계 — MCP 서버 추가 (1회):**
+**1. Install once:**
 
 ```bash
 claude mcp add verse8 -- npx -y @verse8/mcp   # Claude Code
 codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 ```
 
-**2단계 — 케이스별 시작:**
+**2. Use it:**
 
-### 🆕 케이스 A — 새 프로젝트 만들기
+### New project
 
-빈 디렉토리 또는 verse8와 무관한 디렉토리에서 시작. 아래 중 아무거나:
-
-```
-You: verse8으로 2D 슈팅 게임 만들어줘        # 자연어 (모든 호스트)
-/verse8:new-project                          # Claude Code 슬래시 프롬프트
-```
-
-→ 에이전트가 로그인 안내 + 템플릿 제안. **사용자는 템플릿 승인 1번만**. 이후 GitLab 프로젝트 생성, 클론, attach까지 자동.
-
-### 📂 케이스 B — 기존 verse8 프로젝트 (clone한 경우)
-
-`gitlab.verse8.io`에서 클론한 디렉토리에서 먼저 attach:
+Open any empty directory and say:
 
 ```
-/verse8:attach                               # Claude Code 슬래시 프롬프트
-You: verse8 attach 해줘                      # 자연어 (Codex / Cursor / opencode 등)
+Make a 2D shooter with Verse8
 ```
 
-→ hooks + AGENTS.md + 스킬 설치 (멱등). 그 다음 평소처럼 요청:
+The agent handles login, proposes a template, and (after you approve the template once) creates the GitLab project, clones it, and attaches — all automatic.
+
+### Existing project (cloned from gitlab.verse8.io)
 
 ```
-You: 배경 이미지 만들어줘
-You: 적 캐릭터 추가해줘
-You: 메인 씬에 배경음악 넣어줘
+Attach this to Verse8
 ```
 
-> **슬래시 프롬프트는 Claude Code 전용.** Codex / Cursor / opencode는 MCP tools만 노출하고 MCP prompts를 슬래시로 띄우지 않습니다. 자연어 요청만 쓰면 됩니다 — `verse8_bootstrap` 툴이 에이전트에게 다음 행동을 알려줍니다.
+Then continue normally:
 
-### 🚀 배포
+```
+Add a background image
+Add an enemy that chases the player
+Add background music to the main scene
+```
 
-배포는 웹 에디터에서 — **<https://create.verse8.io/>** 접속 후 Deploy 버튼.
+### Deploy
+
+Deploy from the web editor — **<https://create.verse8.io/>**.
 
 ---
 
-## 다른 호스트 / 수동 설치
+## Manual install
 
-CLI 헬퍼가 없거나 (Claude Desktop, Cursor, opencode, Continue) 직접 JSON을 편집하고 싶다면 → [docs/manual-install.md](./docs/manual-install.md).
-
----
-
-## Tool Reference
-
-| 툴 | 한 줄 요약 | 노출 |
-|------|----------|------|
-| `verse8_bootstrap` | **에이전트가 항상 첫 번째로 호출.** 다음 행동/툴을 결정해주는 상태 머신. | 항상 |
-| `verse8_login_start` / `verse8_login_complete` | RFC 8628 device flow 로그인 (자동 호출됨). | 항상 |
-| `verse8_status` | 토큰/프로젝트/만료 임박 점검 + `workflow.nextTool` 라우팅. | 항상 |
-| `verse8_new_project_start` → `verse8_new_project_confirm` | 새 verse8 프로젝트 생성 2단계 (템플릿 제안 → 승인 → 클론 + attach). | 항상 |
-| `verse8_attach` | 이미 클론된 `gitlab.verse8.io` 프로젝트에 hooks + AGENTS.md + 스킬 설치. 멱등. | 항상 |
-| `verse8_checkpoint` | `git add -A` → V8 포맷 커밋 → push. | 유효 토큰 |
-| `verse8_preview` | checkpoint → preflight → `bun run dev` 백그라운드 spawn. | 유효 토큰 |
-| `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | 업스트림 생성 서비스 프록시. | 유효 토큰 |
-
-> **0.4.0 breaking** — 옛 단일 툴 shim `verse8_new_project`는 제거됨. `_start` → `_confirm`을 사용하세요. 자세한 내용은 [CHANGELOG.md](./CHANGELOG.md).
-
-리소스: `verse8://skill/<name>/SKILL.md`. 슬래시 프롬프트(Claude Code `/verse8:<name>`): `bootstrap` / `attach` / `status` / `new-project`.
+For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or direct JSON config → [docs/manual-install.md](./docs/manual-install.md).
 
 ---
 
-## 문제 복구
+## Tools
+
+| Tool | Purpose | Exposed |
+|---|---|---|
+| `verse8_bootstrap` | Always called first — returns `workflow.nextTool`. | Always |
+| `verse8_login_start` / `_complete` | RFC 8628 device-flow login. | Always |
+| `verse8_status` | Token / project / expiry check + routing. | Always |
+| `verse8_new_project_start` → `_confirm` | Create new Verse8 project (2-step: propose → approve → clone + attach). | Always |
+| `verse8_attach` | Install hooks + AGENTS.md + skills into an already-cloned `gitlab.verse8.io` project. Idempotent. | Always |
+| `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
+| `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |
+| `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
+
+Resources: `verse8://skill/<name>/SKILL.md`.
+
+---
+
+## Troubleshooting
 
 ### MCP server restarted mid-flow
 
-MCP 호스트가 verse8 서버를 도중에 재시작하면 (설정 변경, 크래시, 수동 `/reload`) 이전 세션의 `startCallId`로 `verse8_new_project_confirm`을 호출했을 때 `template_mismatch`가 반환됩니다. 이는 **예상되고 복구 가능한 상황**입니다 — re-run `verse8_new_project_start({userRequest})`로 새 식별자를 받아 다시 `verse8_new_project_confirm`을 호출하세요. rate-limit 윈도우도 마찬가지로 프로세스 로컬이라 매 재시작마다 리셋됩니다.
+`verse8_new_project_confirm` returns `template_mismatch` when the MCP server restarted between `_start` and `_confirm` (config change, crash, reload). Re-run `verse8_new_project_start` to get a fresh `startCallId`, then call `_confirm` again. Rate-limit windows also reset across restarts.
 
 ---
 
-## 더 알아보기
+## More
 
-- 환경 변수: [docs/environment.md](./docs/environment.md)
-- 수동 설치 / 호스트별 config: [docs/manual-install.md](./docs/manual-install.md)
-- 스킬 시스템: [docs/skills.md](./docs/skills.md)
-- 에이전트 워크플로 디스커버리 (`verse8_bootstrap` 상태 머신) + 아키텍처: [docs/architecture.md](./docs/architecture.md)
-- 관측성 (감사 로그): [docs/observability.md](./docs/observability.md)
-- 보안 자세: [docs/security.md](./docs/security.md)
-- 개발 / 빌드 / 테스트 / invariants: [docs/development.md](./docs/development.md)
-- 마스터 플랜 + invariants 매핑: [.omc/ARCHITECTURE.md](./.omc/ARCHITECTURE.md), [.omc/INVARIANTS.md](./.omc/INVARIANTS.md)
+- Environment variables → [docs/environment.md](./docs/environment.md)
+- Skills system → [docs/skills.md](./docs/skills.md)
+- Agent workflow discovery + architecture → [docs/architecture.md](./docs/architecture.md)
+- Observability (audit log) → [docs/observability.md](./docs/observability.md)
+- Security → [docs/security.md](./docs/security.md)
+- Development / build / test / invariants → [docs/development.md](./docs/development.md)
+- Master plan + invariants → [.omc/ARCHITECTURE.md](./.omc/ARCHITECTURE.md), [.omc/INVARIANTS.md](./.omc/INVARIANTS.md)
 
 ---
 
