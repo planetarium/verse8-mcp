@@ -13,21 +13,41 @@ claude mcp add verse8 -- npx -y @verse8/mcp   # Claude Code
 codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 ```
 
-**2단계 — 게임 만들기:**
+**2단계 — 케이스별 시작:**
+
+### 🆕 케이스 A — 새 프로젝트 만들기
+
+빈 디렉토리 또는 verse8와 무관한 디렉토리에서 시작. 아래 중 아무거나:
 
 ```
-You: verse8으로 2D 슈팅 게임 만들어줘
+You: verse8으로 2D 슈팅 게임 만들어줘        # 자연어 (모든 호스트)
+/verse8:new-project                          # Claude Code 슬래시 프롬프트
 ```
 
-끝입니다.
+→ 에이전트가 로그인 안내 + 템플릿 제안. **사용자는 템플릿 승인 1번만**. 이후 GitLab 프로젝트 생성, 클론, attach까지 자동.
 
-에이전트가 자동으로 로그인 필요 여부를 판단해 안내하고, 템플릿을 제안합니다. **사용자가 직접 하는 일은 템플릿 승인 한 번**. 승인 후 GitLab 프로젝트 생성, 클론, attach까지 자동.
+### 📂 케이스 B — 기존 verse8 프로젝트 (clone한 경우)
+
+`gitlab.verse8.io`에서 클론한 디렉토리에서 먼저 attach:
 
 ```
-설치 → 한 문장 요청 → 템플릿 승인 1번
+/verse8:attach                               # Claude Code 슬래시 프롬프트
+You: verse8 attach 해줘                      # 자연어 (Codex / Cursor / opencode 등)
 ```
 
-배포는 웹 에디터에서 — **<https://create.verse8.io/>** 에서 Deploy 버튼.
+→ hooks + AGENTS.md + 스킬 설치 (멱등). 그 다음 평소처럼 요청:
+
+```
+You: 배경 이미지 만들어줘
+You: 적 캐릭터 추가해줘
+You: 메인 씬에 배경음악 넣어줘
+```
+
+> **슬래시 프롬프트는 Claude Code 전용.** Codex / Cursor / opencode는 MCP tools만 노출하고 MCP prompts를 슬래시로 띄우지 않습니다. 자연어 요청만 쓰면 됩니다 — `verse8_bootstrap` 툴이 에이전트에게 다음 행동을 알려줍니다.
+
+### 🚀 배포
+
+배포는 웹 에디터에서 — **<https://create.verse8.io/>** 접속 후 Deploy 버튼.
 
 ---
 
