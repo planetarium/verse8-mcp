@@ -5,6 +5,57 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.5] — 2026-04-22
+
+### Added — `.claude/.gitignore` excludes the vendored skill bundle from commits
+
+`verse8_attach` materializes ~25 bundled skill files (~288KB) under
+`.claude/skills/<name>/SKILL.md` so Claude Code's skill auto-trigger
+heuristic (and AGENTS.md catalog) can find them. Prior versions added
+these files to every `git add -A` / `verse8_checkpoint`, which polluted
+PR diffs with vendored content that is identical on every attached
+project.
+
+Fix: attach now writes `.claude/.gitignore` containing `skills/` (nested
+gitignore — scoped to `.claude/`, leaves the project-root `.gitignore`
+untouched). The skill tree still exists on disk for the host LLM to
+read, but git stops tracking it.
+
+### Changed
+- `src/context/gitIgnore.ts`
+  - Extracted `ensureManagedGitIgnore({targetDir, entries})` shared
+    helper; `ensureVerse8GitIgnore` keeps its `.verse8/.gitignore`
+    behavior, new `ensureClaudeGitIgnore` manages `.claude/.gitignore`
+    with a single `skills/` entry.
+  - Idempotent: preserves any user-written entries in the same file;
+    only appends the verse8-mcp block when `skills/` is absent.
+- `src/tools/attach.ts`
+  - `applyAttachmentArtifacts` gains Step 7 writing
+    `.claude/.gitignore` with journal-recorded reverse op (keeps
+    AC-ATOMICITY intact).
+  - `AttachFailStep` union gains `"claudeGitIgnore"`; result type
+    surfaces `claudeGitIgnore: EnsureGitIgnoreResult`.
+
+### Tests
+- `tests/unit/claudeGitIgnore.test.mjs` (4 cases):
+  - creates `.claude/.gitignore` with `skills/` entry on empty project;
+  - idempotent re-run returns `already-present`;
+  - user-authored entries in `.claude/.gitignore` are preserved when
+    verse8 block is appended;
+  - end-to-end: `applyAttachmentArtifacts` materializes
+    `.claude/skills/` AND `git check-ignore` confirms the tree is
+    actually ignored.
+
+### Why this is non-breaking
+
+- Existing attached projects keep working — `ensureClaudeGitIgnore`
+  only writes `.claude/.gitignore` if missing, never rewrites a user
+  file. Already-committed skill trees stay committed until the user
+  manually removes them (deliberate: don't rewrite history on upgrade).
+- Recommended post-upgrade cleanup:
+  `git rm -r --cached .claude/skills && verse8_checkpoint` to stop
+  tracking existing copies.
+
 ## [0.5.4] — 2026-04-21
 
 ### Fixed — tool-list refresh after attach / login / new-project

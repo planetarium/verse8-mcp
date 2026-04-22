@@ -10,6 +10,7 @@ import {
   type EnsureVerse8EnvResult,
 } from "../context/envFile.js";
 import {
+  ensureClaudeGitIgnore,
   ensureVerse8GitIgnore,
   type EnsureGitIgnoreResult,
 } from "../context/gitIgnore.js";
@@ -98,6 +99,7 @@ export type AttachResult =
         skills: SkillWriteResult;
         env: EnsureVerse8EnvResult;
         gitIgnore: EnsureGitIgnoreResult;
+        claudeGitIgnore: EnsureGitIgnoreResult;
       };
       state: AttachmentState;
     }
@@ -178,7 +180,8 @@ export type AttachFailStep =
   | "marker"
   | "skills"
   | "env"
-  | "gitIgnore";
+  | "gitIgnore"
+  | "claudeGitIgnore";
 
 export interface ApplyAttachmentArtifactsOptions {
   overwrite: boolean;
@@ -200,6 +203,7 @@ export interface ApplyAttachmentArtifactsResult {
   skills: SkillWriteResult;
   env: EnsureVerse8EnvResult;
   gitIgnore: EnsureGitIgnoreResult;
+  claudeGitIgnore: EnsureGitIgnoreResult;
 }
 
 export function applyAttachmentArtifacts(
@@ -284,6 +288,17 @@ export function applyAttachmentArtifacts(
     }
     maybeFail(opts.__failAfter, "gitIgnore");
 
+    // Step 7 — .claude/.gitignore (keeps vendored skill bundle out of git).
+    const claudeGitIgnorePath = path.join(projectDir, ".claude", ".gitignore");
+    const claudeGitIgnoreSnapshot = snapshotFile(claudeGitIgnorePath);
+    const claudeGitIgnore = ensureClaudeGitIgnore(projectDir);
+    if (claudeGitIgnore.status !== "already-present") {
+      journal.record(() =>
+        restoreFile(claudeGitIgnorePath, claudeGitIgnoreSnapshot),
+      );
+    }
+    maybeFail(opts.__failAfter, "claudeGitIgnore");
+
     return {
       preCommitHook,
       commitMsgHook,
@@ -292,6 +307,7 @@ export function applyAttachmentArtifacts(
       skills: result,
       env,
       gitIgnore,
+      claudeGitIgnore,
     };
   } catch (e) {
     journal.rollback();

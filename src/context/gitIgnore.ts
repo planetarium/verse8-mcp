@@ -33,8 +33,35 @@ export interface EnsureGitIgnoreResult {
 }
 
 export function ensureVerse8GitIgnore(projectDir: string): EnsureGitIgnoreResult {
-  const verse8Dir = path.join(projectDir, ".verse8");
-  const target = path.join(verse8Dir, ".gitignore");
+  return ensureManagedGitIgnore({
+    targetDir: path.join(projectDir, ".verse8"),
+    entries: REQUIRED_ENTRIES,
+  });
+}
+
+const CLAUDE_REQUIRED_ENTRIES = ["skills/"];
+
+/**
+ * Maintain `<projectDir>/.claude/.gitignore` so the ~288KB vendored skill
+ * bundle that `verse8_attach` materializes under `.claude/skills/` never
+ * lands in git. Nested .gitignore is the least-intrusive scope — we don't
+ * have to touch the project-root `.gitignore` (which users typically hand-curate).
+ *
+ * Idempotent: preserves user entries in the same file; only appends the
+ * verse8-mcp block when `skills/` is absent.
+ */
+export function ensureClaudeGitIgnore(projectDir: string): EnsureGitIgnoreResult {
+  return ensureManagedGitIgnore({
+    targetDir: path.join(projectDir, ".claude"),
+    entries: CLAUDE_REQUIRED_ENTRIES,
+  });
+}
+
+function ensureManagedGitIgnore(args: {
+  targetDir: string;
+  entries: readonly string[];
+}): EnsureGitIgnoreResult {
+  const target = path.join(args.targetDir, ".gitignore");
 
   let existing = "";
   let exists = false;
@@ -51,24 +78,18 @@ export function ensureVerse8GitIgnore(projectDir: string): EnsureGitIgnoreResult
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("#")),
   );
-  const missing = REQUIRED_ENTRIES.filter((e) => !existingLines.has(e));
+  const missing = args.entries.filter((e) => !existingLines.has(e));
 
   if (exists && missing.length === 0) {
     return { status: "already-present", path: target };
   }
 
-  fs.mkdirSync(verse8Dir, { recursive: true });
+  fs.mkdirSync(args.targetDir, { recursive: true });
 
   let body: string;
   if (!exists) {
-    body =
-      HEADER +
-      REQUIRED_ENTRIES.join("\n") +
-      "\n\n" +
-      USER_MARKER;
+    body = HEADER + args.entries.join("\n") + "\n\n" + USER_MARKER;
   } else {
-    // Append missing entries on their own block at the end so user-added
-    // lines (above or below) keep their position.
     const trailingNewline = existing.endsWith("\n") ? "" : "\n";
     body =
       existing +
