@@ -351,6 +351,16 @@ Key concepts:
 - **Dynamic tools**: tool set re-evaluated on every `tools/list` request based on current cwd + token presence.
 - **Bin**: single `verse8-mcp` executable that dispatches subcommands (`serve` / `hook pre-commit` / `hook commit-msg`). `npx -y @verse8/mcp` runs it with no arguments because the package has exactly one bin.
 
+## Deploy to production
+
+Deployment happens in the **Verse8 web editor**, not through MCP tools.
+
+- Open: **https://create.verse8.io/**
+- Sign in with the same account.
+- Open the project, click **Deploy**.
+
+`verse8_checkpoint` / `verse8_preview` only commit + push to `gitlab.verse8.io` — they do not trigger a production deploy. Agents asked to "deploy / 배포 / publish / ship" must direct the user to the URL above instead of inventing a Bash command.
+
 ## MCP server restarted mid-flow
 
 Several pieces of state inside `verse8_new_project_*` live only in the running MCP server's memory: the `startCallId → digest` memo, the in-flight-confirm guard, and the per-process rate-limit window for `verse8_new_project_start`. **A restart wipes them.**

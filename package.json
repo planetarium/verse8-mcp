@@ -1,6 +1,6 @@
 {
   "name": "@verse8/mcp",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Verse8 MCP meta-server — auto-detects gitlab.verse8.io projects and exposes verse8 skills, image MCP proxy, and git checkpoint tools to host LLMs (Claude, Codex, Cursor, opencode, etc.)",
   "keywords": [
     "mcp",

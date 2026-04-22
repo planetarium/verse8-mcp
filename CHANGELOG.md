@@ -5,6 +5,22 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.1] — 2026-04-21
+
+### Docs / template
+- AGENTS.md template: new "🚨 Deploy is web-only" section. When the user
+  asks to deploy / publish / ship / 배포 / 출시, the agent directs them
+  to **https://create.verse8.io/** (web UI) instead of inventing a Bash
+  command or invoking a non-existent MCP tool. The intent table also
+  gains a Deploy row pointing at the same URL.
+- README: new "Deploy to production" section above "MCP server
+  restarted mid-flow", explaining web-only deployment and the role
+  separation (`verse8_checkpoint` / `verse8_preview` push to
+  gitlab.verse8.io but do NOT trigger production deploy).
+- Newly attached / re-attached projects pick up the new AGENTS.md
+  guidance via `verse8_attach({overwriteAgentsDoc: true})`. Existing
+  projects continue to work — no breaking change.
+
 ## [0.5.0] — 2026-04-21
 
 ### Added — bootstrap state machine (Codex UX gap closure)

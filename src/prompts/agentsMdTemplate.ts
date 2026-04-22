@@ -39,6 +39,19 @@ proceed with the user's request and follow the TOP RULES below.
 If you think you need Bash for \`git commit\` or \`bun run dev\`, stop and
 use the MCP tool instead. The only exception is \`VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m "..."\` for a deliberate, user-approved one-off fix.
 
+## 🚨 Deploy is web-only
+
+Production deployment happens at **https://create.verse8.io/** (web UI),
+NOT through any MCP tool, npm script, or Bash command. When the user
+asks to deploy / publish / ship / 배포 / 출시 / 게시:
+
+1. Tell them deployment is done in the web editor.
+2. Show this URL: **https://create.verse8.io/**
+3. Do NOT attempt to run a deploy command via Bash, do NOT invoke a
+   non-existent MCP tool, do NOT push manually expecting auto-deploy.
+4. \`verse8_checkpoint\` / \`verse8_preview\` only commit + push to
+   gitlab.verse8.io. They do not trigger a public deploy.
+
 ## You are operating inside a Verse8 project
 
 Origin: \`gitlab.verse8.io\`. Project marker: \`.verse8/project.json\`.
@@ -54,6 +67,7 @@ MUST use for state-changing operations:
 | Commit + push changes | **\`verse8_checkpoint\`** | Native \`git commit\` via Bash |
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |
 | Generate game images | \`image_asset_generate\` / \`image_variation_generate\` | External image APIs |
+| **Deploy / publish to production** | Direct the user to **https://create.verse8.io/** (web UI) | Any deploy command via Bash; no MCP deploy tool exists |
 
 ## Preview policy — the "see it = commit it" rule
 
