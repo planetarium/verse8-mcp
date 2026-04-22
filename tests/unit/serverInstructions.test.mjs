@@ -29,18 +29,13 @@ test("server: InitializeResult.instructions is set with the verse8 mandatory pol
   assert.match(text, /image_asset_generate/);
 });
 
-test("prompts/list: registers /verse8:bootstrap, /verse8:attach, /verse8:status, /verse8:verse8-new-project-bootstrap", async () => {
+test("prompts/list: registers /verse8:bootstrap, /verse8:attach, /verse8:status, /verse8:new-project", async () => {
   const server = createServer();
   const handler = server._requestHandlers.get("prompts/list");
   assert.ok(handler);
   const result = await handler({ method: "prompts/list", params: {} }, {});
   const names = result.prompts.map((p) => p.name);
-  for (const expected of [
-    "bootstrap",
-    "attach",
-    "status",
-    "verse8-new-project-bootstrap",
-  ]) {
+  for (const expected of ["bootstrap", "attach", "status", "new-project"]) {
     assert.ok(
       names.includes(expected),
       `prompts/list missing '${expected}'; got ${names.join(", ")}`,

@@ -108,7 +108,7 @@ Exposed when token present (`tools/list` re-evaluates each call):
 Resources (always exposed): `verse8://skill/<name>/SKILL.md` for every
 bundled skill (core + vendored + cache; core wins on name collision).
 
-Prompts (always exposed): `verse8-new-project-bootstrap` — teaches the
+Prompts (always exposed, surface as `/verse8:<name>` in Claude Code): `bootstrap`, `attach`, `status`, `new-project`. The `new-project` prompt teaches the
 2-step `start → confirm` flow.
 
 ## 4. Data flow — the four core journeys

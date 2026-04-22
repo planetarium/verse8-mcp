@@ -16,8 +16,8 @@ import type {
  */
 
 export const newProjectBootstrapPrompt: Prompt = {
-  name: "verse8-new-project-bootstrap",
-  title: "Verse8 new-project bootstrap",
+  name: "new-project",
+  title: "Verse8 new project",
   description:
     "Run the 2-step verse8 new-project flow: verse8_new_project_start proposes a template from the user's free-form request, then — after user confirmation — verse8_new_project_confirm creates the GitLab project, clones it, and attaches verse8-mcp.",
   arguments: [],

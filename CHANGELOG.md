@@ -51,8 +51,10 @@ at session start.
   `.claude/skills/` to git so future clones inherit the guidance.
 - `/verse8:status` — manually run `verse8_status` and get a concise
   report (login state, attachment, workflow.nextTool, expiry warnings).
-- `/verse8:verse8-new-project-bootstrap` — unchanged from earlier
-  releases; still surfaces the 2-step new-project flow walkthrough.
+- `/verse8:new-project` — **renamed** from
+  `/verse8:verse8-new-project-bootstrap` (the prompt id was shortened to
+  `new-project` so the slash menu reads cleanly without the duplicated
+  `verse8` prefix).
 
 These prompts let the user **escape the auto-routing layer** when the
 agent has not called bootstrap on its own — common during the early

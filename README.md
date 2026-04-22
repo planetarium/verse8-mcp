@@ -52,7 +52,7 @@ CLI 헬퍼가 없거나 (Claude Desktop, Cursor, opencode, Continue) 직접 JSON
 
 > **0.4.0 breaking** — 옛 단일 툴 shim `verse8_new_project`는 제거됨. `_start` → `_confirm`을 사용하세요. 자세한 내용은 [CHANGELOG.md](./CHANGELOG.md).
 
-리소스: `verse8://skill/<name>/SKILL.md`. 프롬프트: `verse8-new-project-bootstrap`.
+리소스: `verse8://skill/<name>/SKILL.md`. 슬래시 프롬프트(Claude Code `/verse8:<name>`): `bootstrap` / `attach` / `status` / `new-project`.
 
 ---
 

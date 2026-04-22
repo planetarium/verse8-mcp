@@ -1279,8 +1279,8 @@ test_ac8_prompts() {
     return
   fi
 
-  if ! json_contains "$list_resp" '"verse8-new-project-bootstrap"'; then
-    fail "ac8_prompts_list" "verse8-new-project-bootstrap missing in prompts/list: $list_resp"
+  if ! json_contains "$list_resp" '"new-project"'; then
+    fail "ac8_prompts_list" "new-project missing in prompts/list: $list_resp"
     return
   fi
 
@@ -1290,7 +1290,7 @@ test_ac8_prompts() {
   local get_resp
   get_resp=$(
     cd "$REPO_ROOT"
-    mcp_request "$BINARY" "prompts/get" '{"name":"verse8-new-project-bootstrap"}'
+    mcp_request "$BINARY" "prompts/get" '{"name":"new-project"}'
   )
 
   if [ -z "$get_resp" ]; then
