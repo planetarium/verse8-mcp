@@ -5,6 +5,45 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.6] — 2026-04-22
+
+### Fixed — `verse8_attach` gate mismatched `verse8_bootstrap` routing
+
+User report: `verse8_attach` refused a freshly-cloned gitlab.verse8.io
+project with `not_a_verse_project`, even though `verse8_bootstrap` had
+correctly classified the same workspace as `unattached_clone` and
+routed there. Agents got stuck in an impossible loop — bootstrap
+pointed at attach, attach bounced back.
+
+Root cause: `attach.ts` used `detectVerseProject` + `hasMarker` as
+parallel "OR" conditions, but `detectVerseProject` internally
+short-circuits to `isVerse: false` when the marker is missing. Both
+sides of the OR therefore collapsed to the same marker check, so
+origin-only (fresh-clone) projects were silently AND-gated on the
+marker and rejected.
+
+### Changed
+- `src/tools/attach.ts`
+  - Replaced `detectVerseProject` + `hasMarker` gate with
+    `detectWorkspace` (the single source of truth used by
+    `verse8_bootstrap` and `verse8_status`). Attach now succeeds when
+    `workspaceMode` is `attached` or `unattached_clone` — i.e. when
+    origin is `gitlab.verse8.io` OR a `.verse8/project.json` marker
+    exists.
+  - Rejection `hint` now includes the actual `originHost`,
+    `hasMarker`, and `workspaceMode` observed, so debugging a
+    misrouted attach is a one-line read instead of a guessing game.
+  - `projectId` now sourced from `workspace.projectId` (marker parse),
+    matching the data the bootstrap/status path already returns.
+
+### Tests
+- `tests/unit/attachFreshClone.test.mjs` (4 cases):
+  - HTTPS clone of gitlab.verse8.io with NO marker → attach succeeds;
+  - SSH clone (`git@gitlab.verse8.io:...`) with NO marker → attach succeeds;
+  - `github.com` origin without marker → rejected with
+    `not_a_verse_project` + diagnostic hint citing originHost;
+  - marker-only workspace (legacy path, no origin) → still attaches.
+
 ## [0.5.5] — 2026-04-22
 
 ### Added — `.claude/.gitignore` excludes the vendored skill bundle from commits

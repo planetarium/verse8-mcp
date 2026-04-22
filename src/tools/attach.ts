@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { detectAttachment, type AttachmentState } from "../context/attachment.js";
-import { detectVerseProject } from "../context/verseProject.js";
+import { detectWorkspace } from "../context/workspace.js";
 import {
   ensureVerse8EnvFile,
   readEnvAccount,
@@ -116,20 +116,21 @@ export async function runAttach(
 ): Promise<AttachResult> {
   const projectDir = path.resolve(input.projectDir ?? serverCwd);
 
-  const detection = detectVerseProject(projectDir);
-  const hasMarker = (() => {
-    try {
-      return fs.statSync(path.join(projectDir, ".verse8", "project.json")).isFile();
-    } catch {
-      return false;
-    }
-  })();
-
-  if (!detection.isVerse && !hasMarker) {
+  // Attachable iff workspaceMode is "attached" (already done, idempotent
+  // re-run) or "unattached_clone" (verse8 origin OR legacy marker — either
+  // is sufficient). Keeping the two conditions in parallel so fresh clones
+  // (origin=gitlab.verse8.io, no marker) pass the gate; the pre-0.5.5 code
+  // AND-ed both checks via detectVerseProject, which silently rejected
+  // every un-attached clone.
+  const workspace = detectWorkspace(projectDir);
+  const attachable =
+    workspace.workspaceMode === "attached" ||
+    workspace.workspaceMode === "unattached_clone";
+  if (!attachable) {
     return {
       ok: false,
       error: "not_a_verse_project",
-      hint: `${projectDir} is not a verse8 project. Expected gitlab.verse8.io as origin or a .verse8/project.json marker. If this is a fresh clone, ensure 'git remote get-url origin' points to gitlab.verse8.io.`,
+      hint: `${projectDir} is not a verse8 project (originHost=${workspace.originHost ?? "<none>"}, hasMarker=${workspace.hasProjectMarker}, mode=${workspace.workspaceMode}). Expected gitlab.verse8.io origin OR a .verse8/project.json marker.`,
     };
   }
 
@@ -155,7 +156,7 @@ export async function runAttach(
   try {
     const installed = applyAttachmentArtifacts(projectDir, {
       overwrite: input.overwriteAgentsDoc === true,
-      projectId: detection.projectId,
+      projectId: workspace.projectId ?? undefined,
       overwriteAllSkills: input.overwriteAllSkills === true,
       pruneOrphanedSkills: input.pruneOrphanedSkills === true,
       walletAddress,
