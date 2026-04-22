@@ -46,11 +46,45 @@ import {
   getNewProjectBootstrapPrompt,
   newProjectBootstrapPrompt,
 } from "./prompts/newProjectBootstrap.js";
+import {
+  attachPrompt,
+  bootstrapPrompt,
+  getAttachPrompt,
+  getBootstrapPrompt,
+  getStatusPrompt,
+  statusPrompt,
+} from "./prompts/manualCommands.js";
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.5.2",
+  version: "0.5.3",
 };
+
+/**
+ * MCP `InitializeResult.instructions` — broadcast to the host at session
+ * start. Claude Code / Cursor / opencode include this in the LLM's system
+ * context, which is a stronger signal than individual tool descriptions.
+ * Use this to enforce "bootstrap first + never use raw git / bun run dev
+ * in a verse8 project" at a level the LLM cannot overlook.
+ */
+const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session:
+
+1) **Call \`verse8_bootstrap\` at the START of EVERY turn** that might touch files / run commands / generate code — BEFORE any Edit, Write, Bash, or other file-modifying action. It is a cheap (~10ms, no network) classifier.
+   - If it returns \`workflow.nextAction === "not_verse_project"\` → safe to ignore the rest of Verse8 MCP; proceed with usual tools.
+   - If it returns \`ready\` → the project is an attached Verse8 project; follow rules 2–5 below.
+   - Any other nextAction → call the named \`nextTool\` and honor \`workflow.instructions\`.
+
+2) **In a Verse8 project (nextAction === "ready"), NEVER use raw \`git commit\` via Bash.** ALWAYS use \`verse8_checkpoint\`. The installed commit-msg hook rejects non-V8 commits with exit 1.
+
+3) **NEVER run \`bun run dev\` / \`vite\` / any dev server via Bash.** ALWAYS use \`verse8_preview\` — it bundles a V8 commit with the spawn so "what the user sees == what is in git".
+
+4) **NEVER pass \`--no-verify\`** (or any hook-skip flag) to git.
+
+5) **Preview-delta rule**: any change the user will see in the next preview (UI tweak, gameplay, asset swap, bug fix) ends the turn with \`verse8_preview\`.
+
+6) **Image / music / sfx / 3D asset generation** → use the image_asset_generate / music_generate / sfx_generate / spritesheet_generate / skybox_generate / claythis_3d_generate / etc. tools. Do NOT call external APIs directly.
+
+Violating any of 2–5 will either corrupt git state (rejected commit), desynchronize preview from repo (2 and 3), or silently lose the V8 metadata that Verse8 tooling depends on.`;
 
 const BASE_TOOLS: Tool[] = [
   {
@@ -100,14 +134,14 @@ const BASE_TOOLS: Tool[] = [
 const CHECKPOINT_TOOL: Tool = {
   name: "verse8_checkpoint",
   description:
-    "Commit + push the current working tree to origin (gitlab.verse8.io). Stages `files` if provided, otherwise `git add -A` (verse8 projects commit .env by convention). Pass `userPrompt` + `model` + `provider` (+ optional `toolCalls`) to produce a V8-format commit message; file changes are captured automatically from the staged diff. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did at a high level)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload.",
+    "MANDATORY commit tool for Verse8 projects — NEVER use `git commit` via Bash (the installed commit-msg hook rejects non-V8 commits with exit 1). Stages `files` if provided else `git add -A`, builds a V8-format commit from your `userPrompt` + `model` + `provider` (+ optional `toolCalls`), and pushes to gitlab.verse8.io. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload. Call this whenever `verse8_bootstrap` returned `workflow.nextAction === \"ready\"` and the user's change is complete (or before launching verse8_preview).",
   inputSchema: zodToJsonSchema(checkpointInputSchema),
 };
 
 const PREVIEW_TOOL: Tool = {
   name: "verse8_preview",
   description:
-    "Atomic commit + preflight + Vite dev-server launch for verse8 (Vite + Bun) projects. Sequence: (1) verse8_checkpoint with the V8 commit fields you pass (same `userPrompt` / `model` / `provider` / `problemStatement` / `workSummary` semantics as verse8_checkpoint); (2) preflight — runs `installCommand` (default `bun update`) and, when this is an Agent8 GameServer project (presence of `server.ts`, `server.js`, or a `server/` directory triggers detection), runs `npx -y @agent8/gameserver-node build` followed by `npx -y @agent8/deploy --preview` so the locally-running client has a freshly-deployed server to talk to; (3) spawn `bun run dev` detached on port 5173 (configurable). Use this — NOT a separate Bash `bun run dev` — whenever the user should visually verify the change. Pass `startOnly: true` to skip the commit AND preflight (only if the user asked to re-open the preview without changes). Pass `skipPreflight: true` only if you've already provisioned the install/build/deploy yourself. Response envelope includes `webEditor.url` (https://create.verse8.io/creator/editor?chat=<projectPath>) when the origin is a gitlab.verse8.io repo — show BOTH the local preview URL AND the web editor URL to the user. If a preflight step fails the tool returns `preflight_failed` with the failed step + stderr tail (dev server not started). If the dev server fails to bind within `readinessTimeoutMs` (default 15s) the tool returns `dev_server_not_ready` with the log tail.",
+    "MANDATORY dev-server launcher for Verse8 projects — NEVER use `bun run dev` / `vite` / any dev server via Bash. This tool bundles a verse8_checkpoint commit with the spawn so 'what the user sees == what is in git'. Sequence: (1) internal verse8_checkpoint with the V8 commit fields you pass (`userPrompt` / `model` / `provider` / `problemStatement` / `workSummary`); (2) preflight — `installCommand` (default `bun update`), and for Agent8 GameServer projects (detected via `server.ts` / `server.js` / `server/`) runs pinned `@agent8/gameserver-node build` + `@agent8/deploy --preview`; (3) spawn `bun run dev` detached on port 5173. Use this whenever the user should visually verify a change. Pass `startOnly: true` to skip commit AND preflight (only when user asked to re-open preview without changes). Pass `skipPreflight: true` only if you already provisioned install/build/deploy. Response includes `webEditor.url` (https://create.verse8.io/creator/editor?chat=<projectPath>) on gitlab.verse8.io origins — show BOTH local preview URL AND web editor URL to the user. Errors: `preflight_failed` (dev server NOT started) / `dev_server_not_ready` (port never bound, log tail included).",
   inputSchema: zodToJsonSchema(previewInputSchema),
 };
 
@@ -134,6 +168,7 @@ export function createServer(): Server {
       resources: {},
       prompts: {},
     },
+    instructions: SERVER_INSTRUCTIONS,
   });
 
   // tools/list — re-evaluate token every call so project-scoped tools
@@ -380,31 +415,42 @@ export function createServer(): Server {
     };
   });
 
-  // prompts/list
+  // prompts/list — surfaces as `/verse8:<name>` slash commands in Claude Code.
   server.setRequestHandler(ListPromptsRequestSchema, async () => {
-    return { prompts: [newProjectBootstrapPrompt] };
+    return {
+      prompts: [
+        bootstrapPrompt,
+        attachPrompt,
+        statusPrompt,
+        newProjectBootstrapPrompt,
+      ],
+    };
   });
 
   // prompts/get
   server.setRequestHandler(GetPromptRequestSchema, async (req) => {
     try {
-      if (req.params.name !== newProjectBootstrapPrompt.name) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content: {
-                type: "text",
-                text: JSON.stringify({
-                  error: "unknown_prompt",
-                  hint: safeHint(`prompt '${req.params.name}' is not registered`),
-                }),
-              },
-            },
-          ],
-        };
+      const name = req.params.name;
+      if (name === bootstrapPrompt.name) return getBootstrapPrompt();
+      if (name === attachPrompt.name) return getAttachPrompt();
+      if (name === statusPrompt.name) return getStatusPrompt();
+      if (name === newProjectBootstrapPrompt.name) {
+        return getNewProjectBootstrapPrompt();
       }
-      return getNewProjectBootstrapPrompt();
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: JSON.stringify({
+                error: "unknown_prompt",
+                hint: safeHint(`prompt '${name}' is not registered`),
+              }),
+            },
+          },
+        ],
+      };
     } catch (e) {
       // Redact prompt builder errors (US-M0-2).
       return {

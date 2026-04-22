@@ -81,14 +81,19 @@ test("computeBootstrapWorkflow: unattached_clone + token → attach", () => {
   assert.match(w.instructions, /verse8_attach/);
 });
 
-test("computeBootstrapWorkflow: attached + token → ready, nextTool null", () => {
+test("computeBootstrapWorkflow: attached + token → ready, nextTool null + MANDATORY rules inlined", () => {
   const w = computeBootstrapWorkflow({
     workspaceMode: "attached",
     hasToken: true,
   });
   assert.equal(w.nextAction, "ready");
   assert.equal(w.nextTool, null);
-  assert.match(w.instructions, /Proceed with the user's request directly/);
+  // 0.5.3: ready instructions inline the mandatory rules so even agents
+  // without an auto-loaded AGENTS.md receive the per-turn guardrails.
+  assert.match(w.instructions, /MANDATORY/);
+  assert.match(w.instructions, /verse8_checkpoint/);
+  assert.match(w.instructions, /verse8_preview/);
+  assert.match(w.instructions, /--no-verify/);
 });
 
 test("computeBootstrapWorkflow: userRequest is redacted + echoed in instructions", () => {

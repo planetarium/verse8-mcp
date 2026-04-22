@@ -97,7 +97,7 @@ export function computeBootstrapWorkflow(params: {
         reason:
           "Workspace is an attached verse8 project — hooks and AGENTS.md are installed; token is present.",
         instructions:
-          `Proceed with the user's request directly. Use verse8_checkpoint to commit + push when a change is ready, and verse8_preview when the user should visually verify.${echo}`,
+          `This is an attached Verse8 project. Proceed with the user's request while honoring these MANDATORY rules (violating any will corrupt the project or the user's preview):\n1) NEVER \`git commit\` via Bash — ALWAYS verse8_checkpoint. The installed commit-msg hook rejects non-V8 messages.\n2) NEVER \`bun run dev\` / \`vite\` / any dev server via Bash — ALWAYS verse8_preview (it bundles a checkpoint so 'what the user sees == what is in git').\n3) NEVER pass \`--no-verify\` to git.\n4) If your change produces a visible delta (UI / gameplay / bug fix / asset swap), END the turn with verse8_preview.\n5) Images / music / sfx / 3D / skybox → use image_asset_generate / music_generate / sfx_generate / spritesheet_generate / skybox_generate / claythis_3d_generate / etc. NEVER external APIs.${echo}`,
       };
     }
     // unattached_clone

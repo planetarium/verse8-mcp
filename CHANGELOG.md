@@ -5,6 +5,68 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.5.3] — 2026-04-21
+
+### Fixed — enforce verse8 flow at MCP session level, not just per-tool
+
+0.5.2 strengthened the `verse8_bootstrap` tool description but a user
+report confirmed agents (Claude Code) STILL skipped bootstrap and used
+raw Bash `git` + edited files directly in an attached verse8 project.
+Tool descriptions are one of many hints the LLM sees; **`InitializeResult.instructions`**
+is a stronger signal — MCP hosts include it in the LLM's system prompt
+at session start.
+
+### Changed
+- `src/server.ts` — Server is constructed with an `instructions` field
+  containing the full "call bootstrap at the start of every turn + never
+  use raw git commit / bun run dev / --no-verify + use verse8 asset
+  tools" policy. Claude Code / Cursor / opencode surface this at session
+  start, above tool-description level.
+- `src/tools/bootstrap.ts` — the `ready` state's `workflow.instructions`
+  now inlines the mandatory rules (checkpoint / preview / --no-verify /
+  preview-delta / image tool) so even agents that read only the
+  bootstrap response (without auto-loaded AGENTS.md) see the rules.
+- `src/server.ts` — `verse8_checkpoint` and `verse8_preview` tool
+  descriptions rewritten to lead with "MANDATORY … NEVER use raw git /
+  bun run dev via Bash".
+
+### Why 0.5.2 was not enough
+- Tool descriptions are advisory. Claude Code's routing heuristic can
+  and does deprioritize them when the user's prompt does not mention
+  the tool by name.
+- When `workspaceMode === "attached"` bootstrap returned only a brief
+  "proceed directly, use verse8_checkpoint…" instruction — the agent's
+  context did not carry the full mandatory rules unless the project
+  had a committed `AGENTS.md` / `CLAUDE.md` (which web-editor-created
+  projects may lack).
+- `InitializeResult.instructions` moves the enforcement from per-tool
+  to per-session, so a fresh clone with no AGENTS.md still sees the
+  rules on MCP connect.
+
+### Added — manual slash-command prompts
+- `/verse8:bootstrap` — manually run `verse8_bootstrap` to classify the
+  workspace and see the recommended `nextTool`.
+- `/verse8:attach` — manually run `verse8_attach` and (per the prompt
+  body) commit the resulting `AGENTS.md` / `CLAUDE.md` /
+  `.claude/skills/` to git so future clones inherit the guidance.
+- `/verse8:status` — manually run `verse8_status` and get a concise
+  report (login state, attachment, workflow.nextTool, expiry warnings).
+- `/verse8:verse8-new-project-bootstrap` — unchanged from earlier
+  releases; still surfaces the 2-step new-project flow walkthrough.
+
+These prompts let the user **escape the auto-routing layer** when the
+agent has not called bootstrap on its own — common during the early
+turns of a freshly cloned project that does not yet have committed
+AGENTS.md / CLAUDE.md.
+
+### Compatibility
+- No API / output shape change. 352/352 unit tests pass (was 347 → +5
+  from new `serverInstructions.test.mjs`).
+- Hosts that ignore `InitializeResult.instructions` (none known among
+  Claude Code / Cursor / opencode / Continue) still benefit from the
+  stronger per-tool descriptions and the inlined bootstrap-ready
+  instructions.
+
 ## [0.5.2] — 2026-04-21
 
 ### Fixed — bootstrap must be called for any task, not just verse8-keyword requests
