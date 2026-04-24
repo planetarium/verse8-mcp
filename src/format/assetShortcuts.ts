@@ -1,27 +1,22 @@
 /**
- * Category shortcuts and CDN path validation for verse8_upload_asset.
+ * CDN path validation for verse8_upload_asset.
  *
- * The four categories mirror the upstream upload-asset.js shortcuts:
- *   --bgm, --sfx, --image, --effect.
+ * Note on design history: an earlier revision exposed `category` shortcuts
+ * (bgm/sfx/image/effect) that mapped to fixed subpaths. Those shortcuts
+ * were a convention from the RB prototype repo, NOT the V8 template
+ * standard — V8 templates use an `src/assets.json` manifest as the single
+ * source of truth for asset URLs, and CDN subpaths vary per-template
+ * (`assets/3d/animations/mixamorig/`, `assets/images/`, etc.). Locking
+ * users to a 4-way category split would have nudged LLMs away from the
+ * project-specific convention recorded in that manifest. We dropped it.
  *
- * Validation rules:
- *   - Exactly one of `category` or `cdnPath` must be set.
- *   - `cdnPath` must be a relative path (no leading `/`), must not contain
- *     `..` segments or NUL bytes, and has a trailing slash stripped.
+ * Contract:
+ *   - `cdnPath` is the only subpath input, and is required.
+ *   - Must be a relative path (no leading `/`), must not contain `..`
+ *     segments or NUL bytes, and has any trailing slash stripped.
  */
 
-export type AssetCategory = "bgm" | "sfx" | "image" | "effect";
-
-export const ASSET_CATEGORY_TO_CDN_PATH: Readonly<Record<AssetCategory, string>> =
-  Object.freeze({
-    bgm: "assets/audio/bgm",
-    sfx: "assets/audio/sfx",
-    image: "assets/images",
-    effect: "assets/effects",
-  });
-
 export type ResolveCdnPathInput = {
-  category?: AssetCategory;
   cdnPath?: string;
 };
 
@@ -29,7 +24,7 @@ export type ResolveCdnPathResult =
   | { ok: true; cdnPath: string }
   | {
       ok: false;
-      error: "cdn_path_required" | "cdn_path_conflict" | "cdn_path_invalid";
+      error: "cdn_path_required" | "cdn_path_invalid";
       hint: string;
     };
 
@@ -68,25 +63,13 @@ function sanitizeCdnPath(raw: string): ResolveCdnPathResult {
 }
 
 export function resolveCdnPath(input: ResolveCdnPathInput): ResolveCdnPathResult {
-  const hasCategory = typeof input.category === "string" && input.category.length > 0;
   const hasCdn = typeof input.cdnPath === "string" && input.cdnPath.length > 0;
-  if (hasCategory && hasCdn) {
-    return {
-      ok: false,
-      error: "cdn_path_conflict",
-      hint: "Pass exactly one of { category, cdnPath } — not both.",
-    };
-  }
-  if (!hasCategory && !hasCdn) {
+  if (!hasCdn) {
     return {
       ok: false,
       error: "cdn_path_required",
-      hint: "Pass either `category` (bgm|sfx|image|effect) or `cdnPath`.",
+      hint: "Pass `cdnPath` (relative subpath, e.g. 'assets/images'). Inspect the project's src/assets.json first to match existing URL patterns.",
     };
-  }
-  if (hasCategory) {
-    const mapped = ASSET_CATEGORY_TO_CDN_PATH[input.category as AssetCategory];
-    return { ok: true, cdnPath: mapped };
   }
   return sanitizeCdnPath(input.cdnPath as string);
 }

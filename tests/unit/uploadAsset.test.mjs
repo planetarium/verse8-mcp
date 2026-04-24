@@ -92,26 +92,26 @@ function withFetch(handler, fn) {
   });
 }
 
-test("schema: category alone is valid", () => {
+test("schema: filePath + cdnPath is valid", () => {
   const parsed = uploadAssetInputSchema.parse({
     filePath: "/tmp/a.png",
-    category: "image",
+    cdnPath: "assets/images",
   });
-  assert.equal(parsed.category, "image");
+  assert.equal(parsed.cdnPath, "assets/images");
 });
 
-test("schema: neither category nor cdnPath is invalid", () => {
+test("schema: missing cdnPath is invalid", () => {
   assert.throws(() => {
     uploadAssetInputSchema.parse({ filePath: "/tmp/a.png" });
   });
 });
 
-test("schema: both category and cdnPath is invalid", () => {
+test("schema: category field is rejected (removed, strict schema)", () => {
   assert.throws(() => {
     uploadAssetInputSchema.parse({
       filePath: "/tmp/a.png",
+      cdnPath: "assets/images",
       category: "image",
-      cdnPath: "assets/custom",
     });
   });
 });
@@ -120,7 +120,7 @@ test("runUploadAsset: not_a_verse_project", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-plain-"));
   try {
     const r = await runUploadAsset(
-      { filePath: "a.png", category: "image", projectDir: dir },
+      { filePath: "a.png", cdnPath: "assets/images", projectDir: dir },
       dir,
     );
     assert.equal(r.ok, false);
@@ -135,7 +135,7 @@ test("runUploadAsset: not_logged_in when no token", async () => {
   try {
     await withoutToken(async () => {
       const r = await runUploadAsset(
-        { filePath: "a.png", category: "image", projectDir: dir },
+        { filePath: "a.png", cdnPath: "assets/images", projectDir: dir },
         dir,
       );
       assert.equal(r.ok, false);
@@ -151,7 +151,7 @@ test("runUploadAsset: missing_verse_env", async () => {
   try {
     await withToken("test-token", async () => {
       const r = await runUploadAsset(
-        { filePath: "a.png", category: "image", projectDir: dir },
+        { filePath: "a.png", cdnPath: "assets/images", projectDir: dir },
         dir,
       );
       assert.equal(r.ok, false);
@@ -170,7 +170,7 @@ test("runUploadAsset: invalid_extension", async () => {
       const r = await runUploadAsset(
         {
           filePath: path.join(dir, "bad.exe"),
-          category: "image",
+          cdnPath: "assets/images",
           projectDir: dir,
         },
         dir,
@@ -190,7 +190,7 @@ test("runUploadAsset: file_not_found", async () => {
       const r = await runUploadAsset(
         {
           filePath: path.join(dir, "ghost.png"),
-          category: "image",
+          cdnPath: "assets/images",
           projectDir: dir,
         },
         dir,
@@ -224,7 +224,7 @@ test("runUploadAsset: happy path returns url and resolved cdnPath", async () => 
         },
         async () => {
           const r = await runUploadAsset(
-            { filePath: src, category: "image", projectDir: dir },
+            { filePath: src, cdnPath: "assets/images", projectDir: dir },
             dir,
           );
           assert.equal(r.ok, true);
@@ -274,7 +274,7 @@ test("runUploadAsset: upload backend 401 -> unauthorized", async () => {
         async () => new Response("Unauthorized", { status: 401 }),
         async () => {
           const r = await runUploadAsset(
-            { filePath: src, category: "image", projectDir: dir },
+            { filePath: src, cdnPath: "assets/images", projectDir: dir },
             dir,
           );
           assert.equal(r.ok, false);

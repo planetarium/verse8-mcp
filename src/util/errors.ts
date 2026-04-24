@@ -65,7 +65,6 @@ export const ERROR_CODES = [
   "file_not_regular",
   "invalid_extension",
   "cdn_path_required",
-  "cdn_path_conflict",
   "cdn_path_invalid",
   "unauthorized",
   "insufficient_credit",

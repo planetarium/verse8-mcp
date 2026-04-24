@@ -1,41 +1,38 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  ASSET_CATEGORY_TO_CDN_PATH,
-  resolveCdnPath,
-} from "../../dist/format/assetShortcuts.js";
+import { resolveCdnPath } from "../../dist/format/assetShortcuts.js";
 
-test("ASSET_CATEGORY_TO_CDN_PATH covers bgm/sfx/image/effect", () => {
-  assert.equal(ASSET_CATEGORY_TO_CDN_PATH.bgm, "assets/audio/bgm");
-  assert.equal(ASSET_CATEGORY_TO_CDN_PATH.sfx, "assets/audio/sfx");
-  assert.equal(ASSET_CATEGORY_TO_CDN_PATH.image, "assets/images");
-  assert.equal(ASSET_CATEGORY_TO_CDN_PATH.effect, "assets/effects");
-});
-
-test("resolveCdnPath: category-only returns mapped path", () => {
-  assert.deepEqual(resolveCdnPath({ category: "bgm" }), {
+test("resolveCdnPath: single-segment relative path accepted", () => {
+  assert.deepEqual(resolveCdnPath({ cdnPath: "assets/images" }), {
     ok: true,
-    cdnPath: "assets/audio/bgm",
+    cdnPath: "assets/images",
   });
 });
 
-test("resolveCdnPath: cdnPath-only returns trimmed path", () => {
+test("resolveCdnPath: nested path accepted (V8 template convention)", () => {
+  assert.deepEqual(
+    resolveCdnPath({ cdnPath: "assets/3d/animations/mixamorig" }),
+    { ok: true, cdnPath: "assets/3d/animations/mixamorig" },
+  );
+});
+
+test("resolveCdnPath: trailing slash stripped", () => {
   assert.deepEqual(resolveCdnPath({ cdnPath: "assets/custom/" }), {
     ok: true,
     cdnPath: "assets/custom",
   });
 });
 
-test("resolveCdnPath: neither -> cdn_path_required", () => {
+test("resolveCdnPath: missing cdnPath -> cdn_path_required", () => {
   const r = resolveCdnPath({});
   assert.equal(r.ok, false);
   assert.equal(r.error, "cdn_path_required");
 });
 
-test("resolveCdnPath: both -> cdn_path_conflict", () => {
-  const r = resolveCdnPath({ category: "bgm", cdnPath: "assets/x" });
+test("resolveCdnPath: empty string -> cdn_path_required", () => {
+  const r = resolveCdnPath({ cdnPath: "" });
   assert.equal(r.ok, false);
-  assert.equal(r.error, "cdn_path_conflict");
+  assert.equal(r.error, "cdn_path_required");
 });
 
 test("resolveCdnPath: leading slash rejected", () => {
@@ -56,14 +53,8 @@ test("resolveCdnPath: NUL byte rejected", () => {
   assert.equal(r.error, "cdn_path_invalid");
 });
 
-test("resolveCdnPath: empty string rejected", () => {
-  const r = resolveCdnPath({ cdnPath: "" });
+test("resolveCdnPath: double-slash (empty segment) rejected", () => {
+  const r = resolveCdnPath({ cdnPath: "assets//double" });
   assert.equal(r.ok, false);
-});
-
-test("resolveCdnPath: single-segment relative path accepted", () => {
-  assert.deepEqual(resolveCdnPath({ cdnPath: "assets/custom" }), {
-    ok: true,
-    cdnPath: "assets/custom",
-  });
+  assert.equal(r.error, "cdn_path_invalid");
 });

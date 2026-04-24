@@ -12,14 +12,13 @@ breaking changes when clearly documented.
 Upload a single local file (image / audio / video / 3D / font / small text)
 to the Verse8 CDN via `POST /api/upload-attachment` on `agent8-backend`.
 
-- Input: `filePath` (absolute or relative to `projectDir`) plus EITHER
-  `category` (`bgm` / `sfx` / `image` / `effect`) OR `cdnPath` (relative
-  subpath). Category shortcuts mirror the upstream `upload-asset.js`
-  conventions:
-  - `bgm`    → `assets/audio/bgm`
-  - `sfx`    → `assets/audio/sfx`
-  - `image`  → `assets/images`
-  - `effect` → `assets/effects`
+- Input: `filePath` (absolute or relative to `projectDir`) + `cdnPath`
+  (relative subpath, e.g. `assets/images`, `assets/3d/animations/mixamorig`).
+  The tool does NOT impose a canonical subpath layout — the V8 asset
+  convention uses `src/assets.json` as the source of truth and CDN paths
+  vary per-template. Callers should read the project's existing manifest
+  to pick a matching subpath, and register the returned URL back into
+  `src/assets.json` after upload so the runtime can consume it.
 - Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` with
   `url` pointing at `https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned>`.
 - Extension allowlist mirrors upstream `ATTACHMENT_EXTS`: png, jpg, jpeg,

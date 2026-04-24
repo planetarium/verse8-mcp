@@ -1358,7 +1358,7 @@ test_upload_happy_path() {
   cp "$REPO_ROOT/tests/mocks/fixtures/tiny.png" "$project/asset.png"
 
   local args
-  args=$(printf '{"filePath":"%s/asset.png","category":"image","projectDir":"%s"}' "$project" "$project")
+  args=$(printf '{"filePath":"%s/asset.png","cdnPath":"assets/images","projectDir":"%s"}' "$project" "$project")
   local resp
   resp=$(
     cd "$project"
@@ -1384,7 +1384,7 @@ test_upload_invalid_extension() {
   cp "$REPO_ROOT/tests/mocks/fixtures/bad.exe" "$project/bad.exe"
 
   local args
-  args=$(printf '{"filePath":"%s/bad.exe","category":"image","projectDir":"%s"}' "$project" "$project")
+  args=$(printf '{"filePath":"%s/bad.exe","cdnPath":"assets/images","projectDir":"%s"}' "$project" "$project")
   local resp
   resp=$(
     cd "$project"

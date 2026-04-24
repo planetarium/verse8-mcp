@@ -142,13 +142,14 @@ loopback allow-set. A malicious env override is rejected.
 
 ## MCP-UP-2 — `cdnPath` traversal rejected before the network
 
-`resolveCdnPath()` rejects `..` segments, leading `/`, and NUL before any
-fetch. The tool also rejects `filename` overrides that contain path
-separators.
+`resolveCdnPath()` rejects `..` segments, leading `/`, empty segments,
+and NUL before any fetch. The tool also rejects `filename` overrides
+that contain path separators.
 
 - source: `src/format/assetShortcuts.ts` :: `function sanitizeCdnPath`
 - unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: parent traversal rejected`
 - unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: leading slash rejected`
+- unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: double-slash (empty segment) rejected`
 
 ## MCP-UP-3 — `ATTACHMENT_EXTS` is the pre-network extension gate
 

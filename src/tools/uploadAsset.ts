@@ -10,10 +10,7 @@ import {
   detectContentType,
   isAllowedAttachmentExt,
 } from "../format/attachmentExts.js";
-import {
-  resolveCdnPath,
-  type AssetCategory,
-} from "../format/assetShortcuts.js";
+import { resolveCdnPath } from "../format/assetShortcuts.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 
@@ -27,6 +24,12 @@ import { isSafeAbsPath } from "../util/safePath.js";
  *
  * Meme-api's `/v1/activity/upload-asset` counter endpoint is NOT called
  * — that bookkeeping is out of scope for the MCP tool.
+ *
+ * The V8 asset convention uses `src/assets.json` as the single source of
+ * truth for asset URLs; CDN subpaths vary per-template. This tool does NOT
+ * impose a canonical subpath layout — callers must pass `cdnPath`
+ * verbatim (after inspecting the project's existing manifest) and, after
+ * upload, register the returned URL into `src/assets.json` themselves.
  */
 
 export const uploadAssetInputSchema = z
@@ -37,18 +40,11 @@ export const uploadAssetInputSchema = z
       .describe(
         "Absolute path, or path relative to projectDir, of the local file to upload.",
       ),
-    category: z
-      .enum(["bgm", "sfx", "image", "effect"])
-      .optional()
-      .describe(
-        "Shortcut for a pre-defined CDN subpath. Exactly one of {category, cdnPath} is required.",
-      ),
     cdnPath: z
       .string()
       .min(1)
-      .optional()
       .describe(
-        "CDN subpath under the verse (e.g. 'assets/custom'). Must be relative, no '..' segments, no NUL.",
+        "CDN subpath under the verse (e.g. 'assets/images', 'assets/3d/characters'). Required — inspect the project's src/assets.json first to match existing URL patterns. Must be relative (no leading '/'), no '..' segments, no NUL.",
       ),
     projectDir: z
       .string()
@@ -69,25 +65,7 @@ export const uploadAssetInputSchema = z
         "Override the filename sent to the backend. Defaults to basename(filePath). Must not contain path separators or NUL.",
       ),
   })
-  .strict()
-  .superRefine((val, ctx) => {
-    const hasCategory = typeof val.category === "string";
-    const hasCdn = typeof val.cdnPath === "string";
-    if (hasCategory && hasCdn) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Pass exactly one of { category, cdnPath }; got both.",
-        path: ["category"],
-      });
-    }
-    if (!hasCategory && !hasCdn) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Pass either `category` or `cdnPath`.",
-        path: ["category"],
-      });
-    }
-  });
+  .strict();
 
 export type UploadAssetInput = z.infer<typeof uploadAssetInputSchema>;
 
@@ -197,10 +175,7 @@ export async function runUploadAsset(
   const contentType = detectContentType(filename);
 
   // 7. Resolve cdnPath
-  const resolvedCdn = resolveCdnPath({
-    category: input.category as AssetCategory | undefined,
-    cdnPath: input.cdnPath,
-  });
+  const resolvedCdn = resolveCdnPath({ cdnPath: input.cdnPath });
   if (!resolvedCdn.ok) {
     return fail(resolvedCdn.error, resolvedCdn.hint);
   }
