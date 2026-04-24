@@ -9,7 +9,7 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SMOKE_DIR = path.join(REPO_ROOT, "tests", "smoke");
 const SMOKE_SH = path.join(REPO_ROOT, "tests", "smoke.sh");
 
-const SUITES = ["login", "attach", "new-project", "preview", "skills"];
+const SUITES = ["login", "attach", "new-project", "preview", "skills", "upload-asset"];
 
 test("M4.1: each split suite file exists and is executable", () => {
   assert.ok(fs.existsSync(path.join(SMOKE_DIR, "_runner.sh")));

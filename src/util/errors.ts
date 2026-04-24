@@ -59,6 +59,20 @@ export const ERROR_CODES = [
   "upstream_unreachable",
   "upstream_error",
   "not_yet_available",
+  // Asset upload (verse8_upload_asset)
+  "missing_verse_env",
+  "file_not_found",
+  "file_not_regular",
+  "invalid_extension",
+  "cdn_path_required",
+  "cdn_path_conflict",
+  "cdn_path_invalid",
+  "unauthorized",
+  "insufficient_credit",
+  "forbidden",
+  "bad_request",
+  "upload_failed",
+  "upload_response_malformed",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
