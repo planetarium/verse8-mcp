@@ -201,6 +201,24 @@ setup_verse_project_dir() {
   )
 }
 
+# setup_attached_verse_project_dir <dir> [<verse>]
+# Extends setup_verse_project_dir with the hook signatures, AGENTS.md marker,
+# and VITE_AGENT8_VERSE .env entry that detectAttachment / readEnvVerse expect.
+setup_attached_verse_project_dir() {
+  local dir="$1"
+  local verse="${2:-smoke-verse}"
+  setup_verse_project_dir "$dir"
+  (
+    cd "$dir"
+    mkdir -p .git/hooks
+    printf '#!/bin/sh\n# verse8-mcp hook pre-commit\nexit 0\n' > .git/hooks/pre-commit
+    printf '#!/bin/sh\n# verse8-mcp hook commit-msg\nexit 0\n' > .git/hooks/commit-msg
+    chmod +x .git/hooks/pre-commit .git/hooks/commit-msg
+    printf '<!-- verse8-mcp attached -->\n# Agents\n' > AGENTS.md
+    printf 'VITE_AGENT8_ACCOUNT=0xsmoke\nVITE_AGENT8_VERSE=%s\n' "$verse" > .env
+  )
+}
+
 # ---------------------------------------------------------------------------
 # Step 1: Build
 # ---------------------------------------------------------------------------
@@ -1306,6 +1324,83 @@ test_ac8_prompts() {
   pass "ac8_prompts_get"
 }
 
+# ---------------------------------------------------------------------------
+# verse8_upload_asset smoke tests (new)
+# ---------------------------------------------------------------------------
+test_upload_absent_without_token() {
+  rm -f "$REAL_TOKEN_PATH"
+  local resp
+  resp=$(mcp_request "$BINARY" "tools/list" '{}')
+  if json_contains "$resp" 'verse8_upload_asset'; then
+    fail "upload_absent_without_token" "tool visible without token"
+    return
+  fi
+  pass "upload_absent_without_token"
+}
+
+test_upload_present_with_token() {
+  install_test_token "test-token-xyz"
+  local resp
+  resp=$(mcp_request "$BINARY" "tools/list" '{}')
+  if ! json_contains "$resp" 'verse8_upload_asset'; then
+    fail "upload_present_with_token" "tool missing with token"
+    return
+  fi
+  pass "upload_present_with_token"
+}
+
+test_upload_happy_path() {
+  start_agent8_mock
+  make_tmpdir
+  install_test_token "test-token-xyz"
+  local project="$TEST_TMPDIR/attached"
+  setup_attached_verse_project_dir "$project"
+  cp "$REPO_ROOT/tests/mocks/fixtures/tiny.png" "$project/asset.png"
+
+  local args
+  args=$(printf '{"filePath":"%s/asset.png","category":"image","projectDir":"%s"}' "$project" "$project")
+  local resp
+  resp=$(
+    cd "$project"
+    mcp_call_tool "$BINARY" "verse8_upload_asset" "$args"
+  )
+
+  stop_agent8_mock
+  rm -rf "$TEST_TMPDIR"
+
+  if json_contains "$resp" '\\"ok\\":true' && json_contains "$resp" 'agent8-games.verse8.io'; then
+    pass "upload_happy_path"
+  else
+    fail "upload_happy_path" "$resp"
+  fi
+}
+
+test_upload_invalid_extension() {
+  start_agent8_mock
+  make_tmpdir
+  install_test_token "test-token-xyz"
+  local project="$TEST_TMPDIR/attached"
+  setup_attached_verse_project_dir "$project"
+  cp "$REPO_ROOT/tests/mocks/fixtures/bad.exe" "$project/bad.exe"
+
+  local args
+  args=$(printf '{"filePath":"%s/bad.exe","category":"image","projectDir":"%s"}' "$project" "$project")
+  local resp
+  resp=$(
+    cd "$project"
+    mcp_call_tool "$BINARY" "verse8_upload_asset" "$args"
+  )
+
+  stop_agent8_mock
+  rm -rf "$TEST_TMPDIR"
+
+  if json_contains "$resp" 'invalid_extension'; then
+    pass "upload_invalid_extension"
+  else
+    fail "upload_invalid_extension" "$resp"
+  fi
+}
+
 # ===========================================================================
 # Run tests — honors VERSE8_SMOKE_ONLY filter (space-separated names). When
 # unset, runs the full suite; M4.1 split files set it to restrict to their
@@ -1335,6 +1430,10 @@ ALL_TESTS="
   test_new_project_template_mismatch
   test_ac7_resources
   test_ac8_prompts
+  test_upload_absent_without_token
+  test_upload_present_with_token
+  test_upload_happy_path
+  test_upload_invalid_extension
 "
 
 SELECTED_TESTS="${VERSE8_SMOKE_ONLY:-$ALL_TESTS}"
