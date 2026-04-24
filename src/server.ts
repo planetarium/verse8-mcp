@@ -21,6 +21,10 @@ import {
 } from "./tools/checkpoint.js";
 import { previewInputSchema, runPreview } from "./tools/preview.js";
 import {
+  runUploadAsset,
+  uploadAssetInputSchema,
+} from "./tools/uploadAsset.js";
+import {
   loginCompleteInputSchema,
   loginStartInputSchema,
   runLoginComplete,
@@ -145,6 +149,13 @@ const PREVIEW_TOOL: Tool = {
   inputSchema: zodToJsonSchema(previewInputSchema),
 };
 
+const UPLOAD_ASSET_TOOL: Tool = {
+  name: "verse8_upload_asset",
+  description:
+    "Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via agent8-backend /api/upload-attachment. Pass `filePath` (absolute or relative to projectDir) plus EITHER `category` (`bgm` / `sfx` / `image` / `effect` — maps to assets/audio/bgm, assets/audio/sfx, assets/images, assets/effects) OR `cdnPath` (relative subpath, e.g. 'assets/custom'). Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` where `url` is the public https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned-filename>. Allowed extensions: png/jpg/jpeg/gif/svg/webp/glb/gltf/vrm/mp3/wav/ogg/m4a/mp4/webm/mov/ttf/otf/woff/woff2/txt/md/json/csv/xml. Requires a logged-in Verse8 project that has already been run through `verse8_attach` (uses VITE_AGENT8_VERSE from .env).",
+  inputSchema: zodToJsonSchema(uploadAssetInputSchema),
+};
+
 function imageToolToMcpTool(t: UpstreamTool): Tool {
   return {
     name: t.name,
@@ -197,6 +208,7 @@ export function createServer(): Server {
     if (token) {
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
+      tools.push(UPLOAD_ASSET_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -299,6 +311,17 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runPreview(parsed, cwd), {
           projectDir: pd,
         });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_upload_asset") {
+        const parsed = uploadAssetInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(
+          name,
+          () => runUploadAsset(parsed, cwd),
+          { projectDir: pd },
+        );
         return { content: jsonContent(result), isError: !result.ok };
       }
 
