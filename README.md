@@ -13,6 +13,11 @@ claude mcp add verse8 -- npx -y @verse8/mcp   # Claude Code
 codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 ```
 
+> **Timeout 설정**: Verse8 에셋 생성 툴은 최대 120~180초까지 걸릴 수 있습니다.
+> 작동이 타임아웃으로 실패한다면 [수동 설치 가이드](./docs/manual-install.md#기본-타임아웃-120초-설정)의
+> 타임아웃 설정을 따라 호스트별로 조정하세요.
+> 서버 측은 `VERSE8_PROXY_REQUEST_TIMEOUT_MS=120000` 환경변수로 최소 120초를 보장합니다.
+
 **2. Use it:**
 
 ### New project

@@ -22,7 +22,100 @@ CLI 헬퍼가 없거나 직접 설정 파일을 편집하고 싶을 때. 모든 
       "command": "npx",
       "args": ["-y", "@verse8/mcp"],
       "env": {
-        "VERSE8_API_URL": "https://v8-meme-api.verse8.io"
+        "VERSE8_API_URL": "https://v8-meme-api.verse8.io",
+        "VERSE8_PROXY_REQUEST_TIMEOUT_MS": "120000"
+      }
+    }
+  }
+}
+```
+
+## 기본 타임아웃 (120초) 설정
+
+@verse8/mcp 내부적으로 프록시 요청 타임아웃은 서비스별로 정의되어 있고
+`VERSE8_PROXY_REQUEST_TIMEOUT_MS` 환경변수로 최소값을 설정할 수 있습니다
+(기본 권장값: `120000`, 즉 120초).
+
+MCP 클라이언트(Claude Code, Codex, OpenCode 등) 자체의 per-tool 호출
+타임아웃도 함께 조정해야 합니다. 클라이언트별 설정 방법은 아래와 같습니다.
+
+### Claude Code
+
+```bash
+# MCP 서버 등록 시 환경변수로 타임아웃 설정
+claude mcp add verse8 -- npx -y @verse8/mcp
+```
+
+Claude Code는 MCP 프로토콜 사양에 따라 per-tool-call 타임아웃이
+기본 **60초**입니다. 이 값을 늘리려면 `.mcp.json` 또는 `~/.claude.json`에
+환경변수를 추가하세요:
+
+```json
+{
+  "mcpServers": {
+    "verse8": {
+      "command": "npx",
+      "args": ["-y", "@verse8/mcp"],
+      "env": {
+        "VERSE8_PROXY_REQUEST_TIMEOUT_MS": "120000"
+      }
+    }
+  }
+}
+```
+
+### Codex
+
+`~/.codex/config.toml` (또는 프로젝트 `.codex/config.toml`) 에서
+`tool_timeout_sec` 를 120초로 설정:
+
+```toml
+[mcp_servers.verse8]
+command = "npx"
+args = ["-y", "@verse8/mcp"]
+tool_timeout_sec = 120
+
+[mcp_servers.verse8.env]
+VERSE8_PROXY_REQUEST_TIMEOUT_MS = "120000"
+```
+
+> Codex의 기본 per-tool 타임아웃은 60초입니다. `tool_timeout_sec = 120` 으로
+> 오버라이드하면 2분까지 안전하게 실행됩니다.
+
+### OpenCode
+
+`opencode.json` 에서 `timeout` 필드를 120000(ms)으로 설정:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "verse8": {
+      "type": "local",
+      "command": ["npx", "-y", "@verse8/mcp"],
+      "timeout": 120000,
+      "environment": {
+        "VERSE8_PROXY_REQUEST_TIMEOUT_MS": "120000"
+      }
+    }
+  }
+}
+```
+
+> OpenCode의 기본 `timeout` 은 5000ms(5초)입니다. 120000(120초)으로 설정하세요.
+
+### Cursor
+
+`<프로젝트>/.cursor/mcp.json` 또는 `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "verse8": {
+      "command": "npx",
+      "args": ["-y", "@verse8/mcp"],
+      "env": {
+        "VERSE8_PROXY_REQUEST_TIMEOUT_MS": "120000"
       }
     }
   }
