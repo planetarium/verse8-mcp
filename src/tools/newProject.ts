@@ -394,16 +394,16 @@ export async function runNewProjectConfirm(
 
     const check = await getProjectAccessToken(projectPath, token);
     if (!check.ok) {
-        if (isCreditInsufficientError(check.status, check.body)) {
-          return creditError(check.status, check.body);
-        }
-        return {
-          ok: false,
-          error: "token_check_failed",
-          hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
-          status: check.status,
-        };
+      if (isCreditInsufficientError(check.status, check.body)) {
+        return creditError(check.status, check.body);
       }
+      return {
+        ok: false,
+        error: "token_check_failed",
+        hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
+        status: check.status,
+      };
+    }
 
     // The GET endpoint currently only reports PAT existence — it doesn't
     // hand back a usable cloneCommand — so we always POST to get the
@@ -411,16 +411,16 @@ export async function runNewProjectConfirm(
     // for future plumbing; the behavioural path is the same today.
     const created = await createProjectAccessToken(projectPath, token);
     if (!created.ok) {
-        if (isCreditInsufficientError(created.status, created.body)) {
-          return creditError(created.status, created.body);
-        }
-        return {
-          ok: false,
-          error: "token_grant_failed",
-          hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
-          status: created.status,
-        };
+      if (isCreditInsufficientError(created.status, created.body)) {
+        return creditError(created.status, created.body);
       }
+      return {
+        ok: false,
+        error: "token_grant_failed",
+        hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
+        status: created.status,
+      };
+    }
 
     // Response-shape tolerance:
     // The agent8-backend POST /api/gitlab/project-access-token response has
