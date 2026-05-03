@@ -108,7 +108,12 @@ export type NewProjectStartResult =
     }
   | { ok: false; error: "not_logged_in"; hint: string }
   | { ok: false; error: "rate_limited"; hint: string; retryAfterMs: number }
-  | { ok: false; error: "startcall_failed"; hint: string; status: number }
+  | {
+      ok: false;
+      error: "startcall_failed";
+      hint: string;
+      status: number;
+    }
   | ReturnType<typeof creditError>;
 
 export type NewProjectConfirmResult =
