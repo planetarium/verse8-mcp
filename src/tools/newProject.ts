@@ -63,14 +63,7 @@ export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
 
-interface CreditInsufficientError {
-  ok: false;
-  error: "insufficient_credits";
-  hint: string;
-  status: number;
-}
-
-function creditError(status: number, body: string): CreditInsufficientError {
+function creditError(status: number, body: string) {
   return {
     ok: false,
     error: "insufficient_credits",
@@ -116,7 +109,7 @@ export type NewProjectStartResult =
   | { ok: false; error: "not_logged_in"; hint: string }
   | { ok: false; error: "rate_limited"; hint: string; retryAfterMs: number }
   | { ok: false; error: "startcall_failed"; hint: string; status: number }
-  | CreditInsufficientError;
+  | ReturnType<typeof creditError>;
 
 export type NewProjectConfirmResult =
   | {
@@ -141,7 +134,7 @@ export type NewProjectConfirmResult =
       hint: string;
       status: number;
     }
-  | CreditInsufficientError
+  | ReturnType<typeof creditError>
   | {
       ok: false;
       error: "invalid_parent";
