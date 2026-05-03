@@ -304,7 +304,7 @@ export async function callProxiedTool(
   let cacheEntry = serviceCache.get(url);
   let serviceKey = cacheEntry?.serviceKey;
   let sessionId = cacheEntry?.sessionId ?? null;
-  let timeoutMs = cacheEntry?.timeoutMs ?? parseProxyTimeout() ?? 120_000;
+  let timeoutMs = cacheEntry?.timeoutMs ?? parseProxyTimeout();
 
   const runCall = async () => {
     try {

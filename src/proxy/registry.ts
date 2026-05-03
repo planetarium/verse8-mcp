@@ -187,15 +187,15 @@ function resolveUrl(service: VerseMcpService): string {
 }
 
 /**
- * Parse VERSE8_PROXY_REQUEST_TIMEOUT_MS (milliseconds).
- * Returns undefined when unset / unparseable. Values below 5000 are
- * clamped to 5000 (5 sec minimum) to prevent accidental 0-timeout.
+ * Read VERSE8_PROXY_REQUEST_TIMEOUT_MS (milliseconds).
+ * Default: 120_000 (120s). Values below 5000 are clamped to 5000
+ * (5 sec minimum) to prevent accidental 0-timeout.
  */
-export function parseProxyTimeout(): number | undefined {
+export function parseProxyTimeout(): number {
   const raw = process.env.VERSE8_PROXY_REQUEST_TIMEOUT_MS;
-  if (!raw) return undefined;
+  if (!raw) return 120_000;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
+  if (!Number.isFinite(n) || n <= 0) return 120_000;
   return Math.max(n, 5_000);
 }
 
@@ -205,10 +205,8 @@ export function parseProxyTimeout(): number | undefined {
  * per-project disable list can be honored.
  *
  * Timeout precedence: per-service timeout → VERSE8_PROXY_REQUEST_TIMEOUT_MS
- * env var (when set, it acts as a floor — services with lower timeouts
- * are raised to this value). This lets users guarantee a minimum timeout
- * for all upstream proxy calls (e.g. VERSE8_PROXY_REQUEST_TIMEOUT_MS=120000
- * for a 2-minute floor).
+ * env var (defaults to 120_000ms when unset, acting as a floor —
+ * services with lower timeouts are raised to this value).
  */
 export function resolveMcpServices(
   projectDir?: string,
@@ -256,7 +254,7 @@ export function resolveMcpServices(
       key: s.key,
       label: s.label,
       url: resolveUrl(s),
-      timeout: globalTimeout ? Math.max(s.timeout, globalTimeout) : s.timeout,
+      timeout: Math.max(s.timeout, globalTimeout),
       description: s.description,
       enabled,
     };
