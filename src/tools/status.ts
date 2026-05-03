@@ -178,12 +178,6 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     );
     const warnings: string[] = [];
     if (expiresSoon) warnings.push("token_expires_soon");
-    if (
-      typeof resp.profile.totalPoints === "number" &&
-      resp.profile.totalPoints <= 0
-    ) {
-      warnings.push("insufficient_credits");
-    }
     const result: StatusResult = {
       ok: true,
       profile: resp.profile,
