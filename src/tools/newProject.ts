@@ -64,6 +64,22 @@ export type NewProjectConfirmInput = z.infer<
 
 const CREDIT_RECHARGE_URL = "https://verse8.io/settings";
 
+interface CreditInsufficientError {
+  ok: false;
+  error: "insufficient_credits";
+  hint: string;
+  status: number;
+}
+
+function creditError(status: number, body: string): CreditInsufficientError {
+  return {
+    ok: false,
+    error: "insufficient_credits",
+    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${body.slice(0, 500)})`,
+    status,
+  };
+}
+
 function isCreditInsufficientError(status: number, body: string): boolean {
   if (status === 402) return true;
   const lower = body.toLowerCase();
@@ -100,18 +116,8 @@ export type NewProjectStartResult =
     }
   | { ok: false; error: "not_logged_in"; hint: string }
   | { ok: false; error: "rate_limited"; hint: string; retryAfterMs: number }
-  | {
-      ok: false;
-      error: "startcall_failed";
-      hint: string;
-      status: number;
-    }
-  | {
-      ok: false;
-      error: "insufficient_credits";
-      hint: string;
-      status: number;
-    };
+  | { ok: false; error: "startcall_failed"; hint: string; status: number }
+  | CreditInsufficientError;
 
 export type NewProjectConfirmResult =
   | {
@@ -136,12 +142,7 @@ export type NewProjectConfirmResult =
       hint: string;
       status: number;
     }
-  | {
-      ok: false;
-      error: "insufficient_credits";
-      hint: string;
-      status: number;
-    }
+  | CreditInsufficientError
   | {
       ok: false;
       error: "invalid_parent";
@@ -249,12 +250,7 @@ export async function runNewProjectStart(
   const resp = await startCall(input.userRequest, token);
   if (!resp.ok) {
     if (isCreditInsufficientError(resp.status, resp.body)) {
-      return {
-        ok: false,
-        error: "insufficient_credits",
-        hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${resp.status}: ${resp.body.slice(0, 500)})`,
-        status: resp.status,
-      };
+      return creditError(resp.status, resp.body);
     }
     return {
       ok: false,
@@ -377,12 +373,7 @@ export async function runNewProjectConfirm(
       );
       if (!selected.ok) {
         if (isCreditInsufficientError(selected.status, selected.body)) {
-          return {
-            ok: false,
-            error: "insufficient_credits",
-            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${selected.status}: ${selected.body.slice(0, 500)})`,
-            status: selected.status,
-          };
+          return creditError(selected.status, selected.body);
         }
         return {
           ok: false,
@@ -407,12 +398,7 @@ export async function runNewProjectConfirm(
     const check = await getProjectAccessToken(projectPath, token);
     if (!check.ok) {
         if (isCreditInsufficientError(check.status, check.body)) {
-          return {
-            ok: false,
-            error: "insufficient_credits",
-            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${check.status}: ${check.body.slice(0, 500)})`,
-            status: check.status,
-          };
+          return creditError(check.status, check.body);
         }
         return {
           ok: false,
@@ -429,12 +415,7 @@ export async function runNewProjectConfirm(
     const created = await createProjectAccessToken(projectPath, token);
     if (!created.ok) {
         if (isCreditInsufficientError(created.status, created.body)) {
-          return {
-            ok: false,
-            error: "insufficient_credits",
-            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${created.status}: ${created.body.slice(0, 500)})`,
-            status: created.status,
-          };
+          return creditError(created.status, created.body);
         }
         return {
           ok: false,
