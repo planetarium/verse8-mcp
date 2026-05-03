@@ -59,6 +59,8 @@ export const ERROR_CODES = [
   "upstream_unreachable",
   "upstream_error",
   "not_yet_available",
+  // Credits / billing
+  "insufficient_credits",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

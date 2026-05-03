@@ -77,6 +77,7 @@ export type StatusResult =
       workflow: BootstrapWorkflow;
       warnings?: string[];
       tokenExpiresAt?: string;
+      creditRechargeUrl: string;
     }
   | {
       ok: false;
@@ -95,6 +96,7 @@ export type StatusResult =
     };
 
 const TOKEN_EXPIRES_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+const CREDIT_RECHARGE_URL = "https://verse8.io/settings";
 
 export function evaluateExpiry(
   expSeconds: number | undefined,
@@ -174,14 +176,23 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     const { expiresAt, expiresSoon } = evaluateExpiry(
       typeof resp.profile.exp === "number" ? resp.profile.exp : undefined,
     );
+    const warnings: string[] = [];
+    if (expiresSoon) warnings.push("token_expires_soon");
+    if (
+      typeof resp.profile.totalPoints === "number" &&
+      resp.profile.totalPoints <= 0
+    ) {
+      warnings.push("insufficient_credits");
+    }
     const result: StatusResult = {
       ok: true,
       profile: resp.profile,
       project,
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: true }),
+      creditRechargeUrl: CREDIT_RECHARGE_URL,
     };
     if (expiresAt) result.tokenExpiresAt = expiresAt;
-    if (expiresSoon) result.warnings = ["token_expires_soon"];
+    if (warnings.length > 0) result.warnings = warnings;
     return result;
   }
   // The token has been invalidated (expired / revoked / re-logged-in under a

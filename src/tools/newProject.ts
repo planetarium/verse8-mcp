@@ -62,6 +62,30 @@ export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
 
+const CREDIT_RECHARGE_URL = "https://verse8.io/settings";
+
+function isCreditInsufficientError(status: number, body: string): boolean {
+  if (status === 402) return true;
+  const lower = body.toLowerCase();
+  const keywords = [
+    "insufficient credit",
+    "insufficient fund",
+    "not enough credit",
+    "not enough fund",
+    "no credit",
+    "no fund",
+    "zero credit",
+    "zero fund",
+    "credit limit",
+    "check your credit",
+    "out of credit",
+    "recharge",
+    "top up",
+    "top-up",
+  ];
+  return keywords.some((kw) => lower.includes(kw));
+}
+
 export type NewProjectStartResult =
   | {
       ok: true;
@@ -79,6 +103,12 @@ export type NewProjectStartResult =
   | {
       ok: false;
       error: "startcall_failed";
+      hint: string;
+      status: number;
+    }
+  | {
+      ok: false;
+      error: "insufficient_credits";
       hint: string;
       status: number;
     };
@@ -103,6 +133,12 @@ export type NewProjectConfirmResult =
         | "select_template_failed"
         | "token_check_failed"
         | "token_grant_failed";
+      hint: string;
+      status: number;
+    }
+  | {
+      ok: false;
+      error: "insufficient_credits";
       hint: string;
       status: number;
     }
@@ -212,6 +248,14 @@ export async function runNewProjectStart(
 
   const resp = await startCall(input.userRequest, token);
   if (!resp.ok) {
+    if (isCreditInsufficientError(resp.status, resp.body)) {
+      return {
+        ok: false,
+        error: "insufficient_credits",
+        hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${resp.status}: ${resp.body.slice(0, 500)})`,
+        status: resp.status,
+      };
+    }
     return {
       ok: false,
       error: "startcall_failed",
@@ -332,6 +376,14 @@ export async function runNewProjectConfirm(
         token,
       );
       if (!selected.ok) {
+        if (isCreditInsufficientError(selected.status, selected.body)) {
+          return {
+            ok: false,
+            error: "insufficient_credits",
+            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${selected.status}: ${selected.body.slice(0, 500)})`,
+            status: selected.status,
+          };
+        }
         return {
           ok: false,
           error: "select_template_failed",
@@ -354,13 +406,21 @@ export async function runNewProjectConfirm(
 
     const check = await getProjectAccessToken(projectPath, token);
     if (!check.ok) {
-      return {
-        ok: false,
-        error: "token_check_failed",
-        hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
-        status: check.status,
-      };
-    }
+        if (isCreditInsufficientError(check.status, check.body)) {
+          return {
+            ok: false,
+            error: "insufficient_credits",
+            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${check.status}: ${check.body.slice(0, 500)})`,
+            status: check.status,
+          };
+        }
+        return {
+          ok: false,
+          error: "token_check_failed",
+          hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
+          status: check.status,
+        };
+      }
 
     // The GET endpoint currently only reports PAT existence — it doesn't
     // hand back a usable cloneCommand — so we always POST to get the
@@ -368,13 +428,21 @@ export async function runNewProjectConfirm(
     // for future plumbing; the behavioural path is the same today.
     const created = await createProjectAccessToken(projectPath, token);
     if (!created.ok) {
-      return {
-        ok: false,
-        error: "token_grant_failed",
-        hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
-        status: created.status,
-      };
-    }
+        if (isCreditInsufficientError(created.status, created.body)) {
+          return {
+            ok: false,
+            error: "insufficient_credits",
+            hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${created.status}: ${created.body.slice(0, 500)})`,
+            status: created.status,
+          };
+        }
+        return {
+          ok: false,
+          error: "token_grant_failed",
+          hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
+          status: created.status,
+        };
+      }
 
     // Response-shape tolerance:
     // The agent8-backend POST /api/gitlab/project-access-token response has
