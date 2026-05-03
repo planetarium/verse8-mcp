@@ -16,6 +16,7 @@ import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { CREDIT_RECHARGE_URL } from "../constants.js";
 
 /**
  * `verse8_new_project_{start,confirm}` — two-phase project-creation flow.
@@ -61,8 +62,6 @@ export const newProjectConfirmInputSchema = z
 export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
-
-const CREDIT_RECHARGE_URL = "https://verse8.io/settings";
 
 interface CreditInsufficientError {
   ok: false;

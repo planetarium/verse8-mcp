@@ -7,6 +7,7 @@ import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
+import { CREDIT_RECHARGE_URL } from "../constants.js";
 import {
   computeBootstrapWorkflow,
   type BootstrapWorkflow,
@@ -96,7 +97,6 @@ export type StatusResult =
     };
 
 const TOKEN_EXPIRES_SOON_MS = 7 * 24 * 60 * 60 * 1000;
-const CREDIT_RECHARGE_URL = "https://verse8.io/settings";
 
 export function evaluateExpiry(
   expSeconds: number | undefined,
