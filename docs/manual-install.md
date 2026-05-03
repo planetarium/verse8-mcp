@@ -41,12 +41,11 @@ CLI 헬퍼가 없거나 직접 설정 파일을 편집하고 싶을 때. 모든 
 ### Claude Code
 
 ```bash
-claude mcp add verse8 -- npx -y @verse8/mcp
+MCP_TIMEOUT=120000 claude mcp add verse8 -- npx -y @verse8/mcp
 ```
 
-Claude Code는 MCP per-tool-call 타임아웃이 60초입니다. 현재 버전 기준
-별도로 늘릴 수 없지만, verse8-mcp 서버 측에서 120초를 보장하므로
-대부분의 asset-generate 툴은 정상 동작합니다.
+Claude Code의 MCP per-tool-call 타임아웃은 `MCP_TIMEOUT` (ms)로 조정합니다.
+기본값은 60초이므로, 시작 시 환경변수로 120000(120초) 이상을 지정하세요.
 
 ### Codex
 
@@ -59,7 +58,8 @@ args = ["-y", "@verse8/mcp"]
 tool_timeout_sec = 120
 ```
 
-> `tool_timeout_sec`의 기본값은 60초이므로 반드시 120으로 오버라이드하세요.
+> `tool_timeout_sec` 기본값이 60초이므로, 클라이언트가 60초에 끊지 않도록
+> 반드시 120으로 설정하세요.
 
 ### OpenCode
 
@@ -78,7 +78,7 @@ tool_timeout_sec = 120
 }
 ```
 
-> `timeout`의 기본값은 5000ms이므로 반드시 120000으로 오버라이드하세요.
+> `timeout` 기본값이 5000ms이므로, 반드시 120000으로 설정하세요.
 
 ### Cursor
 
