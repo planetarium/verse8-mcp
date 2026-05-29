@@ -271,6 +271,108 @@ export async function createProjectAccessToken(
   );
 }
 
+export interface UploadAttachmentInput {
+  file: Blob;
+  filename: string;
+  cdnPath: string;
+  verse: string;
+  token: string;
+}
+
+export type UploadAttachmentResult =
+  | { ok: true; url: string; status: number }
+  | {
+      ok: false;
+      error:
+        | "unauthorized"
+        | "insufficient_credit"
+        | "forbidden"
+        | "bad_request"
+        | "upload_failed"
+        | "upload_response_malformed";
+      status: number;
+      hint: string;
+    };
+
+function classifyUploadStatus(
+  status: number,
+):
+  | "unauthorized"
+  | "insufficient_credit"
+  | "forbidden"
+  | "bad_request"
+  | "upload_failed" {
+  if (status === 401) return "unauthorized";
+  if (status === 402) return "insufficient_credit";
+  if (status === 403) return "forbidden";
+  if (status >= 400 && status < 500) return "bad_request";
+  return "upload_failed";
+}
+
+/**
+ * POST /api/upload-attachment — multipart file upload to the Verse8 CDN.
+ *
+ * The backend is a thin proxy to the gameserver: it validates the extension
+ * against ATTACHMENT_EXTS, renames the file with a UUID prefix, and forwards
+ * the bytes. Returns {ok:true,url} on 2xx with a `url` field, or a
+ * discriminated failure envelope otherwise.
+ *
+ * Error shape notes:
+ *   - Middleware 401/402/403 responses are plain text (not JSON).
+ *   - Handler 400/500 responses are JSON {success:false, error}.
+ *   - Network / JSON-parse failures are mapped to upload_failed.
+ *
+ * This function does NOT call meme-api's /v1/activity/upload-asset — that
+ * bookkeeping endpoint is out of scope for the MCP tool.
+ */
+export async function uploadAttachment(
+  input: UploadAttachmentInput,
+): Promise<UploadAttachmentResult> {
+  const form = new FormData();
+  form.append("file", input.file, input.filename);
+  form.append("path", input.cdnPath);
+  form.append("verse", input.verse);
+
+  let res: Response;
+  try {
+    res = await fetch(`${getAgent8BackendBaseUrl()}/api/upload-attachment`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${input.token}` },
+      body: form,
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      error: "upload_failed",
+      status: 0,
+      hint: safeHint(`fetch failed: ${(e as Error).message}`),
+    };
+  }
+
+  const raw = await res.text();
+
+  if (res.status >= 200 && res.status < 300) {
+    const data = tolerantJsonParse<{ success?: boolean; url?: string; error?: string }>(raw);
+    if (!data || typeof data.url !== "string" || data.url.length === 0) {
+      return {
+        ok: false,
+        error: "upload_response_malformed",
+        status: res.status,
+        hint: safeHint(`expected {success,url} JSON; got: ${raw.slice(0, 200)}`),
+      };
+    }
+    return { ok: true, url: data.url, status: res.status };
+  }
+
+  const code = classifyUploadStatus(res.status);
+  return {
+    ok: false,
+    error: code,
+    status: res.status,
+    hint: safeHint(raw.slice(0, 200) || `HTTP ${res.status}`),
+  };
+}
+
 /**
  * Parse a `cloneCommand` string emitted by the backend into the pieces we
  * need to call `git clone` via `execFileSync` with an argv array (so the

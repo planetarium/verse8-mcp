@@ -214,3 +214,16 @@ export function readEnvAccount(projectDir: string): string | null {
   return map.get(ACCOUNT_KEY) ?? null;
 }
 
+/**
+ * Symmetric helper to `readEnvAccount`. Returns the raw VITE_AGENT8_VERSE
+ * value, or null if `.env` is missing or the key is absent. Used by
+ * verse8_upload_asset to tag uploads with the project's verse id.
+ */
+export function readEnvVerse(projectDir: string): string | null {
+  const envPath = path.join(projectDir, ".env");
+  const raw = loadRaw(envPath);
+  if (!raw) return null;
+  const map = parseDotenv(raw);
+  return map.get(VERSE_KEY) ?? null;
+}
+

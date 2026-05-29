@@ -62,6 +62,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_attach` | Install hooks + AGENTS.md + skills into an already-cloned `gitlab.verse8.io` project. Idempotent. | Always |
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |
+| `verse8_upload_asset` | Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via `agent8-backend /api/upload-attachment`. Pass `filePath` + `cdnPath`; the host is expected to mirror the project's `src/assets.json` URL patterns and to register the returned URL back into that manifest. | Logged in |
 | `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
 
 Resources: `verse8://skill/<name>/SKILL.md`.
