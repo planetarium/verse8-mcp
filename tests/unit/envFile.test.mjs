@@ -18,6 +18,7 @@ import {
   ensureVerse8EnvFile,
   parseDotenv,
   readEnvAccount,
+  readEnvVerse,
   upsertEnvLines,
 } from "../../dist/context/envFile.js";
 
@@ -237,6 +238,38 @@ test("readEnvAccount: returns the account when present", () => {
   try {
     fs.writeFileSync(path.join(dir, ".env"), `${ACCOUNT_KEY}=${WALLET_A}\n`);
     assert.equal(readEnvAccount(dir), WALLET_A);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readEnvVerse: returns VITE_AGENT8_VERSE when present", () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      path.join(dir, ".env"),
+      `${ACCOUNT_KEY}=${WALLET_A}\n${VERSE_KEY}=${WALLET_A}-999\n`,
+    );
+    assert.equal(readEnvVerse(dir), `${WALLET_A}-999`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readEnvVerse: returns null when VITE_AGENT8_VERSE missing", () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(path.join(dir, ".env"), "UNRELATED=x\n");
+    assert.equal(readEnvVerse(dir), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readEnvVerse: returns null when .env absent", () => {
+  const dir = tmpProject();
+  try {
+    assert.equal(readEnvVerse(dir), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

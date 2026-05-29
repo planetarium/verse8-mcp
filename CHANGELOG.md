@@ -5,7 +5,40 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
+## [0.6.0] — 2026-04-24
+
+### Added — `verse8_upload_asset` tool
+
+Upload a single local file (image / audio / video / 3D / font / small text)
+to the Verse8 CDN via `POST /api/upload-attachment` on `agent8-backend`.
+
+- Input: `filePath` (absolute or relative to `projectDir`) + `cdnPath`
+  (relative subpath, e.g. `assets/images`, `assets/3d/animations/mixamorig`).
+  The tool does NOT impose a canonical subpath layout — the V8 asset
+  convention uses `src/assets.json` as the source of truth and CDN paths
+  vary per-template. Callers should read the project's existing manifest
+  to pick a matching subpath, and register the returned URL back into
+  `src/assets.json` after upload so the runtime can consume it.
+- Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` with
+  `url` pointing at `https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned>`.
+- Extension allowlist mirrors upstream `ATTACHMENT_EXTS`: png, jpg, jpeg,
+  gif, svg, webp, glb, gltf, vrm, mp3, wav, ogg, m4a, mp4, webm, mov, ttf,
+  otf, woff, woff2, txt, md, json, csv, xml.
+- Gated on token + attached project; reuses `VITE_AGENT8_VERSE` from `.env`.
+- Meme-api's `/v1/activity/upload-asset` counter endpoint is intentionally
+  NOT called — bookkeeping only, not required for asset visibility.
+
+### Added
+- `src/tools/uploadAsset.ts` — zod schema + `runUploadAsset`.
+- `src/api/agent8Backend.ts` — `uploadAttachment()` multipart client with
+  discriminated failure envelope (`unauthorized` / `insufficient_credit` /
+  `forbidden` / `bad_request` / `upload_failed` / `upload_response_malformed`).
+- `src/format/assetShortcuts.ts` — category → CDN path map + cdnPath
+  sanitizer (rejects `..`, NUL, leading `/`).
+- `src/format/attachmentExts.ts` — local copy of ATTACHMENT_EXTS + MIME
+  detection.
+- `src/context/envFile.ts` — `readEnvVerse` helper.
+- Smoke subset: `tests/smoke/upload-asset.sh`.
 
 ### Added — Proxy request timeout enforcement
 
@@ -23,6 +56,14 @@ breaking changes when clearly documented.
 - README.md now links to timeout configuration guide. (`README.md`)
 - `environment.md` documents the new `VERSE8_PROXY_REQUEST_TIMEOUT_MS`
   variable. (`docs/environment.md`)
+
+### Invariants (added to `.omc/INVARIANTS.md`)
+- **MCP-UP-1** — upload traffic is restricted to the agent8-backend
+  host allow-list.
+- **MCP-UP-2** — `cdnPath` traversal / leading-slash / NUL bytes are
+  rejected before any network call.
+- **MCP-UP-3** — extensions outside `ATTACHMENT_EXTS` are rejected before
+  any network call.
 
 ## [0.5.6] — 2026-04-22
 

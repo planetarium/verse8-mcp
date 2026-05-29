@@ -10,11 +10,12 @@
  *   GET  /api/select-template
  *   GET  /api/gitlab/project-access-token
  *   POST /api/gitlab/project-access-token
+ *   POST /api/upload-attachment
  *
  * Flags:
  *   --fail=<stage>[,<stage>...]   Return 500 on the named stage(s).
  *                                 stages: startcall, select-template,
- *                                         token-check, token-grant
+ *                                         token-check, token-grant, upload
  *   --clone-fixture=<abs-path>    Use this local bare repo path as the
  *                                 cloneCommand URL (file://...). Default
  *                                 is /tmp/verse8-smoke-bundle.git.
@@ -230,6 +231,37 @@ const server = http.createServer(async (req, res) => {
       }
     }
     send(res, 200, payload);
+    return;
+  }
+
+  // POST /api/upload-attachment — multipart file upload.
+  // We don't parse the multipart body (boundary splitting is not needed for
+  // the smoke contract); we just drain it so the client sees its request
+  // complete and we can log the body length for assertions.
+  if (method === "POST" && pathname === "/api/upload-attachment") {
+    if (!requireBearer(req, res)) return;
+    if (failStages.has("upload")) {
+      send(res, 500, { success: false, error: "upload_injected_failure" });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    await new Promise<void>((resolve) => req.on("end", () => resolve()));
+    const bodyLen = Buffer.concat(chunks).length;
+    logCall({
+      ts: Date.now(),
+      method,
+      pathname,
+      bodyLen,
+      authorization: req.headers["authorization"] ?? null,
+    });
+    const verse = "smoke-verse";
+    const pathField = "assets/images";
+    const fname = `${Math.random().toString(36).slice(2, 18)}.png`;
+    send(res, 200, {
+      success: true,
+      url: `https://agent8-games.verse8.io/${verse}/${pathField}/${fname}`,
+    });
     return;
   }
 

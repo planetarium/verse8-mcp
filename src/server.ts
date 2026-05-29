@@ -21,6 +21,10 @@ import {
 } from "./tools/checkpoint.js";
 import { previewInputSchema, runPreview } from "./tools/preview.js";
 import {
+  runUploadAsset,
+  uploadAssetInputSchema,
+} from "./tools/uploadAsset.js";
+import {
   loginCompleteInputSchema,
   loginStartInputSchema,
   runLoginComplete,
@@ -57,7 +61,7 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.5.6",
+  version: "0.6.0",
 };
 
 /**
@@ -145,6 +149,13 @@ const PREVIEW_TOOL: Tool = {
   inputSchema: zodToJsonSchema(previewInputSchema),
 };
 
+const UPLOAD_ASSET_TOOL: Tool = {
+  name: "verse8_upload_asset",
+  description:
+    "Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via agent8-backend /api/upload-attachment. Pass `filePath` (absolute or relative to projectDir) + `cdnPath` (relative subpath under the verse, e.g. 'assets/images' / 'assets/3d/characters' / 'assets/audio'). Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` where `url` is the public https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned-filename>. IMPORTANT: the V8 asset convention is driven by `src/assets.json` — before calling this tool, read the project's manifest to match existing URL-path patterns (each template uses its own scheme such as `assets/3d/animations/mixamorig/`); and AFTER upload, register the returned url into `src/assets.json` so it is actually consumed by the runtime. Allowed extensions: png/jpg/jpeg/gif/svg/webp/glb/gltf/vrm/mp3/wav/ogg/m4a/mp4/webm/mov/ttf/otf/woff/woff2/txt/md/json/csv/xml. Requires a logged-in Verse8 project run through `verse8_attach` (uses VITE_AGENT8_VERSE from .env).",
+  inputSchema: zodToJsonSchema(uploadAssetInputSchema),
+};
+
 function imageToolToMcpTool(t: UpstreamTool): Tool {
   return {
     name: t.name,
@@ -197,6 +208,7 @@ export function createServer(): Server {
     if (token) {
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
+      tools.push(UPLOAD_ASSET_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -299,6 +311,17 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runPreview(parsed, cwd), {
           projectDir: pd,
         });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_upload_asset") {
+        const parsed = uploadAssetInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(
+          name,
+          () => runUploadAsset(parsed, cwd),
+          { projectDir: pd },
+        );
         return { content: jsonContent(result), isError: !result.ok };
       }
 
