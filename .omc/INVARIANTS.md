@@ -147,6 +147,7 @@ and NUL before any fetch. The tool also rejects `filename` overrides
 that contain path separators.
 
 - source: `src/format/assetShortcuts.ts` :: `function sanitizeCdnPath`
+- source: `src/tools/uploadAsset.ts` :: `function isSafeFilename`
 - unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: parent traversal rejected`
 - unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: leading slash rejected`
 - unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: double-slash (empty segment) rejected`
