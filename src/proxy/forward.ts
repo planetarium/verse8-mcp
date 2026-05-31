@@ -1,4 +1,4 @@
-import { resolveMcpServices, type ResolvedService } from "./registry.js";
+import { resolveMcpServices, parseProxyTimeout, type ResolvedService } from "./registry.js";
 import { safeHint } from "../util/redact.js";
 
 /**
@@ -28,6 +28,7 @@ interface ServiceCacheEntry {
   sessionId: string | null;
   url: string;
   serviceKey: string;
+  timeoutMs: number;
 }
 
 // Per-service cache — keyed by resolved URL so env overrides are honored.
@@ -54,17 +55,22 @@ async function postRpc(
   body: unknown,
   token: string,
   sessionId?: string | null,
+  timeoutMs?: number,
 ): Promise<{
   status: number;
   json: any;
   sessionId: string | null;
   raw: string;
 }> {
-  const res = await fetch(url, {
+  const init: RequestInit = {
     method: "POST",
     headers: jsonRpcHeaders(token, sessionId),
     body: JSON.stringify(body),
-  });
+  };
+  if (timeoutMs && timeoutMs > 0) {
+    init.signal = AbortSignal.timeout(timeoutMs);
+  }
+  const res = await fetch(url, init);
   const raw = await res.text();
   let json: any = null;
   if (raw.length > 0) {
@@ -145,6 +151,7 @@ async function discoverServiceTools(
         sessionId,
         url: service.url,
         serviceKey: service.key,
+        timeoutMs: service.timeout,
       });
       for (const t of tools) {
         if (!toolOwner.has(t.name)) {
@@ -246,6 +253,7 @@ async function postToolsCall(
   args: unknown,
   token: string,
   sessionId: string | null,
+  timeoutMs?: number,
 ): Promise<{ status: number; json: any; sessionId: string | null; raw: string }> {
   return postRpc(
     url,
@@ -257,6 +265,7 @@ async function postToolsCall(
     },
     token,
     sessionId,
+    timeoutMs,
   );
 }
 
@@ -295,10 +304,11 @@ export async function callProxiedTool(
   let cacheEntry = serviceCache.get(url);
   let serviceKey = cacheEntry?.serviceKey;
   let sessionId = cacheEntry?.sessionId ?? null;
+  let timeoutMs = cacheEntry?.timeoutMs ?? parseProxyTimeout();
 
   const runCall = async () => {
     try {
-      return { ok: true as const, resp: await postToolsCall(url, name, args, token, sessionId) };
+      return { ok: true as const, resp: await postToolsCall(url, name, args, token, sessionId, timeoutMs) };
     } catch (e) {
       evictServiceCache(url);
       return {

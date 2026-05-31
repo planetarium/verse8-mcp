@@ -128,3 +128,37 @@ invocation via `projectDir` / cwd. This supports the "just-cloned into a
 subdir, don't restart MCP" flow.
 
 - source: `src/server.ts` :: `tools\.push\(CHECKPOINT_TOOL\)`
+
+## MCP-UP-1 — `verse8_upload_asset` hits only the allow-listed backend
+
+The upload tool calls `uploadAttachment()` whose URL is built from
+`getAgent8BackendBaseUrl()`. The allow-list predicate is the shared
+`isAllowedAgent8BackendBase` which enumerates the `*.verse8.io` /
+loopback allow-set. A malicious env override is rejected.
+
+- source: `src/api/agent8Backend.ts` :: `export async function uploadAttachment`
+- source: `src/api/agent8Backend.ts` :: `isAllowedAgent8BackendBase`
+- unit: `tests/unit/uploadAsset.test.mjs` :: `runUploadAsset: happy path returns url and resolved cdnPath`
+
+## MCP-UP-2 — `cdnPath` traversal rejected before the network
+
+`resolveCdnPath()` rejects `..` segments, leading `/`, empty segments,
+and NUL before any fetch. The tool also rejects `filename` overrides
+that contain path separators.
+
+- source: `src/format/assetShortcuts.ts` :: `function sanitizeCdnPath`
+- source: `src/tools/uploadAsset.ts` :: `function isSafeFilename`
+- unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: parent traversal rejected`
+- unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: leading slash rejected`
+- unit: `tests/unit/assetShortcuts.test.mjs` :: `resolveCdnPath: double-slash (empty segment) rejected`
+
+## MCP-UP-3 — `ATTACHMENT_EXTS` is the pre-network extension gate
+
+Extensions not in the local `ATTACHMENT_EXTS` allowlist are rejected before
+any network call. The local list mirrors
+`planetarium/agent8-backend/src/config/constants.ts` — if the upstream
+list grows, the local copy must be updated (manual sync, documented here).
+
+- source: `src/format/attachmentExts.ts` :: `export const ATTACHMENT_EXTS`
+- unit: `tests/unit/attachmentExts.test.mjs` :: `ATTACHMENT_EXTS includes core image/audio/3d/font/text`
+- unit: `tests/unit/uploadAsset.test.mjs` :: `runUploadAsset: invalid_extension`

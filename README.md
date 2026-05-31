@@ -13,6 +13,11 @@ claude mcp add verse8 -- npx -y @verse8/mcp   # Claude Code
 codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 ```
 
+> **Timeout**: 서버 측은 기본 120초가 적용되지만, 클라이언트 측 타임아웃이
+> 짧으면(기본 60초) 응답을 못 받습니다. Codex/OpenCode 사용자는 반드시
+> [수동 설치 가이드](./docs/manual-install.md#기본-타임아웃-120초)를 따라
+> 클라이언트 타임아웃을 120초 이상으로 조정하세요.
+
 **2. Use it:**
 
 ### New project
@@ -62,6 +67,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_attach` | Install hooks + AGENTS.md + skills into an already-cloned `gitlab.verse8.io` project. Idempotent. | Always |
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |
+| `verse8_upload_asset` | Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via `agent8-backend /api/upload-attachment`. Pass `filePath` + `cdnPath`; the host is expected to mirror the project's `src/assets.json` URL patterns and to register the returned URL back into that manifest. | Logged in |
 | `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
 
 Resources: `verse8://skill/<name>/SKILL.md`.
