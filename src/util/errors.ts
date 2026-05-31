@@ -67,11 +67,12 @@ export const ERROR_CODES = [
   "cdn_path_required",
   "cdn_path_invalid",
   "unauthorized",
-  "insufficient_credit",
   "forbidden",
   "bad_request",
   "upload_failed",
   "upload_response_malformed",
+  // Credits / billing
+  "insufficient_credits",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

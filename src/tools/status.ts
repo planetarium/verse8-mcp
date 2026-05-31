@@ -7,6 +7,7 @@ import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
+import { CREDIT_RECHARGE_URL } from "../constants.js";
 import {
   computeBootstrapWorkflow,
   type BootstrapWorkflow,
@@ -77,6 +78,7 @@ export type StatusResult =
       workflow: BootstrapWorkflow;
       warnings?: string[];
       tokenExpiresAt?: string;
+      creditRechargeUrl: string;
     }
   | {
       ok: false;
@@ -174,14 +176,17 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     const { expiresAt, expiresSoon } = evaluateExpiry(
       typeof resp.profile.exp === "number" ? resp.profile.exp : undefined,
     );
+    const warnings: string[] = [];
+    if (expiresSoon) warnings.push("token_expires_soon");
     const result: StatusResult = {
       ok: true,
       profile: resp.profile,
       project,
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: true }),
+      creditRechargeUrl: CREDIT_RECHARGE_URL,
     };
     if (expiresAt) result.tokenExpiresAt = expiresAt;
-    if (expiresSoon) result.warnings = ["token_expires_soon"];
+    if (warnings.length > 0) result.warnings = warnings;
     return result;
   }
   // The token has been invalidated (expired / revoked / re-logged-in under a

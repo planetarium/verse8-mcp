@@ -16,6 +16,7 @@ import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { CREDIT_RECHARGE_URL } from "../constants.js";
 
 /**
  * `verse8_new_project_{start,confirm}` — two-phase project-creation flow.
@@ -62,6 +63,40 @@ export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
 
+function creditError(
+  status: number,
+  body: string,
+): { ok: false; error: "insufficient_credits"; hint: string; status: number } {
+  return {
+    ok: false,
+    error: "insufficient_credits",
+    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${body.slice(0, 500)})`,
+    status,
+  };
+}
+
+function isCreditInsufficientError(status: number, body: string): boolean {
+  if (status === 402) return true;
+  const lower = body.toLowerCase();
+  const keywords = [
+    "insufficient credit",
+    "insufficient fund",
+    "not enough credit",
+    "not enough fund",
+    "no credit",
+    "no fund",
+    "zero credit",
+    "zero fund",
+    "credit limit",
+    "check your credit",
+    "out of credit",
+    "recharge",
+    "top up",
+    "top-up",
+  ];
+  return keywords.some((kw) => lower.includes(kw));
+}
+
 export type NewProjectStartResult =
   | {
       ok: true;
@@ -81,7 +116,8 @@ export type NewProjectStartResult =
       error: "startcall_failed";
       hint: string;
       status: number;
-    };
+    }
+  | ReturnType<typeof creditError>;
 
 export type NewProjectConfirmResult =
   | {
@@ -106,6 +142,7 @@ export type NewProjectConfirmResult =
       hint: string;
       status: number;
     }
+  | ReturnType<typeof creditError>
   | {
       ok: false;
       error: "invalid_parent";
@@ -212,6 +249,9 @@ export async function runNewProjectStart(
 
   const resp = await startCall(input.userRequest, token);
   if (!resp.ok) {
+    if (isCreditInsufficientError(resp.status, resp.body)) {
+      return creditError(resp.status, resp.body);
+    }
     return {
       ok: false,
       error: "startcall_failed",
@@ -332,6 +372,9 @@ export async function runNewProjectConfirm(
         token,
       );
       if (!selected.ok) {
+        if (isCreditInsufficientError(selected.status, selected.body)) {
+          return creditError(selected.status, selected.body);
+        }
         return {
           ok: false,
           error: "select_template_failed",
@@ -354,6 +397,9 @@ export async function runNewProjectConfirm(
 
     const check = await getProjectAccessToken(projectPath, token);
     if (!check.ok) {
+      if (isCreditInsufficientError(check.status, check.body)) {
+        return creditError(check.status, check.body);
+      }
       return {
         ok: false,
         error: "token_check_failed",
@@ -368,6 +414,9 @@ export async function runNewProjectConfirm(
     // for future plumbing; the behavioural path is the same today.
     const created = await createProjectAccessToken(projectPath, token);
     if (!created.ok) {
+      if (isCreditInsufficientError(created.status, created.body)) {
+        return creditError(created.status, created.body);
+      }
       return {
         ok: false,
         error: "token_grant_failed",
