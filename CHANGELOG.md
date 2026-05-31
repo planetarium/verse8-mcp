@@ -40,6 +40,23 @@ to the Verse8 CDN via `POST /api/upload-attachment` on `agent8-backend`.
 - `src/context/envFile.ts` — `readEnvVerse` helper.
 - Smoke subset: `tests/smoke/upload-asset.sh`.
 
+### Added — Proxy request timeout enforcement
+
+- Upstream MCP proxy calls (`postRpc`) now enforce per-service HTTP timeouts
+  via `AbortSignal.timeout()`. Previously the timeouts were defined in
+  `VERSE8_MCP_SERVICES` (60s–180s) but never wired into the fetch layer.
+  (`src/proxy/forward.ts`)
+- New env var `VERSE8_PROXY_REQUEST_TIMEOUT_MS` sets a global minimum
+  timeout floor (in milliseconds) across all upstream proxy calls. When
+  set (e.g. `120000`), services with lower per-service timeouts are
+  raised to this value. (`src/proxy/registry.ts`)
+- Documentation: [manual-install.md](./docs/manual-install.md) now includes
+  per-platform MCP client timeout configuration for Claude Code, Codex,
+  OpenCode, and Cursor. (`docs/manual-install.md`)
+- README.md now links to timeout configuration guide. (`README.md`)
+- `environment.md` documents the new `VERSE8_PROXY_REQUEST_TIMEOUT_MS`
+  variable. (`docs/environment.md`)
+
 ### Invariants (added to `.omc/INVARIANTS.md`)
 - **MCP-UP-1** — upload traffic is restricted to the agent8-backend
   host allow-list.

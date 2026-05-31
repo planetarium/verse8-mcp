@@ -187,9 +187,26 @@ function resolveUrl(service: VerseMcpService): string {
 }
 
 /**
+ * Read VERSE8_PROXY_REQUEST_TIMEOUT_MS (milliseconds).
+ * Default: 120_000 (120s). Values below 5000 are clamped to 5000
+ * (5 sec minimum) to prevent accidental 0-timeout.
+ */
+export function parseProxyTimeout(): number {
+  const raw = process.env.VERSE8_PROXY_REQUEST_TIMEOUT_MS;
+  if (!raw) return 120_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 120_000;
+  return Math.max(n, 5_000);
+}
+
+/**
  * Compute which MCP proxies are active for this process. Pass `projectDir`
  * when the caller knows the verse8 project root (from cwd detection) so the
  * per-project disable list can be honored.
+ *
+ * Timeout precedence: per-service timeout → VERSE8_PROXY_REQUEST_TIMEOUT_MS
+ * env var (defaults to 120_000ms when unset, acting as a floor —
+ * services with lower timeouts are raised to this value).
  */
 export function resolveMcpServices(
   projectDir?: string,
@@ -198,6 +215,7 @@ export function resolveMcpServices(
   const allowList = parseCsv(proxiesEnvRaw);
   const blockList = parseCsv(process.env.VERSE8_MCP_PROXIES_DISABLED);
   const projectBlock = readProjectDisabled(projectDir);
+  const globalTimeout = parseProxyTimeout();
 
   // "none" sentinel OR explicit empty string — a user who set the env
   // explicitly but wants no proxies at all. Distinct from "unset" (undefined)
@@ -236,7 +254,7 @@ export function resolveMcpServices(
       key: s.key,
       label: s.label,
       url: resolveUrl(s),
-      timeout: s.timeout,
+      timeout: Math.max(s.timeout, globalTimeout),
       description: s.description,
       enabled,
     };
