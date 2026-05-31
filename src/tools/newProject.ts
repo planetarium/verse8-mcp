@@ -63,7 +63,10 @@ export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
 
-function creditError(status: number, body: string) {
+function creditError(
+  status: number,
+  body: string,
+): { ok: false; error: "insufficient_credits"; hint: string; status: number } {
   return {
     ok: false,
     error: "insufficient_credits",
