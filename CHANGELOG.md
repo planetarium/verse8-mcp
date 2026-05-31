@@ -31,7 +31,7 @@ to the Verse8 CDN via `POST /api/upload-attachment` on `agent8-backend`.
 ### Added
 - `src/tools/uploadAsset.ts` — zod schema + `runUploadAsset`.
 - `src/api/agent8Backend.ts` — `uploadAttachment()` multipart client with
-  discriminated failure envelope (`unauthorized` / `insufficient_credit` /
+  discriminated failure envelope (`unauthorized` / `insufficient_credits` /
   `forbidden` / `bad_request` / `upload_failed` / `upload_response_malformed`).
 - `src/format/assetShortcuts.ts` — category → CDN path map + cdnPath
   sanitizer (rejects `..`, NUL, leading `/`).

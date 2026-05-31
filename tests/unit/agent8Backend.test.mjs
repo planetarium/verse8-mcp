@@ -309,7 +309,7 @@ test("uploadAttachment: 401 -> unauthorized", async () => {
   );
 });
 
-test("uploadAttachment: 402 -> insufficient_credit", async () => {
+test("uploadAttachment: 402 -> insufficient_credits", async () => {
   await withFetch(
     async () => new Response("Insufficient credit", { status: 402 }),
     async () => {
@@ -321,7 +321,7 @@ test("uploadAttachment: 402 -> insufficient_credit", async () => {
         token: "t0",
       });
       assert.equal(r.ok, false);
-      assert.equal(r.error, "insufficient_credit");
+      assert.equal(r.error, "insufficient_credits");
     },
   );
 });

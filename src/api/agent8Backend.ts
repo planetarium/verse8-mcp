@@ -285,7 +285,7 @@ export type UploadAttachmentResult =
       ok: false;
       error:
         | "unauthorized"
-        | "insufficient_credit"
+        | "insufficient_credits"
         | "forbidden"
         | "bad_request"
         | "upload_failed"
@@ -298,12 +298,12 @@ function classifyUploadStatus(
   status: number,
 ):
   | "unauthorized"
-  | "insufficient_credit"
+  | "insufficient_credits"
   | "forbidden"
   | "bad_request"
   | "upload_failed" {
   if (status === 401) return "unauthorized";
-  if (status === 402) return "insufficient_credit";
+  if (status === 402) return "insufficient_credits";
   if (status === 403) return "forbidden";
   if (status >= 400 && status < 500) return "bad_request";
   return "upload_failed";
