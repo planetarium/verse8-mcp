@@ -52,7 +52,7 @@
   },
   "verse8": {
     "skillsVendor": {
-      "sha": "68cc89692ae2ad45ec7c2de1ec027ab69161652734feeac3baab4c87dbc0a92b"
+      "sha": "64b5d9cdf2a4f210c8386791af34707b54cab155606596c980e73fed58b86dc0"
     },
     "gameserverPin": {
       "gameserver-node": "latest",

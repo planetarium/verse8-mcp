@@ -161,8 +161,8 @@ class Server {
 
 - `$global.countCollectionItems(collectionId: string, options?: CollectionOptions): Promise<number>` - Retrieves number of items
 - `$global.getCollectionItems(collectionId: string, options?: CollectionOptions): Promise<Item[]>` - Retrieves filtered/sorted items
-- `$global.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Gets single item by ID
-- `$global.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds new item
+- `$global.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Gets single item by ID. Returns an empty object `{}` (NOT `null`) when the item does not exist, so check existence with `item?.\_\_id`
+- `$global.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds new item. Set `item.\_\_id` to choose the ID yourself; omit it and one is generated. An existing `\_\_id` merges fields into that item (upsert). `\_\_id` must be a non-empty string without `/`
 - `$global.updateCollectionItem(collectionId: string, item: any): Promise<Item>` - Updates existing item
 - `$global.deleteCollectionItem(collectionId: string, itemId: string): Promise<{ \_\_id: string }>` - Deletes item
 - `$global.deleteCollection(collectionId: string): Promise<string>` - Deletes Collection
@@ -300,8 +300,8 @@ Important: roomState contains these default values:
 
 - `$room.countCollectionItems(collectionId: string, options?: CollectionOptions): Promise<number>` - Retrieves number of items from a room collection based on filtering, sorting, and pagination options.
 - `$room.getCollectionItems(collectionId: string, options?: CollectionOptions): Promise<Item[]>` - Retrieves multiple items from a room collection based on filtering, sorting, and pagination options.
-- `$room.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Retrieves a single item from the room collection using its unique ID.
-- `$room.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds a new item to the specified room collection and returns the added item with its unique identifier.
+- `$room.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Retrieves a single item from the room collection using its unique ID. Returns an empty object `{}` (NOT `null`) when the item does not exist, so check existence with `item?.\_\_id`.
+- `$room.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds a new item to the specified room collection and returns the added item with its unique identifier. Set `item.\_\_id` to choose the ID yourself; omit it and one is generated. An existing `\_\_id` merges fields into that item (upsert). `\_\_id` must be a non-empty string without `/`.
 - `$room.updateCollectionItem(collectionId: string, item: any): Promise<Item>` - Updates an existing item in the room collection and returns the updated item.
 - `$room.deleteCollectionItem(collectionId: string, itemId: string): Promise<{ \_\_id: string }>` - Deletes an item from the room collection and returns a confirmation containing the deleted item's ID.
 - `$room.deleteCollection(collectionId: string): Promise<string>` - Delete room collection.
