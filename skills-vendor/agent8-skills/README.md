@@ -10,16 +10,32 @@ Skill documents for Agent8 AI.
 git config core.hooksPath .githooks
 ```
 
+Validation needs [Bun](https://bun.sh) — the hook refuses to run without it. The same
+checks run in CI on every pull request, so nothing merges unvalidated. To check the
+whole repository at any time:
+
+```bash
+bun scripts/validate.ts
+```
+
 ## Project Structure
 
 ```
 skills/
   <skill-name>.md
+plugins/
+  <plugin-name>/       # manifest + assets + skills — see plugins/README.md
+scripts/
+  validate.ts          # rules enforced by the pre-commit hook and CI
 .githooks/
   pre-commit
 ```
 
 All skill documents are placed in the `skills/` directory. Only `.md` files are allowed.
+
+Skills that ship **assets** (drop-in libraries, shims, config files) live under `plugins/`
+instead — see **[plugins/README.md](plugins/README.md)** for the manifest format, delivery
+semantics, and the develop-first branch discipline.
 
 ## Writing a Skill Document
 
@@ -122,10 +138,19 @@ Key findings:
 
 ## Pre-commit Hook
 
-A pre-commit hook validates all staged skill documents before each commit. It checks:
+`.githooks/pre-commit` delegates all validation to `scripts/validate.ts` — the same script CI
+runs on every pull request, so a rule can never hold in the hook but not in CI, or vice versa.
 
-1. Only `.md` files exist in `skills/`
-2. Filename format and length
-3. Frontmatter `name` matches the filename
-4. Frontmatter `description` is within 1-1024 characters
-5. Multi-line `description` uses YAML block scalar syntax (`|`)
+Before running, the hook materializes the git index into a temporary tree
+(`git checkout-index`) and validates that tree, not the working directory — so what gets
+checked is exactly what is about to be committed, including changes that are staged but not
+yet saved to disk, and excluding unstaged edits to already-tracked files.
+
+It covers both `skills/` and `plugins/`: filename and frontmatter rules for every skill
+document (see [Filename Rules](#filename-rules) and [Frontmatter](#frontmatter) above), plus
+plugin manifest rules, asset constraints, the symlink ban, code-asset syntax checks, and
+cross-repo skill-naming collisions (see [plugins/README.md](plugins/README.md)). The one thing
+the hook skips is each plugin's own `tests/` — those run under `bun test` in CI instead, since
+spawning them on every commit would add seconds to each one.
+
+Bun is required; the hook refuses to run without it (see [Setup](#setup) above).

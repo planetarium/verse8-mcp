@@ -35,6 +35,25 @@ CRITICAL:
 - Use `bunx` instead of `npx` for running package binaries.
 - Use `bun run` instead of `npm run` for running scripts.
 
+## Protected Files
+
+CRITICAL: `.agent8.lock` at the project root is platform-managed — it stores the project's canonical verse identity. You MUST NEVER modify or delete `.agent8.lock`. Changing it disconnects the project from its deployed game and server data.
+
+## Execution Environment & Dev Server
+
+CRITICAL:
+- This container is HEADLESS: there is no browser. The dev/preview server is fully managed by the system and the user's browser already reflects your changes — you never need to start or verify it yourself.
+- NEVER run dev/preview server commands (`bun run dev`, `bun run preview`, `vite`, etc.) — not even to check for errors. They never produce anything useful here.
+- Do NOT retry a timed-out never-terminating command (server, watch mode) with a larger timeout.
+
+## Change Volume
+
+CRITICAL:
+- P0 (MANDATORY): A single response MUST NOT create or modify more than 1,000 files. Work that would exceed this must be split across multiple responses.
+- Generating large numbers of files with a shell script counts the same as writing them with tools — the limit is on files changed, not on how they were changed.
+- A response that reaches the limit is stopped there, and what it has already done is saved — continue in a follow-up message.
+- Going far past it cannot be saved at all: those changes are discarded and the project returns to its previous state, so nothing is kept.
+
 ## Code Structure Rules
 
 CRITICAL:
@@ -152,6 +171,26 @@ You MUST read the following skills in ANY of these situations:
 - P0 (MANDATORY): Do NOT write server code based on assumptions or general knowledge — the Agent8 GameServer SDK has specific conventions (e.g., `$global`, `$room`, `$sender`, `$asset`, no `setInterval`/`setTimeout`, export rules) that MUST be followed exactly
 - P0 (MANDATORY): When the user requests any online/multiplayer game feature, treat it as a server task and read the server skills before implementation
 - P1 (RECOMMENDED): Read `gameserver-sdk-crossramp` only when CROSS/crossramp keywords are explicitly mentioned
+
+## Game Tuning Panel Skill
+
+CRITICAL:
+You MUST read and follow the `debug-visualization` skill BEFORE creating any game or changing gameplay/UI behavior. Every game ships with a live in-game tuning panel, unasked — that skill defines how, and it stays in force for the whole session once read.
+
+### When to read it
+
+You MUST read the `debug-visualization` skill in ANY of these situations:
+
+1. **Creating a game or interactive toy** (anything with a game loop, player input, score, or win/lose)
+2. **Adding or changing gameplay/UI features** in an existing game
+3. **Tuning-type requests** in any language: too fast/slow, too big/small, move it, can't hit it, hitbox, feels off, easier/harder, "don't rebuild — just fix this" (너무 빨라요/느려요, 버튼이 안 눌려요, 판정이 이상해요, 이것만 고쳐줘)
+4. **A message contains a `[TUNING]` or `[ERRORS]` block** — `[TUNING]` is sent by the app's Ask AI dialog (values the panel's Save could not apply), `[ERRORS]` is pasted from the panel's Copy errors; handle both exactly per the skill's protocol
+
+### Rules
+
+- P0 (MANDATORY): Every game registers its gameplay/UI constants in the `DebugPanel.define` schema per the skill — never as new inline literals
+- P0 (MANDATORY): A `[TUNING]` paste edits schema defaults ONLY; an `[ERRORS]` paste gets the smallest fix — never a rebuild or refactor
+- P0 (MANDATORY): The panel library is platform-injected in the preview — never copy `debug-panel.js` into the project, add a script tag for it, or write your own implementation
 
 ## Response Rules
 

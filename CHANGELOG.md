@@ -5,6 +5,27 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.6.1] — 2026-09-08
+
+### Changed — vendored `agent8-skills` synced to upstream `f4eca9b`
+
+`skills-vendor/agent8-skills/` now mirrors
+[planetarium/agent8-skills](https://github.com/planetarium/agent8-skills) `main`
+at `f4eca9b` (previous sync: `f0cab41`, 2026-07-29). All bundled skills are
+re-materialized into attached projects on the next `verse8_attach`.
+
+- New skills: `ads-impl`, `local-cache-impl`, `verse8-auth-impl`.
+- `vx-shop-impl` restored to its intended markdown structure.
+- `instructions/AGENTS.md`, `prompts/add/model/*`, `README.md` caught up with
+  upstream (changes since April that the July sync had skipped).
+- Scope is unchanged: only `README.md`, `instructions/`, `prompts/`, `skills/`
+  are vendored. Upstream's `plugins/`, `scripts/`, `.github/`, `.githooks/`
+  are Agent8-container delivery mechanics and repo tooling; this package
+  reads `skills/*.md` only, so they are deliberately excluded.
+- `verse8.skillsVendor.sha` re-pinned. The pin is computed over an LF
+  checkout (Linux/WSL); a Windows `core.autocrlf=true` working tree yields
+  a different digest, so run `check:subtree-sha` in an LF environment.
+
 ## [0.6.0] — 2026-04-24
 
 ### Added — `verse8_upload_asset` tool
