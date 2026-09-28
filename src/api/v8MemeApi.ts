@@ -171,6 +171,78 @@ export async function verifyToken(token: string): Promise<{ ok: true; profile: V
   return { ok: false, status, body: raw };
 }
 
+/**
+ * Verse record as returned by GET /v1/verse/verseId. Only the fields the
+ * deploy tool reads are typed; the backend returns many more.
+ */
+export interface VerseInfo {
+  verseId: string;
+  title?: string;
+  description?: string;
+  shortDescription?: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  playUrl?: string;
+  category?: string;
+  tag?: string[];
+  isPublic?: boolean;
+  visibility?: "Public" | "Unlisted" | "Private";
+  allowRemix?: boolean;
+  isMobileSupported?: boolean;
+  isOwner?: boolean;
+  [k: string]: unknown;
+}
+
+export type VerseApiResult<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; body: string };
+
+function toVerseResult<T>(r: { status: number; data: T | null; raw: string }): VerseApiResult<T> {
+  if (r.status >= 200 && r.status < 300 && r.data) {
+    return { ok: true, status: r.status, data: r.data };
+  }
+  return { ok: false, status: r.status, body: r.raw };
+}
+
+/**
+ * GET /v1/verse/verseId?verseId= — 404 means the verse has never been
+ * published (first deploy); 200 means update. Sends the token so the
+ * response carries `isOwner`.
+ */
+export async function getVerse(verseId: string, token: string): Promise<VerseApiResult<VerseInfo>> {
+  const qs = new URLSearchParams({ verseId });
+  return toVerseResult(await getJson<VerseInfo>(`${getBaseUrl()}/v1/verse/verseId?${qs.toString()}`, token));
+}
+
+/** GET /v1/verse/id-available — `reason` is deleted | invalid | blocked when unavailable. */
+export async function checkVerseIdAvailable(
+  verseId: string,
+  token: string,
+): Promise<VerseApiResult<{ verseId: string; available: boolean; reason?: string }>> {
+  const qs = new URLSearchParams({ verseId });
+  return toVerseResult(await getJson(`${getBaseUrl()}/v1/verse/id-available?${qs.toString()}`, token));
+}
+
+/**
+ * POST /v1/verse/create — first deploy. Production guards this route with
+ * a Cloudflare Turnstile / App Check bot check; a headless call without
+ * `x-turnstile-token` is rejected with 403.
+ */
+export async function createVerse(body: Record<string, unknown>, token: string): Promise<VerseApiResult<VerseInfo>> {
+  return toVerseResult(await postJson<VerseInfo>(`${getBaseUrl()}/v1/verse/create`, body, token));
+}
+
+/** POST /v1/verse/update/:verseId — update deploy (owner only, no bot check). */
+export async function updateVerse(
+  verseId: string,
+  body: Record<string, unknown>,
+  token: string,
+): Promise<VerseApiResult<VerseInfo>> {
+  return toVerseResult(
+    await postJson<VerseInfo>(`${getBaseUrl()}/v1/verse/update/${encodeURIComponent(verseId)}`, body, token),
+  );
+}
+
 export async function createProject(
   input: CreateProjectInput,
   token: string,

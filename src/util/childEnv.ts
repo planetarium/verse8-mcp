@@ -15,6 +15,10 @@ export function sanitizeChildEnv(
   delete out.VERSE8_API_URL;
   delete out.VERSE8_AGENT8_BACKEND_URL;
   delete out.VERSE8_CREATE_URL;
+  delete out.VERSE8_WEB_URL;
+  // @agent8/deploy's auth variable — verse8_deploy re-adds it for the
+  // upload step only.
+  delete out.V8_ACCESS_TOKEN;
   for (const key of Object.keys(out)) {
     if (/^VERSE8_.*_MCP_URL$/.test(key)) {
       delete out[key];

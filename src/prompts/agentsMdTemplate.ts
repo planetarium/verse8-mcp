@@ -50,18 +50,29 @@ tool is the single source of truth.
 If you think you need Bash for \`git commit\` or \`bun run dev\`, stop and
 use the MCP tool instead. The only exception is \`VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m "..."\` for a deliberate, user-approved one-off fix.
 
-## 🚨 Deploy is web-only
+## 🚨 Deploy only through \`verse8_deploy\`
 
-Production deployment happens at **https://create.verse8.io/** (web UI),
-NOT through any MCP tool, npm script, or Bash command. When the user
-asks to deploy / publish / ship / 배포 / 출시 / 게시:
+When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
 
-1. Tell them deployment is done in the web editor.
-2. Show this URL: **https://create.verse8.io/**
-3. Do NOT attempt to run a deploy command via Bash, do NOT invoke a
-   non-existent MCP tool, do NOT push manually expecting auto-deploy.
-4. \`verse8_checkpoint\` / \`verse8_preview\` only commit + push to
-   gitlab.verse8.io. They do not trigger a public deploy.
+1. Call \`verse8_deploy\` with \`dryRun: true\`. It resolves whether this is
+   the **first deploy** or an **update** of the project's verse and returns
+   the publish body it would send.
+2. First deploy needs a \`title\` and a cover image (\`thumbnailPath\` — a
+   local png/jpg/gif/webp ≤4 MB, e.g. made with \`image_asset_generate\` —
+   or \`imageUrl\`). Ask the user; never invent them. Updates keep the
+   current title / image / visibility / tags unless you pass new ones;
+   offer \`releaseNoteTitle\` + \`releaseNoteTypes\` for updates.
+3. Show the user the mode and metadata, and run \`verse8_deploy\` without
+   \`dryRun\` only after they confirm — publishing is public.
+4. If it returns \`captcha_required\`, the game files are uploaded but the
+   first publish must be finished in the web editor (URL in the hint).
+   Later updates work from \`verse8_deploy\`.
+5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
+   command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
+   + push to gitlab.verse8.io; they do not publish.
+6. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
+   products and gameserver state are keyed by it. Never edit it to "fix" a
+   deploy error.
 
 ## You are operating inside a Verse8 project
 
@@ -78,7 +89,8 @@ MUST use for state-changing operations:
 | Commit + push changes | **\`verse8_checkpoint\`** | Native \`git commit\` via Bash |
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |
 | Generate game images | \`image_asset_generate\` / \`image_variation_generate\` | External image APIs |
-| **Deploy / publish to production** | Direct the user to **https://create.verse8.io/** (web UI) | Any deploy command via Bash; no MCP deploy tool exists |
+| **Deploy / publish to production** | **\`verse8_deploy\`** (\`dryRun: true\` first, then confirm) | Any deploy / build+upload command via Bash |
+| Upload a verse cover image / preview video | \`verse8_upload_thumbnail\` (or \`thumbnailPath\` on \`verse8_deploy\`) | \`verse8_upload_asset\` (that is for in-game assets) |
 
 ## Preview policy — the "see it = commit it" rule
 

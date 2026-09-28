@@ -20,10 +20,15 @@ import {
   runCheckpoint,
 } from "./tools/checkpoint.js";
 import { previewInputSchema, runPreview } from "./tools/preview.js";
+import { deployInputSchema, runDeploy } from "./tools/deploy.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
 } from "./tools/uploadAsset.js";
+import {
+  runUploadThumbnail,
+  uploadThumbnailInputSchema,
+} from "./tools/uploadThumbnail.js";
 import {
   loginCompleteInputSchema,
   loginStartInputSchema,
@@ -87,6 +92,8 @@ const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session
 5) **Preview-delta rule**: any change the user will see in the next preview (UI tweak, gameplay, asset swap, bug fix) ends the turn with \`verse8_preview\`.
 
 6) **Image / music / sfx / 3D asset generation** → use the image_asset_generate / music_generate / sfx_generate / spritesheet_generate / skybox_generate / claythis_3d_generate / etc. tools. Do NOT call external APIs directly.
+
+7) **Deploy / publish** → use \`verse8_deploy\` (call with \`dryRun: true\` first and confirm with the user — publishing is public). NEVER run \`@agent8/deploy --prod\` or a build+upload via Bash.
 
 Violating any of 2–5 will either corrupt git state (rejected commit), desynchronize preview from repo (2 and 3), or silently lose the V8 metadata that Verse8 tooling depends on.`;
 
@@ -156,6 +163,20 @@ const UPLOAD_ASSET_TOOL: Tool = {
   inputSchema: zodToJsonSchema(uploadAssetInputSchema),
 };
 
+const DEPLOY_TOOL: Tool = {
+  name: "verse8_deploy",
+  description:
+    "Publish the Verse8 project to production — use this whenever the user asks to deploy / publish / launch / ship / 배포 / 출시 / 게시. NEVER run a deploy command via Bash. Auto-detects first deploy vs update from the verse record of the project's VITE_AGENT8_VERSE. Sequence: (1) internal verse8_checkpoint (pass the same V8 commit fields as verse8_checkpoint); (2) uploads `thumbnailPath` / `videoPath` to contents.verse8.io; (3) rm -rf dist → `installCommand` (default `bun update`) → `bun run build --base ./` → `@agent8/gameserver-node build` for gameserver projects; (4) `@agent8/deploy --prod` uploads dist/ + server.js; (5) POST /v1/verse/create (first) or /v1/verse/update/<verseId> (update). First deploy REQUIRES `title` and a cover image (`thumbnailPath` or `imageUrl`) — ask the user rather than inventing them; on update omitted fields keep their current values. ALWAYS call with `dryRun: true` first, show the user the resolved `mode` + `publishBody`, and deploy only after they confirm — publishing is public. MSU projects get `__MSU` + `__review_required` tags automatically. The verse id is never changed (VX Shop products / gameserver state are keyed by it); `verse_owned_by_other` / `verse_id_unavailable` stop with a hint. Error `captcha_required`: the first publish needs the web captcha — files are uploaded; send the user to the returned web editor URL to finish, later updates work here. Returns {mode, verseId, playUrl, publishBody, steps, warnings}.",
+  inputSchema: zodToJsonSchema(deployInputSchema),
+};
+
+const UPLOAD_THUMBNAIL_TOOL: Tool = {
+  name: "verse8_upload_thumbnail",
+  description:
+    "Upload a verse cover image (png/jpg/jpeg/gif/webp, ≤4 MB) or preview video (mp4, ≤10 MiB) to contents.verse8.io via verse8.io /api/upload — the same storage the web publish dialog uses. Returns {url, kind}. Pass the url to verse8_deploy as `imageUrl` / `videoUrl` (or give verse8_deploy `thumbnailPath` / `videoPath` directly). This is for the verse's store listing, NOT in-game assets — use verse8_upload_asset for those.",
+  inputSchema: zodToJsonSchema(uploadThumbnailInputSchema),
+};
+
 function imageToolToMcpTool(t: UpstreamTool): Tool {
   return {
     name: t.name,
@@ -209,6 +230,8 @@ export function createServer(): Server {
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
       tools.push(UPLOAD_ASSET_TOOL);
+      tools.push(UPLOAD_THUMBNAIL_TOOL);
+      tools.push(DEPLOY_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -322,6 +345,26 @@ export function createServer(): Server {
           () => runUploadAsset(parsed, cwd),
           { projectDir: pd },
         );
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_upload_thumbnail") {
+        const parsed = uploadThumbnailInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(
+          name,
+          () => runUploadThumbnail(parsed, cwd),
+          { projectDir: pd },
+        );
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_deploy") {
+        const parsed = deployInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runDeploy(parsed, cwd), {
+          projectDir: pd,
+        });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

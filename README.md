@@ -46,7 +46,13 @@ Add background music to the main scene
 
 ### Deploy
 
-Deploy from the web editor — **<https://create.verse8.io/>**.
+```
+Deploy this game
+```
+
+The agent calls `verse8_deploy` — a dry run first (first deploy vs update, metadata to publish), then the real deploy once you confirm. A first deploy needs a title and a cover image.
+
+> **First deploy caveat:** `v8-meme-api` guards `POST /v1/verse/create` with a web captcha, so a first deploy from the MCP may stop with `captcha_required` after the game files are uploaded. Finish that first publish in the web editor (**<https://create.verse8.io/>**); every later update works from the MCP.
 
 ---
 
@@ -68,6 +74,8 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |
 | `verse8_upload_asset` | Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via `agent8-backend /api/upload-attachment`. Pass `filePath` + `cdnPath`; the host is expected to mirror the project's `src/assets.json` URL patterns and to register the returned URL back into that manifest. | Logged in |
+| `verse8_upload_thumbnail` | Upload a verse cover image (png/jpg/gif/webp ≤4 MB) or preview video (mp4 ≤10 MiB) to `contents.verse8.io` via verse8.io `/api/upload`. | Logged in |
+| `verse8_deploy` | Publish: checkpoint → media upload → `bun run build --base ./` (+ gameserver build) → `@agent8/deploy --prod` → `POST /v1/verse/create` (first) or `/v1/verse/update/:id` (update). `dryRun: true` previews the mode + publish body. | Logged in |
 | `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
 
 Resources: `verse8://skill/<name>/SKILL.md`.
