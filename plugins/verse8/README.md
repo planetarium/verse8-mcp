@@ -33,7 +33,7 @@ Everything below happens only in a Verse8 project, or when you ask Claude to sig
 
 - `npx -y @verse8/mcp@<pinned version>` from the npm registry.
 - In a Verse8 project: `git` (commit, push to `gitlab.verse8.io`), the project's package manager (`bun update` by default), `bun run dev` for previews, and `bun run build` for deploys.
-- For projects with a game server, `npx -y @agent8/gameserver-node@<pinned>` and `npx -y @agent8/deploy@<pinned>` build and upload the server code. Versions are pinned in the server package.
+- For projects with a game server, `npx -y @agent8/gameserver-node` and `npx -y @agent8/deploy` build and upload the server code.
 
 **Changes in your project**
 
