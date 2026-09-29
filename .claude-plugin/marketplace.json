@@ -1,0 +1,15 @@
+{
+  "name": "verse8",
+  "description": "Verse8 plugins for Claude Code",
+  "owner": {
+    "name": "Planetarium",
+    "url": "https://github.com/planetarium"
+  },
+  "plugins": [
+    {
+      "name": "verse8",
+      "source": "./plugins/verse8",
+      "description": "Build, preview and publish Verse8 web games from Claude."
+    }
+  ]
+}

@@ -8,10 +8,21 @@ MCP server that lets any AI agent (Claude Code, Codex, Cursor, opencode, …) bu
 
 **1. Install once:**
 
+Claude Code, as a plugin (pins the server version and updates with the plugin):
+
+```
+/plugin marketplace add planetarium/verse8-mcp
+/plugin install verse8@verse8
+```
+
+Or add the MCP server directly:
+
 ```bash
 claude mcp add verse8 -- npx -y @verse8/mcp   # Claude Code
 codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 ```
+
+Use one of the two in Claude Code, not both — each registers a server named `verse8`. What the plugin runs, sends and stores is listed in [plugins/verse8/README.md](./plugins/verse8/README.md).
 
 > **Timeout**: 서버 측은 기본 120초가 적용되지만, 클라이언트 측 타임아웃이
 > 짧으면(기본 60초) 응답을 못 받습니다. Codex/OpenCode 사용자는 반드시
