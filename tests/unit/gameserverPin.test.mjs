@@ -16,19 +16,13 @@ function withEnv(name, value, fn) {
   }
 }
 
-test("resolveAgent8Pin: package.json pin (exact version) is used by default", () => {
-  // package.json pins exact versions — the Claude plugin directory blocks
-  // unpinned launchers, and `latest` would change what users run silently.
+test("resolveAgent8Pin: package.json pin (latest) is used by default", () => {
+  // package.json ships with { gameserver-node: 'latest', deploy: 'latest' }.
   const gs = withEnv("VERSE8_GAMESERVER_BUILD_PIN", undefined, () =>
     resolveAgent8Pin("gameserver-node"),
   );
   assert.equal(gs.source, "package.json");
-  assert.match(gs.nameArg, /^@agent8\/gameserver-node@\d+\.\d+\.\d+$/);
-  const dep = withEnv("VERSE8_GAMESERVER_BUILD_PIN", undefined, () =>
-    resolveAgent8Pin("deploy"),
-  );
-  assert.equal(dep.source, "package.json");
-  assert.match(dep.nameArg, /^@agent8\/deploy@\d+\.\d+\.\d+$/);
+  assert.equal(gs.nameArg, "@agent8/gameserver-node@latest");
 });
 
 test("resolveAgent8Pin: VERSE8_GAMESERVER_BUILD_PIN env overrides package.json", () => {

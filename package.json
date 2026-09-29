@@ -55,8 +55,8 @@
       "sha": "7a0e48285e72ae81e58700a92982b9d91e16f324eb7f0fb969aa99a22974d740"
     },
     "gameserverPin": {
-      "gameserver-node": "2.0.1",
-      "deploy": "1.5.5"
+      "gameserver-node": "latest",
+      "deploy": "latest"
     }
   }
 }

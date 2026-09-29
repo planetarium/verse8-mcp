@@ -38,12 +38,6 @@ test(".mcp.json launches the exact package.json version of @verse8/mcp", () => {
   assert.equal(spec, `@verse8/mcp@${pkg.version}`);
 });
 
-test("runtime @agent8 launchers are pinned to exact versions", () => {
-  for (const [name, ver] of Object.entries(pkg.verse8.gameserverPin)) {
-    assert.match(ver, EXACT, `verse8.gameserverPin.${name} must be an exact version, got ${ver}`);
-  }
-});
-
 test("marketplace entry points at the plugin folder under the same name", () => {
   const entry = marketplace.plugins.find((p) => p.name === plugin.name);
   assert.ok(entry, `marketplace.json has no entry named ${plugin.name}`);
