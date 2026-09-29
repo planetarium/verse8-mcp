@@ -4,8 +4,8 @@
   "version": "0.6.1",
   "description": "Build, preview and publish Verse8 web games from Claude: project bootstrap, V8-format commits, local preview, asset generation, CDN uploads and one-step deploy to verse8.io.",
   "author": {
-    "name": "Planetarium",
-    "url": "https://github.com/planetarium"
+    "name": "Verse8",
+    "url": "https://verse8.io"
   },
   "homepage": "https://github.com/planetarium/verse8-mcp#readme",
   "repository": "https://github.com/planetarium/verse8-mcp",

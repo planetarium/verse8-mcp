@@ -2,8 +2,8 @@
   "name": "verse8",
   "description": "Verse8 plugins for Claude Code",
   "owner": {
-    "name": "Planetarium",
-    "url": "https://github.com/planetarium"
+    "name": "Verse8",
+    "url": "https://verse8.io"
   },
   "plugins": [
     {
