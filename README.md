@@ -50,7 +50,7 @@ Add background music to the main scene
 Deploy this game
 ```
 
-The agent calls `verse8_deploy` — a dry run first (first deploy vs update, metadata to publish), then the real deploy once you confirm. The same fields as the web publish dialog are required: a first deploy needs a title, tags, a cover image and a release note; every deploy needs a release note (title, types, description). The agent drafts the text fields from the project — the release note from the checkpoints since the last deploy — asks you for the cover image (a local file or URL; it can generate one if you ask), and shows you the result once before publishing.
+The agent calls `verse8_deploy`. The same fields as the web publish dialog are required: a first deploy needs a title, tags, a cover image and a release note; every deploy needs a release note (title, types, description). The agent drafts all of them from the project — the release note from the checkpoints since the last deploy, the cover with `image_asset_generate` — and on a **first deploy** shows you the result once before publishing (swap the cover or title there). **Updates** publish right away and report the play URL and release note; say "show me first" if you want to confirm.
 
 ---
 

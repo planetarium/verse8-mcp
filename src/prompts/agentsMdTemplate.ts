@@ -64,19 +64,23 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    \`releaseNoteTitle\` + \`releaseNoteTypes\` + \`releaseNoteDescription\`.
    Updates keep the current title / image / visibility / tags unless you
    pass new ones.
-3. When dryRun returns \`invalid_input\` with \`missing\`, draft the text
-   fields yourself from the project (title / tags / description from the
-   game, release note from the returned \`suggestedReleaseNote\` — edit it
-   so it reads like a release note, not a commit log). Do NOT ask for
-   those one by one. The **cover image is the user's call**, exactly as in
-   the web dialog: ask once for a local image path or URL
-   (\`thumbnailPath\` / \`imageUrl\`), and generate one with
-   \`image_asset_generate\` only when the user tells you to. Then re-run
-   dryRun. Values the user already gave are used as-is.
-4. Show the user that one dryRun result (mode + publishBody) and run
-   \`verse8_deploy\` without \`dryRun\` only after they approve or correct it —
-   publishing is public. Skip the confirmation only when the user
-   explicitly said to deploy without asking.
+3. When dryRun returns \`invalid_input\` with \`missing\`, draft EVERY
+   missing value yourself — never ask the user for them one by one:
+   title / tags / description from the game, release note from the
+   returned \`suggestedReleaseNote\` (edit it so it reads like a release
+   note, not a commit log), cover via \`image_asset_generate\` from the
+   game's theme (pass the generated URL as \`imageUrl\`, or download it
+   and pass \`thumbnailPath\`). Values the user already gave are used
+   as-is. Then re-run dryRun.
+4. **First deploy**: show the user that one dryRun result (mode +
+   publishBody, cover URL included) and run \`verse8_deploy\` without
+   \`dryRun\` only after they approve or correct it — title, tags, cover
+   and visibility go public here. Skip the confirmation only when the
+   user explicitly said to deploy without asking.
+   **Update**: deploy right away — the live title / cover / tags /
+   visibility are kept and only the release note is new — then report
+   the playUrl and the release note you published. Confirm first only
+   if the user asked to see it before publishing.
 5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
    command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
    + push to gitlab.verse8.io; they do not publish.
