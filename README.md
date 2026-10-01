@@ -52,8 +52,6 @@ Deploy this game
 
 The agent calls `verse8_deploy` — a dry run first (first deploy vs update, metadata to publish), then the real deploy once you confirm. The same fields as the web publish dialog are required: a first deploy needs a title, tags, a cover image and a release note; every deploy needs a release note (title, types, description). The agent drafts whatever is missing from the project — the release note from the checkpoints since the last deploy — and shows you the result once before publishing.
 
-> **First deploy caveat:** `v8-meme-api` guards `POST /v1/verse/create` with a web captcha, so a first deploy from the MCP may stop with `captcha_required` after the game files are uploaded. Finish that first publish in the web editor (**<https://create.verse8.io/>**); every later update works from the MCP.
-
 ---
 
 ## Manual install

@@ -640,6 +640,11 @@ function detectDebugPanelWithoutShim(distDir: string): boolean {
   return false;
 }
 
+/**
+ * Safety net only: v8-meme-api dropped the captcha guard on
+ * POST /v1/verse/create for authenticated callers (g2-sync #844/#845), so a
+ * first deploy no longer stops here. Kept in case the guard returns.
+ */
 function looksLikeBotCheck(body: string): boolean {
   return /captcha|turnstile|bot|app.?check/i.test(body);
 }

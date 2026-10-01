@@ -75,13 +75,10 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    \`verse8_deploy\` without \`dryRun\` only after they approve or correct it —
    publishing is public. Skip the confirmation only when the user
    explicitly said to deploy without asking.
-5. If it returns \`captcha_required\`, the game files are uploaded but the
-   first publish must be finished in the web editor (URL in the hint).
-   Later updates work from \`verse8_deploy\`.
-6. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
+5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
    command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
    + push to gitlab.verse8.io; they do not publish.
-7. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
+6. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
    products and gameserver state are keyed by it. Never edit it to "fix" a
    deploy error.
 
