@@ -5,6 +5,72 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.7.0] — 2026-10-01
+
+### Added — `verse8_deploy`: publish from the MCP (#7, #8)
+
+First deploy or update of the project's verse without the browser,
+replicating the web editor's Launch flow: `GET /v1/verse/:id` (404 → first)
+→ V8 checkpoint → cover / video upload → `bun run build --base ./` (+
+`@agent8/gameserver-node build` for game-server projects) →
+`@agent8/deploy --prod` → `POST /v1/verse/create` | `/v1/verse/update/:id`.
+
+- Required fields follow the web publish dialog: first deploy = `title`
+  (4–50) · `tags` (1–5) · cover (`thumbnailPath` / `imageUrl`) · release
+  note; every deploy = `releaseNoteTitle` + `releaseNoteTypes` (1–3) +
+  `releaseNoteDescription`. Validated in `dryRun`, before anything is
+  built — a partial release note used to fail with HTTP 500 after upload.
+- `dryRun` returns `missing` plus `suggestedReleaseNote`: the V8
+  checkpoint summaries since the sha pinned in the live verse's `playUrl`
+  (whole history on first deploy), types by keyword; commits without a V8
+  summary (template / bypass commits) are skipped.
+- Agent guidance (AGENTS.md template, tool description): draft every
+  missing value from the project, cover via `image_asset_generate`;
+  first deploy shows the one dryRun result and publishes after approval,
+  updates publish directly and report `playUrl` + release note.
+- MSU projects get `__MSU` + `__review_required` tags (container
+  detection ported); `verse-from-<id>` git tag → `parentVerseId`.
+- The verse id is never re-minted; `verse_owned_by_other` /
+  `verse_id_unavailable` stop with a hint.
+- `plugin_shim_missing`: a build that references `DebugPanel` without the
+  publish-time shim the web editor injects stops before upload.
+- `installCommand` rejects shell metacharacters.
+
+### Added — `verse8_upload_thumbnail`
+
+Cover image (png/jpg/gif/webp ≤4 MB) or preview video (mp4 ≤10 MiB) upload
+to `contents.verse8.io` through `verse8.io`'s own upload routes, the same
+storage the web publish dialog uses. `verse8_deploy` calls it for
+`thumbnailPath` / `videoPath`.
+
+### Changed — `verse8_checkpoint`
+
+- `.deployed` / `.secret` are never committed (container
+  `NEVER_COMMIT_FILES` parity); staging is scoped to the project
+  directory and `nothing_to_commit` is judged by the index.
+- `push_failed` hint says `git push origin HEAD`.
+
+### Added — Claude Code plugin + self-hosted marketplace (#9, #10)
+
+`.claude-plugin/marketplace.json` at the repo root and `plugins/verse8/`
+(`plugin.json`, `.mcp.json` launching `npx -y @verse8/mcp@0.7.0`, README
+disclosing what the plugin runs / sends / stores, LICENSE):
+
+```
+/plugin marketplace add planetarium/verse8-mcp
+/plugin install verse8@verse8
+```
+
+`package.json`, the `.mcp.json` pin and `plugin.json` must carry the same
+version — checked by `tests/unit/pluginManifest.test.mjs`, which
+`prepublishOnly` now runs. `@agent8/gameserver-node` / `@agent8/deploy`
+stay on latest, like the web editor.
+
+### Removed
+
+- The first-deploy captcha caveat: `v8-meme-api` no longer guards
+  `POST /v1/verse/create` for authenticated callers (g2-sync #844/#845).
+
 ## [0.6.1] — 2026-09-08
 
 ### Changed — vendored `agent8-skills` synced to upstream `f4eca9b`

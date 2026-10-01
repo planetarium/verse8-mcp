@@ -66,7 +66,7 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.6.1",
+  version: "0.7.0",
 };
 
 /**
