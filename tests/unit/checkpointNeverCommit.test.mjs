@@ -131,10 +131,20 @@ test("runCheckpoint: project nested inside a larger repo → game/.deployed is s
 
   fs.writeFileSync(path.join(dir, ".deployed"), "{}");
   fs.writeFileSync(path.join(dir, "game.js"), "play()");
+  // A change outside the project must neither be committed nor hide a real nothing_to_commit.
+  fs.writeFileSync(path.join(repo, "README.md"), "root edited\n");
   const res = await withEnvToken(() => runCheckpoint(checkpointInput(dir), dir));
   assert.equal(res.ok, true, JSON.stringify(res));
   const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n").filter(Boolean);
   assert.deepEqual(committed, ["game/game.js"]);
+  assert.equal(git(repo, "diff", "--cached", "--name-only"), "", "outside-project edit must not be left staged");
+
+  // Only an outside-project change pending → nothing_to_commit, not a stray commit.
+  const before = git(repo, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(repo, "README.md"), "root edited again\n");
+  const again = await withEnvToken(() => runCheckpoint(checkpointInput(dir), dir));
+  assert.equal(again.error, "nothing_to_commit");
+  assert.equal(git(repo, "rev-parse", "HEAD"), before);
 });
 
 test("runCheckpoint: deleting an already-tracked .deployed goes through (that is how it leaves the remote)", async () => {

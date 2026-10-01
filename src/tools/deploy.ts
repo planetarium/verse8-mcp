@@ -873,7 +873,7 @@ export async function runDeploy(
         return fail(
           "build",
           "plugin_shim_missing",
-          "The build references `DebugPanel` but no publish plugin shim is in dist/ (the web editor injects dist/__agent8/plugins/debug-panel-shim.js at publish time; verse8-mcp cannot yet). Publishing would crash the game with ReferenceError: DebugPanel. Nothing was uploaded. Guard the reference (`if (typeof DebugPanel !== \"undefined\")`) or remove the DebugPanel usage, checkpoint, and deploy again — or publish this project from the web editor.",
+          "The build references `DebugPanel` but no publish plugin shim is in dist/ (the web editor injects dist/__agent8/plugins/debug-panel-shim.js at publish time; verse8-mcp cannot yet). Publishing would crash the game with ReferenceError: DebugPanel. The game files were not uploaded (the checkpoint and any cover/video upload already happened). Remove the DebugPanel usage from the shipped code, checkpoint, and deploy again — or publish this project from the web editor.",
           { stepsCompleted: completed },
         );
       }

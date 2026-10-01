@@ -382,7 +382,9 @@ export async function runCheckpoint(
         stdio: ["ignore", "pipe", "pipe"],
       });
     } else {
-      execFileSync("git", ["add", "-A"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      // Scope to the project dir so staging and the `--relative` index listing
+      // below agree when the project is nested inside a larger repo.
+      execFileSync("git", ["add", "-A", "--", "."], { cwd, stdio: ["ignore", "pipe", "pipe"] });
     }
   } catch (e) {
     const err = e as RunError;
