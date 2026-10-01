@@ -36,7 +36,7 @@
     "clean": "rm -rf dist",
     "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
     "audit": "npm audit --audit-level=high",
-    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh"
+    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs"
   },
   "engines": {
     "node": ">=18.17"

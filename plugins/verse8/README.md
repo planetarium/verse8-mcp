@@ -27,17 +27,21 @@ Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Cl
 
 ## What it runs, sends and stores
 
-Everything below happens only in a Verse8 project, or when you ask Claude to sign in or create one.
+Once you are signed in, the server lists its tools at the start of every session — in any directory — and that lookup contacts Verse8's asset services (`mcp-*-svc.verse8.io`) with your token. Everything else below happens only in a Verse8 project, or when you ask Claude to sign in or create one.
 
 **Runs on your machine**
 
 - `npx -y @verse8/mcp@<pinned version>` from the npm registry.
 - In a Verse8 project: `git` (commit, push to `gitlab.verse8.io`), the project's package manager (`bun update` by default), `bun run dev` for previews, and `bun run build` for deploys.
-- For projects with a game server, `npx -y @agent8/gameserver-node` and `npx -y @agent8/deploy` build and upload the server code.
+- On every deploy, `npx -y @agent8/deploy` uploads the built game; for projects with a game server, `npx -y @agent8/gameserver-node` builds the server code first.
 
 **Changes in your project**
 
-`verse8_attach` and `verse8_new_project_confirm` install `pre-commit` and `commit-msg` git hooks that keep Verse8's commit format, and write `AGENTS.md`, `CLAUDE.md`, `.claude/skills/*` and `.verse8/project.json`. Files you edited are kept unless you ask to overwrite them.
+`verse8_attach` and `verse8_new_project_confirm` install `pre-commit` and `commit-msg` git hooks that keep Verse8's commit format — an existing hook of the same name that is not Verse8's is replaced, not backed up — and write `AGENTS.md`, `CLAUDE.md`, `.claude/skills/*`, `.verse8/project.json`, `.verse8/.gitignore` and `.env` (your wallet address as `VITE_AGENT8_ACCOUNT` and the game's `VITE_AGENT8_VERSE` id; Verse8 projects commit `.env`). Files you edited are kept unless you ask to overwrite them.
+
+A new project is cloned with a 30-day GitLab access token embedded in the `origin` URL in `.git/config`, so pushes work without a credential prompt.
+
+Each `verse8_checkpoint` / `verse8_preview` / `verse8_deploy` commit message contains your prompt for that turn, Claude's summary of the work and a truncated record of the tool calls (inputs and outputs), and is pushed to `gitlab.verse8.io` — the same history format the Verse8 web editor writes.
 
 **Sends data to Verse8 services** (all over HTTPS, authenticated with your Verse8 token)
 
@@ -54,8 +58,8 @@ Prompts you give to generation tools and the files you upload are sent to these 
 
 **Stores locally**
 
-- Your Verse8 access token in `~/.config/verse8/token` (file mode `0600`).
-- An audit log of tool calls, with secrets redacted, in `~/.local/state/verse8/mcp.log`.
+- Your Verse8 access token in `~/.config/verse8/token` (file mode `0600`; `$XDG_CONFIG_HOME/verse8/token` if set).
+- An audit log of tool calls, with secrets redacted, in `~/.local/state/verse8/mcp.log` (`$XDG_STATE_HOME/verse8/mcp.log` or `$VERSE8_AUDIT_LOG_PATH` if set).
 
 ## Requirements
 
