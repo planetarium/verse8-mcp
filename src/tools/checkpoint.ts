@@ -158,6 +158,45 @@ interface RunError extends Error {
   status?: number | null;
 }
 
+/**
+ * Files a checkpoint never commits, mirroring the agent8 container's
+ * `NEVER_COMMIT_FILES` (agent-process.ts). `.deployed` is written by
+ * `@agent8/deploy` after every upload and `.secret` holds project secrets;
+ * both are local state, and a committed `.deployed` can make the container's
+ * `--preview` upload skip files whose hash matches (emptying the preview).
+ */
+export const NEVER_COMMIT_FILES: readonly string[] = [".secret", ".deployed"];
+
+/** Paths currently staged for commit (relative to the repo root). */
+export function listStagedFiles(cwd: string): string[] {
+  try {
+    const out = execFileSync("git", ["diff", "--cached", "--name-only", "-z"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split("\0").filter((f) => f.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Drop NEVER_COMMIT_FILES from the index after staging. Returns the paths
+ * that were unstaged. Only the exact root-level names are matched, like the
+ * container does; the working-tree files are left untouched.
+ */
+export function unstageNeverCommitFiles(cwd: string): string[] {
+  const staged = listStagedFiles(cwd);
+  const hits = staged.filter((f) => NEVER_COMMIT_FILES.includes(f));
+  if (hits.length === 0) return [];
+  execFileSync("git", ["reset", "-q", "--", ...hits], {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return hits;
+}
+
 // synthesizeFileChangesFromDiff moved to src/format/fileChangeSynthesis.ts (M1b-5)
 
 function getFilePath(entry: V8ToolCallEntry): string | undefined {
@@ -330,21 +369,26 @@ export async function runCheckpoint(
     };
   }
 
-  // Nothing to commit?
+  // Never commit local deploy / secret state (container parity).
   try {
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd,
-      encoding: "utf8",
-    });
-    if (status.trim().length === 0) {
-      return {
-        ok: false,
-        error: "nothing_to_commit",
-        hint: "working tree clean; no changes to checkpoint",
-      };
-    }
-  } catch {
-    // Non-fatal — the commit itself will fail with a clear message if needed.
+    unstageNeverCommitFiles(cwd);
+  } catch (e) {
+    const err = e as RunError;
+    return {
+      ok: false,
+      error: "stage_failed",
+      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}`,
+    };
+  }
+
+  // Nothing to commit? Judge by the index, not the working tree — an
+  // unstaged .deployed must not count as a pending change.
+  if (listStagedFiles(cwd).length === 0) {
+    return {
+      ok: false,
+      error: "nothing_to_commit",
+      hint: "nothing staged; no changes to checkpoint",
+    };
   }
 
   const { text: messageText, v8Format, subject, fileCount } = resolveMessage(
