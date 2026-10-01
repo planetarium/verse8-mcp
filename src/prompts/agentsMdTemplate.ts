@@ -64,13 +64,15 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    \`releaseNoteTitle\` + \`releaseNoteTypes\` + \`releaseNoteDescription\`.
    Updates keep the current title / image / visibility / tags unless you
    pass new ones.
-3. When dryRun returns \`invalid_input\` with \`missing\`, do NOT ask the user
-   field by field. Draft every missing value yourself from the project
-   (title / tags / description from the game, cover via
-   \`image_asset_generate\`, release note from the returned
-   \`suggestedReleaseNote\` — edit it so it reads like a release note, not a
-   commit log) and re-run dryRun. Values the user already gave are used
-   as-is.
+3. When dryRun returns \`invalid_input\` with \`missing\`, draft the text
+   fields yourself from the project (title / tags / description from the
+   game, release note from the returned \`suggestedReleaseNote\` — edit it
+   so it reads like a release note, not a commit log). Do NOT ask for
+   those one by one. The **cover image is the user's call**, exactly as in
+   the web dialog: ask once for a local image path or URL
+   (\`thumbnailPath\` / \`imageUrl\`), and generate one with
+   \`image_asset_generate\` only when the user tells you to. Then re-run
+   dryRun. Values the user already gave are used as-is.
 4. Show the user that one dryRun result (mode + publishBody) and run
    \`verse8_deploy\` without \`dryRun\` only after they approve or correct it —
    publishing is public. Skip the confirmation only when the user

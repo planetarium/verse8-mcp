@@ -764,7 +764,7 @@ export async function runDeploy(
     return fail(
       "validate",
       "invalid_input",
-      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user field by field — draft them from the project (title/tags/description from the game itself, cover via image_asset_generate → thumbnailPath, release note from suggestedReleaseNote), re-run dryRun, show the user that one result, then deploy after they approve. Values the user already gave are used as-is.`,
+      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Draft the text fields yourself from the project (title/tags/description from the game itself, release note from suggestedReleaseNote) — do not ask for them one by one. The cover image is the user's: ask once for a local file path or URL (thumbnailPath / imageUrl); generate one with image_asset_generate only if the user asks you to. Then re-run dryRun, show the user that one result, and deploy after they approve. Values the user already gave are used as-is.`,
       { mode, missing, suggestedReleaseNote },
     );
   }

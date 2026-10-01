@@ -327,7 +327,8 @@ test("runDeploy dryRun: bare first deploy → invalid_input with every web-dialo
     "releaseNoteTypes",
     "releaseNoteDescription",
   ]);
-  assert.match(res.hint, /draft them from the project/);
+  assert.match(res.hint, /Draft the text fields yourself/);
+  assert.match(res.hint, /cover image is the user.s/);
   assert.equal(res.suggestedReleaseNote.title, "Initial release");
   assert.equal(res.suggestedReleaseNote.description, "First release.");
   assert.deepEqual(res.suggestedReleaseNote.types, ["New"]);
