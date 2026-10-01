@@ -54,16 +54,16 @@ function fail(error: string, hint: string, extras: Record<string, unknown> = {})
   return { ok: false, error, hint: safeHint(hint), ...extras };
 }
 
+export type MediaValidation =
+  | { ok: true; kind: MediaKind; sizeBytes: number; contentType: string }
+  | { ok: false; error: string; hint: string; [k: string]: unknown };
+
 /**
- * Validate + upload one local media file. Shared by verse8_upload_thumbnail
- * and verse8_deploy (thumbnailPath / videoPath). `expect` pins the kind when
- * the caller slot only accepts one (imageUrl vs videoUrl).
+ * stat / extension / size checks for a local cover image or preview video,
+ * without network. verse8_deploy runs this before the checkpoint (and in
+ * dryRun) so a bad path never costs a commit + build.
  */
-export async function uploadLocalMedia(
-  absPath: string,
-  token: string,
-  expect?: MediaKind,
-): Promise<UploadThumbnailResult> {
+export function validateLocalMedia(absPath: string, expect?: MediaKind): MediaValidation {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(absPath);
@@ -95,6 +95,22 @@ export async function uploadLocalMedia(
       limitBytes: limit,
     });
   }
+  return { ok: true, kind, sizeBytes: stat.size, contentType };
+}
+
+/**
+ * Validate + upload one local media file. Shared by verse8_upload_thumbnail
+ * and verse8_deploy (thumbnailPath / videoPath). `expect` pins the kind when
+ * the caller slot only accepts one (imageUrl vs videoUrl).
+ */
+export async function uploadLocalMedia(
+  absPath: string,
+  token: string,
+  expect?: MediaKind,
+): Promise<UploadThumbnailResult> {
+  const checked = validateLocalMedia(absPath, expect);
+  if (!checked.ok) return checked;
+  const { kind, sizeBytes, contentType } = checked;
 
   const blob = new Blob([fs.readFileSync(absPath)], { type: contentType });
   const resp =
@@ -102,7 +118,7 @@ export async function uploadLocalMedia(
       ? await uploadVerseImage({ file: blob, filename: path.basename(absPath), token })
       : await uploadVerseVideo({ file: blob, token });
   if (!resp.ok) return fail(resp.error, resp.hint, { status: resp.status });
-  return { ok: true, url: resp.url, kind, sizeBytes: stat.size, contentType };
+  return { ok: true, url: resp.url, kind, sizeBytes, contentType };
 }
 
 export async function runUploadThumbnail(

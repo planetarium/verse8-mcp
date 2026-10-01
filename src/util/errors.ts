@@ -65,6 +65,7 @@ export const ERROR_CODES = [
   "verse_id_unavailable",
   "captcha_required",
   "build_failed",
+  "plugin_shim_missing",
   "deploy_upload_failed",
   "verse_publish_failed",
   "media_too_large",

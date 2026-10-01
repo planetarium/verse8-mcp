@@ -109,3 +109,43 @@ test("runCheckpoint: only .deployed changed → nothing_to_commit, no commit is 
   assert.equal(res.error, "nothing_to_commit");
   assert.equal(git(dir, "rev-parse", "HEAD"), before);
 });
+
+test("runCheckpoint: project nested inside a larger repo → game/.deployed is still kept out (paths are project-relative)", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-nested-"));
+  const bare = path.join(root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init", "-q");
+  git(repo, "config", "user.email", "t@t");
+  git(repo, "config", "user.name", "t");
+  git(repo, "remote", "add", "origin", "https://gitlab.verse8.io/u/demo.git");
+  git(repo, "remote", "set-url", "--push", "origin", bare);
+  const dir = path.join(repo, "game");
+  fs.mkdirSync(path.join(dir, ".verse8"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".verse8", "project.json"), JSON.stringify({ version: 1, projectId: "demo" }));
+  fs.writeFileSync(path.join(dir, ".env"), "VITE_AGENT8_ACCOUNT=0xabc\nVITE_AGENT8_VERSE=0xabc-1\n");
+  fs.writeFileSync(path.join(repo, "README.md"), "root\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "init");
+
+  fs.writeFileSync(path.join(dir, ".deployed"), "{}");
+  fs.writeFileSync(path.join(dir, "game.js"), "play()");
+  const res = await withEnvToken(() => runCheckpoint(checkpointInput(dir), dir));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n").filter(Boolean);
+  assert.deepEqual(committed, ["game/game.js"]);
+});
+
+test("runCheckpoint: deleting an already-tracked .deployed goes through (that is how it leaves the remote)", async () => {
+  const dir = makeProject();
+  fs.writeFileSync(path.join(dir, ".deployed"), "{}");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "--no-verify", "-m", "legacy commit that tracked .deployed");
+  assert.ok(git(dir, "ls-files").split("\n").includes(".deployed"));
+
+  fs.rmSync(path.join(dir, ".deployed"));
+  const res = await withEnvToken(() => runCheckpoint(checkpointInput(dir), dir));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(!git(dir, "ls-files").split("\n").includes(".deployed"));
+});

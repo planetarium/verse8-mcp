@@ -167,15 +167,37 @@ interface RunError extends Error {
  */
 export const NEVER_COMMIT_FILES: readonly string[] = [".secret", ".deployed"];
 
-/** Paths currently staged for commit (relative to the repo root). */
+/** Paths currently staged for commit, relative to `cwd` (the project dir). */
 export function listStagedFiles(cwd: string): string[] {
+  return listStagedChanges(cwd).map((c) => c.path);
+}
+
+export interface StagedChange {
+  /** Path relative to `cwd`, not to the repo root (`--relative`). */
+  path: string;
+  /** git diff-filter letter: A M D R C T U X B */
+  status: string;
+}
+
+function listStagedChanges(cwd: string): StagedChange[] {
   try {
-    const out = execFileSync("git", ["diff", "--cached", "--name-only", "-z"], {
+    const out = execFileSync("git", ["diff", "--cached", "--name-status", "--relative", "-z"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return out.split("\0").filter((f) => f.length > 0);
+    const parts = out.split("\0");
+    const changes: StagedChange[] = [];
+    for (let i = 0; i < parts.length; ) {
+      const status = parts[i];
+      if (!status) break;
+      // Renames/copies carry two paths (old, new); the new one is what lands in the commit.
+      const twoPaths = status.startsWith("R") || status.startsWith("C");
+      const p = twoPaths ? parts[i + 2] : parts[i + 1];
+      if (p) changes.push({ path: p, status: status[0] });
+      i += twoPaths ? 3 : 2;
+    }
+    return changes;
   } catch {
     return [];
   }
@@ -183,12 +205,16 @@ export function listStagedFiles(cwd: string): string[] {
 
 /**
  * Drop NEVER_COMMIT_FILES from the index after staging. Returns the paths
- * that were unstaged. Only the exact root-level names are matched, like the
- * container does; the working-tree files are left untouched.
+ * that were unstaged. Matches the names at the project dir level (the
+ * container's workspace root), so a project nested inside a larger repo is
+ * handled too. A staged *deletion* is left alone: that is how a previously
+ * committed `.deployed` gets removed from the remote. The working-tree
+ * files are never touched.
  */
 export function unstageNeverCommitFiles(cwd: string): string[] {
-  const staged = listStagedFiles(cwd);
-  const hits = staged.filter((f) => NEVER_COMMIT_FILES.includes(f));
+  const hits = listStagedChanges(cwd)
+    .filter((c) => NEVER_COMMIT_FILES.includes(c.path) && c.status !== "D")
+    .map((c) => c.path);
   if (hits.length === 0) return [];
   execFileSync("git", ["reset", "-q", "--", ...hits], {
     cwd,
@@ -196,8 +222,6 @@ export function unstageNeverCommitFiles(cwd: string): string[] {
   });
   return hits;
 }
-
-// synthesizeFileChangesFromDiff moved to src/format/fileChangeSynthesis.ts (M1b-5)
 
 function getFilePath(entry: V8ToolCallEntry): string | undefined {
   const input = entry.input as Record<string, unknown> | undefined;

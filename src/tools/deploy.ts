@@ -28,7 +28,7 @@ import {
   deriveProjectPathFromOrigin,
   detectGameserver,
 } from "./preview.js";
-import { uploadLocalMedia } from "./uploadThumbnail.js";
+import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 
 /**
  * verse8_deploy — publish the project to Verse8 (first deploy or update),
@@ -590,7 +590,7 @@ function runStep(cwd: string, step: StepSpec, timeoutMs: number): DeployStepResu
       // npx / bun are .cmd shims on Windows; argv is SAFE_ARG-validated.
       shell: process.platform === "win32",
     });
-    return { command: step.command, durationMs: Date.now() - start, exitCode: 0, stdoutTail: tail(String(out)) };
+    return { command: step.command, durationMs: Date.now() - start, exitCode: 0, stdoutTail: safeHint(tail(String(out))) };
   } catch (e) {
     const err = e as NodeJS.ErrnoException & {
       stdout?: Buffer | string;
@@ -602,19 +602,28 @@ function runStep(cwd: string, step: StepSpec, timeoutMs: number): DeployStepResu
       command: step.command,
       durationMs: Date.now() - start,
       exitCode: typeof err.status === "number" ? err.status : err.signal ? 128 : -1,
-      stdoutTail: tail(String(err.stdout ?? "")),
-      stderrTail: tail(String(err.stderr ?? err.message ?? "")),
+      stdoutTail: safeHint(tail(String(err.stdout ?? ""))),
+      stderrTail: safeHint(tail(String(err.stderr ?? err.message ?? ""))),
     };
   }
 }
 
+/** Whole-word match so `MyDebugPanelThing` does not count as `DebugPanel` (container publish.ts). */
+export function referencesGlobal(source: string, identifier: string): boolean {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}([^A-Za-z0-9_$]|$)`).test(source);
+}
+
 /**
- * Publish-only plugin shim check. The web container injects
- * `dist/__agent8/plugins/debug-panel-shim.js` at publish time when the
- * build references `DebugPanel`; the MCP has no plugin injection yet, so
- * such a build would throw ReferenceError in production. Warn only.
+ * Publish-only plugin shim check. The web container (plugins/publish.ts
+ * injectPublishAssets) copies `debug-panel-shim.js` into
+ * `dist/__agent8/plugins/` and references it from `dist/index.html` when the
+ * built JS references `DebugPanel`, and fails the publish when that
+ * injection fails. The MCP has no plugin injection yet, so a build that
+ * references `DebugPanel` without the shim would throw ReferenceError in
+ * production — the deploy stops before upload instead.
  */
-function detectDebugPanelWithoutShim(distDir: string): boolean {
+export function detectDebugPanelWithoutShim(distDir: string): boolean {
   if (fs.existsSync(path.join(distDir, "__agent8", "plugins"))) return false;
   const stack = [distDir];
   while (stack.length > 0) {
@@ -627,10 +636,11 @@ function detectDebugPanelWithoutShim(distDir: string): boolean {
     }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile() && /\.(js|html)$/.test(entry.name)) {
+      if (entry.isDirectory()) {
+        if (entry.name !== "__agent8") stack.push(full);
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
         try {
-          if (fs.readFileSync(full, "utf8").includes("DebugPanel")) return true;
+          if (referencesGlobal(fs.readFileSync(full, "utf8"), "DebugPanel")) return true;
         } catch {
           /* unreadable file — skip */
         }
@@ -693,6 +703,13 @@ export async function runDeploy(
   const reservedTags = (input.tags ?? []).filter((t) => t.startsWith("__"));
   if (reservedTags.length > 0) {
     return fail("validate", "invalid_input", `Tags starting with '__' are reserved: ${reservedTags.join(", ")}`);
+  }
+  for (const [field, kind] of [["thumbnailPath", "image"], ["videoPath", "video"]] as const) {
+    const given = input[field];
+    if (!given) continue;
+    const abs = path.isAbsolute(given) ? given : path.resolve(cwd, given);
+    const check = validateLocalMedia(abs, kind);
+    if (!check.ok) return fail("validate", check.error, `${field}: ${check.hint}`, { field });
   }
   const unsafeTokens = unsafeInstallCommandTokens(input.installCommand);
   if (unsafeTokens.length > 0) {
@@ -816,7 +833,7 @@ export async function runDeploy(
   if (!commit.ok) {
     const code = (commit as { error: string }).error;
     if (code === "push_failed") {
-      warnings.push("Local commit succeeded but push to gitlab.verse8.io failed; the deployed sha is not on the remote yet. Retry with verse8_checkpoint.");
+      warnings.push("Local commit succeeded but push to gitlab.verse8.io failed; the deployed sha is not on the remote yet. Run `git push origin HEAD` in the project before relying on the web editor history (verse8_checkpoint would report nothing_to_commit).");
     } else if (code !== "nothing_to_commit") {
       return fail("checkpoint", "checkpoint_failed", `Deploy aborted: checkpoint failed (${code}). Fix the commit error first.`, { checkpoint: commit });
     }
@@ -846,10 +863,20 @@ export async function runDeploy(
   const completed: DeployStepResult[] = [];
   const uploadStep = steps[steps.length - 1];
   for (const step of steps) {
-    if (step === uploadStep && !fs.existsSync(path.join(distDir, "index.html"))) {
-      return fail("build", "build_failed", "Build finished but dist/index.html is missing — check the project's build script.", {
-        stepsCompleted: completed,
-      });
+    if (step === uploadStep) {
+      if (!fs.existsSync(path.join(distDir, "index.html"))) {
+        return fail("build", "build_failed", "Build finished but dist/index.html is missing — check the project's build script.", {
+          stepsCompleted: completed,
+        });
+      }
+      if (detectDebugPanelWithoutShim(distDir)) {
+        return fail(
+          "build",
+          "plugin_shim_missing",
+          "The build references `DebugPanel` but no publish plugin shim is in dist/ (the web editor injects dist/__agent8/plugins/debug-panel-shim.js at publish time; verse8-mcp cannot yet). Publishing would crash the game with ReferenceError: DebugPanel. Nothing was uploaded. Guard the reference (`if (typeof DebugPanel !== \"undefined\")`) or remove the DebugPanel usage, checkpoint, and deploy again — or publish this project from the web editor.",
+          { stepsCompleted: completed },
+        );
+      }
     }
     const res = runStep(cwd, step, input.stepTimeoutMs);
     if (res.exitCode !== 0) {
@@ -863,9 +890,6 @@ export async function runDeploy(
     }
     completed.push(res);
   }
-  if (detectDebugPanelWithoutShim(distDir)) {
-    warnings.push("The build references DebugPanel but no publish plugin shim was injected (the web editor adds dist/__agent8/plugins/debug-panel-shim.js). The published game may throw ReferenceError: DebugPanel — verify the play URL.");
-  }
 
   // ── 8. Publish verse record ───────────────────────────────────────────
   const playUrl = buildPlayUrl(verseId, readHeadSha(cwd), projectPath, Date.now());
@@ -874,7 +898,7 @@ export async function runDeploy(
   try {
     published = mode === "first" ? await createVerse(publishBody, token) : await updateVerse(verseId, publishBody, token);
   } catch (e) {
-    return fail("publish", "upstream_unreachable", safeErrorHint(e), { steps: completed, playUrl });
+    return fail("publish", "upstream_unreachable", `${safeErrorHint(e)} The game files are already uploaded at ${playUrl}; only the verse record was not updated. Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
   }
   if (!published.ok) {
     const { status, body } = published;
@@ -884,17 +908,17 @@ export async function runDeploy(
         "publish",
         "captcha_required",
         `Game files are uploaded (${playUrl}) but the first publish needs the web captcha — POST /v1/verse/create rejects headless calls. Finish the first publish in the web editor: ${webEditor}. Later updates work from verse8_deploy.`,
-        { status, playUrl, steps: completed, publishBody },
+        { status, playUrl, filesLive: true, steps: completed, publishBody },
       );
     }
     const code =
       status === 401 ? "unauthorized" : status === 403 ? "forbidden" : status === 409 ? "verse_owned_by_other" : status >= 400 && status < 500 ? "bad_request" : "verse_publish_failed";
-    return fail("publish", code, `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}`, {
-      status,
-      playUrl,
-      steps: completed,
-      publishBody,
-    });
+    return fail(
+      "publish",
+      code,
+      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. Fix the publish fields and run verse8_deploy again — the rebuild re-uploads the same sha.`,
+      { status, playUrl, filesLive: true, steps: completed, publishBody },
+    );
   }
 
   return {

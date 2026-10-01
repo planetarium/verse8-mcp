@@ -17,6 +17,8 @@ import {
   buildPublishTags,
   classifyReleaseTypes,
   deployInputSchema,
+  detectDebugPanelWithoutShim,
+  referencesGlobal,
   missingPublishFields,
   readDeployedSha,
   readParentVerseId,
@@ -84,6 +86,8 @@ function makeProject() {
     JSON.stringify({ version: 1, projectId: "demo", attachedAt: new Date().toISOString() }),
   );
   fs.writeFileSync(path.join(dir, ".env"), `VITE_AGENT8_ACCOUNT=0xabc\nVITE_AGENT8_VERSE=${VERSE}\n`);
+  // A real (tiny) cover so thumbnailPath validation passes in dryRun tests.
+  fs.writeFileSync(path.join(dir, "thumb.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   return dir;
 }
 
@@ -346,6 +350,50 @@ test("runDeploy dryRun: update without release note → invalid_input with only 
   assert.equal(res.suggestedReleaseNote.description, "- Fixed the crash on respawn.");
   assert.deepEqual(res.suggestedReleaseNote.types, ["BugFixes"]);
   assert.match(res.suggestedReleaseNote.title, /^Update \d{4}-\d{2}-\d{2}$/);
+});
+
+// ── publish plugin shim gate (review P1) ─────────────────────────────────
+
+test("referencesGlobal: whole-word match only", () => {
+  assert.equal(referencesGlobal("DebugPanel.define({})", "DebugPanel"), true);
+  assert.equal(referencesGlobal("window.DebugPanel", "DebugPanel"), true);
+  assert.equal(referencesGlobal("MyDebugPanelThing()", "DebugPanel"), false);
+  assert.equal(referencesGlobal("debugpanel", "DebugPanel"), false);
+});
+
+test("detectDebugPanelWithoutShim: built JS referencing DebugPanel without dist/__agent8/plugins → true; shim present or no reference → false", () => {
+  const dist = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-dist-"));
+  fs.mkdirSync(path.join(dist, "assets"));
+  fs.writeFileSync(path.join(dist, "index.html"), "<script src=./assets/game.js></script>");
+  fs.writeFileSync(path.join(dist, "assets", "game.js"), "const p = MyDebugPanelThing(); play();");
+  assert.equal(detectDebugPanelWithoutShim(dist), false);
+  fs.writeFileSync(path.join(dist, "assets", "game.js"), "DebugPanel.define({ speed: 1 }); play();");
+  assert.equal(detectDebugPanelWithoutShim(dist), true);
+  fs.mkdirSync(path.join(dist, "__agent8", "plugins"), { recursive: true });
+  assert.equal(detectDebugPanelWithoutShim(dist), false);
+});
+
+test("runDeploy: thumbnailPath that does not exist → fails in validate, before any network call or checkpoint", async () => {
+  const dir = makeProject();
+  const { calls, handler } = router({});
+  const res = await withEnvToken(() =>
+    withFetch(handler, () => runDeploy(dryRunInput(dir, { ...FULL_FIRST, thumbnailPath: "nope.png" }), dir)),
+  );
+  assert.equal(res.stage, "validate");
+  assert.equal(res.error, "file_not_found");
+  assert.equal(res.field, "thumbnailPath");
+  assert.equal(calls.length, 0);
+});
+
+test("runDeploy: videoPath with an image extension → invalid_extension before network", async () => {
+  const dir = makeProject();
+  fs.writeFileSync(path.join(dir, "clip.png"), "x");
+  const { calls, handler } = router({});
+  const res = await withEnvToken(() =>
+    withFetch(handler, () => runDeploy(dryRunInput(dir, { ...FULL_FIRST, videoPath: "clip.png" }), dir)),
+  );
+  assert.equal(res.error, "invalid_extension");
+  assert.equal(calls.length, 0);
 });
 
 // ── web publish dialog rules ─────────────────────────────────────────────
