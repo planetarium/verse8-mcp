@@ -14,6 +14,7 @@ import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
 import { isMsuProject } from "../context/msuProject.js";
 import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
+import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
 import { safeErrorHint, safeHint } from "../util/redact.js";
@@ -62,6 +63,25 @@ const RELEASE_NOTE_TYPES = [
   "Compatibility",
   "BugFixes",
 ] as const;
+export type ReleaseNoteType = (typeof RELEASE_NOTE_TYPES)[number];
+/**
+ * Field limits of the web publish dialog (verse8-vibe
+ * `GAME_INFO_FORM_LENGTH`). The server accepts less (title + description
+ * only), but the web is the product contract — release note types feed the
+ * web's release-note components and follower notifications — so the MCP
+ * enforces the same shape. Strict → lenient is backward compatible; the
+ * reverse is not.
+ */
+export const WEB_PUBLISH_FORM = {
+  TITLE_MIN: 4,
+  TITLE_MAX: 50,
+  SHORT_DESCRIPTION_MAX: 100,
+  DESCRIPTION_MAX: 1000,
+  TAGS_MAX: 5,
+  RELEASE_NOTE_TITLE_MAX: 50,
+  RELEASE_NOTE_DESCRIPTION_MAX: 1000,
+  RELEASE_NOTE_TYPES_MAX: 3,
+} as const;
 /** Values interpolated into argv under a Windows shell — keep them inert. */
 const SAFE_ARG = /^[A-Za-z0-9_.-]+$/;
 /**
@@ -84,15 +104,20 @@ export const deployInputSchema = checkpointInputSchema
   .extend({
     title: z
       .string()
-      .min(1)
+      .min(WEB_PUBLISH_FORM.TITLE_MIN)
+      .max(WEB_PUBLISH_FORM.TITLE_MAX)
       .optional()
-      .describe("Verse title. Required on first deploy; defaults to the current title on update."),
+      .describe("Verse title (4–50 chars, same as the web dialog). Required on first deploy; defaults to the current title on update."),
     shortDescription: z
       .string()
-      .max(500)
+      .max(WEB_PUBLISH_FORM.SHORT_DESCRIPTION_MAX)
       .optional()
-      .describe("One-line game preview text (≤500 chars)."),
-    description: z.string().optional().describe("Full verse description."),
+      .describe("One-line game preview text (≤100 chars)."),
+    description: z
+      .string()
+      .max(WEB_PUBLISH_FORM.DESCRIPTION_MAX)
+      .optional()
+      .describe("Full verse description (≤1000 chars)."),
     thumbnailPath: z
       .string()
       .min(1)
@@ -121,14 +146,29 @@ export const deployInputSchema = checkpointInputSchema
       .describe("Public (listed), Unlisted (link only), Private (owner only). First deploy default Public; update keeps the current value."),
     tags: z
       .array(z.string().min(1))
-      .max(5)
+      .max(WEB_PUBLISH_FORM.TAGS_MAX)
       .optional()
-      .describe("User tags (≤5, no `__` prefix). Update keeps the current user tags when omitted."),
+      .describe("User tags (1–5, no `__` prefix). First deploy needs at least one; update keeps the current user tags when omitted."),
     allowRemix: z.boolean().optional(),
     isMobileSupported: z.boolean().optional(),
-    releaseNoteTitle: z.string().max(50).optional(),
-    releaseNoteTypes: z.array(z.enum(RELEASE_NOTE_TYPES)).min(1).max(3).optional(),
-    releaseNoteDescription: z.string().optional(),
+    releaseNoteTitle: z
+      .string()
+      .min(1)
+      .max(WEB_PUBLISH_FORM.RELEASE_NOTE_TITLE_MAX)
+      .optional()
+      .describe("Release note title (≤50 chars). Required on every deploy, like the web dialog's Notes step."),
+    releaseNoteTypes: z
+      .array(z.enum(RELEASE_NOTE_TYPES))
+      .min(1)
+      .max(WEB_PUBLISH_FORM.RELEASE_NOTE_TYPES_MAX)
+      .optional()
+      .describe("1–3 of New / Improvements / Balance / Events / Compatibility / BugFixes. Required on every deploy."),
+    releaseNoteDescription: z
+      .string()
+      .min(1)
+      .max(WEB_PUBLISH_FORM.RELEASE_NOTE_DESCRIPTION_MAX)
+      .optional()
+      .describe("Release note body (≤1000 chars). Required on every deploy."),
     sendNotificationToFollowers: z
       .boolean()
       .default(false)
@@ -316,6 +356,155 @@ export function readParentVerseId(projectDir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The sha pinned in the live verse's playUrl (`…/index.html?sha=<sha>`), i.e.
+ * the commit the last deploy was built from. null on first deploy or when
+ * the URL carries no sha.
+ */
+export function readDeployedSha(existing: VerseInfo | null): string | null {
+  const playUrl = existing?.playUrl;
+  if (typeof playUrl !== "string" || playUrl.length === 0) return null;
+  try {
+    const sha = new URL(playUrl).searchParams.get("sha");
+    return sha && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Publish fields the web dialog requires and the caller has not supplied.
+ * First deploy: Info (title, ≥1 visible tag) + Visuals (cover) + Notes
+ * (release note title / types / description). Update: Notes every time;
+ * the rest falls back to the live verse.
+ */
+export function missingPublishFields(
+  mode: DeployMode,
+  input: Pick<
+    DeployInput,
+    "title" | "thumbnailPath" | "imageUrl" | "tags" | "releaseNoteTitle" | "releaseNoteTypes" | "releaseNoteDescription"
+  >,
+  existing: VerseInfo | null,
+): string[] {
+  const missing: string[] = [];
+  const visibleTags = (input.tags ?? existing?.tag ?? []).filter((t) => !t.startsWith("__"));
+  if (!input.title && !(mode === "update" && existing?.title)) missing.push("title");
+  if (visibleTags.length === 0) missing.push("tags");
+  if (!input.thumbnailPath && !input.imageUrl && !(mode === "update" && existing?.imageUrl)) {
+    missing.push("thumbnailPath or imageUrl");
+  }
+  if (!input.releaseNoteTitle) missing.push("releaseNoteTitle");
+  if (!input.releaseNoteTypes || input.releaseNoteTypes.length === 0) missing.push("releaseNoteTypes");
+  if (!input.releaseNoteDescription) missing.push("releaseNoteDescription");
+  return missing;
+}
+
+const RELEASE_TYPE_KEYWORDS: Record<ReleaseNoteType, RegExp> = {
+  BugFixes: /\b(fix|fixed|fixes|bug|bugs|crash|crashes|error|errors|broken|glitch|regression|patch)\b|수정|버그|오류|크래시/i,
+  Balance: /\b(balance|balanced|rebalance|nerf|buff|difficulty|tuning|tuned|damage|cooldown|spawn rate)\b|밸런스|난이도|너프|버프/i,
+  Events: /\b(event|events|seasonal|holiday|limited[- ]time|campaign)\b|이벤트|시즌/i,
+  Compatibility: /\b(mobile|touch|browser|resolution|aspect ratio|safari|android|ios|compat|compatibility|performance|fps|lag)\b|모바일|호환|해상도|성능/i,
+  New: /\b(add|added|adds|new|introduce|introduced|feature|features|level|levels|stage|stages|mode|modes|boss|character|weapon|item)\b|추가|신규|새로운/i,
+  Improvements: /\b(improve|improved|improves|improvement|polish|polished|tweak|tweaked|refine|refined|refactor|ui|ux|visual|visuals|animation|sound|music|sfx|art)\b|개선|다듬|리팩터|리팩토링/i,
+};
+
+/**
+ * Keyword classification of release-note text into the web dialog's types
+ * (≤3, most-mentioned first). Falls back to New (first deploy) or
+ * Improvements (update) when nothing matches.
+ */
+export function classifyReleaseTypes(text: string, mode: DeployMode): ReleaseNoteType[] {
+  const scored = (Object.keys(RELEASE_TYPE_KEYWORDS) as ReleaseNoteType[])
+    .map((type) => ({ type, hits: (text.match(new RegExp(RELEASE_TYPE_KEYWORDS[type].source, "gi")) ?? []).length }))
+    .filter((s) => s.hits > 0)
+    .sort((a, b) => b.hits - a.hits || RELEASE_NOTE_TYPES.indexOf(a.type) - RELEASE_NOTE_TYPES.indexOf(b.type))
+    .slice(0, WEB_PUBLISH_FORM.RELEASE_NOTE_TYPES_MAX)
+    .map((s) => s.type);
+  if (scored.length > 0) return scored;
+  return [mode === "first" ? "New" : "Improvements"];
+}
+
+export interface SuggestedReleaseNote {
+  title: string;
+  types: ReleaseNoteType[];
+  description: string;
+  basedOn: {
+    /** Commit the last deploy was built from; null on first deploy. */
+    sinceSha: string | null;
+    /** V8 checkpoints summarized. */
+    commits: number;
+    /** Commits in range without a V8 workSummary (template / manual / bypass commits), left out. */
+    skipped: number;
+  };
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+/**
+ * Draft a release note from the V8 checkpoints made since the last deploy
+ * (`sinceSha`..HEAD) or, on first deploy, since the repo started. Each
+ * checkpoint's workSummary becomes one bullet; commits without a V8
+ * workSummary (template "Initial commit", GitLab "Add README.md",
+ * VERSE8_ALLOW_NONCOMPLIANT bypasses) carry nothing to summarize and are
+ * skipped. The agent is expected to edit this before the user sees it.
+ */
+export function suggestReleaseNote(projectDir: string, mode: DeployMode, sinceSha: string | null): SuggestedReleaseNote {
+  const range = sinceSha ? `${sinceSha}..HEAD` : "HEAD";
+  let raw = "";
+  for (const r of [range, "HEAD"]) {
+    try {
+      raw = execFileSync("git", ["log", "--max-count=200", "--format=%B%x1e", r], {
+        cwd: projectDir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      break;
+    } catch {
+      // `sinceSha` may not exist locally (deployed from another clone); fall back to the whole history.
+      raw = "";
+    }
+  }
+  const bodies = raw.split("\u001e").map((b) => b.trim()).filter((b) => b.length > 0);
+  const bullets: string[] = [];
+  let skipped = 0;
+  for (const body of bodies) {
+    const parsed = parseV8CommitMessage(body);
+    const summary = parsed.valid ? parsed.workSummary?.replace(/\s+/g, " ").trim() : undefined;
+    if (!summary) {
+      skipped += 1;
+      continue;
+    }
+    if (!bullets.includes(summary)) bullets.push(summary);
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const title = mode === "first" ? "Initial release" : `Update ${today}`;
+  let description: string;
+  if (bullets.length === 0) {
+    description = mode === "first" ? "First release." : "Maintenance update.";
+  } else {
+    // Oldest first reads like a changelog.
+    const lines = [...bullets].reverse().map((b) => `- ${b}`);
+    description = lines.join("\n");
+    if (description.length > WEB_PUBLISH_FORM.RELEASE_NOTE_DESCRIPTION_MAX) {
+      const kept: string[] = [];
+      for (const line of lines) {
+        if ([...kept, line].join("\n").length > WEB_PUBLISH_FORM.RELEASE_NOTE_DESCRIPTION_MAX - 2) break;
+        kept.push(line);
+      }
+      description = truncate(kept.length > 0 ? `${kept.join("\n")}\n…` : lines[0], WEB_PUBLISH_FORM.RELEASE_NOTE_DESCRIPTION_MAX);
+    }
+  }
+  return {
+    title,
+    types: classifyReleaseTypes(bullets.join(" "), mode),
+    description,
+    basedOn: { sinceSha, commits: bullets.length, skipped },
+  };
 }
 
 function readHeadSha(projectDir: string): string | null {
@@ -546,17 +735,16 @@ export async function runDeploy(
     return fail("resolve_mode", "upstream_unreachable", safeErrorHint(e));
   }
 
-  // ── 4. Metadata ───────────────────────────────────────────────────────
-  if (mode === "first") {
-    const missing: string[] = [];
-    if (!input.title) missing.push("title");
-    if (!input.thumbnailPath && !input.imageUrl) missing.push("thumbnailPath or imageUrl");
-    if (missing.length > 0) {
-      return fail("validate", "invalid_input", `First deploy of ${verseId} requires: ${missing.join(", ")}. Ask the user for them (thumbnail can be generated with image_asset_generate and passed as thumbnailPath).`, {
-        mode,
-        missing,
-      });
-    }
+  // ── 4. Metadata (web publish dialog rules) ────────────────────────────
+  const missing = missingPublishFields(mode, input, existing);
+  if (missing.length > 0) {
+    const suggestedReleaseNote = suggestReleaseNote(cwd, mode, readDeployedSha(existing));
+    return fail(
+      "validate",
+      "invalid_input",
+      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user field by field — draft them from the project (title/tags/description from the game itself, cover via image_asset_generate → thumbnailPath, release note from suggestedReleaseNote), re-run dryRun, show the user that one result, then deploy after they approve. Values the user already gave are used as-is.`,
+      { mode, missing, suggestedReleaseNote },
+    );
   }
   const msu = isMsuProject(cwd);
   const tags = buildPublishTags(input.tags, existing?.tag, msu);

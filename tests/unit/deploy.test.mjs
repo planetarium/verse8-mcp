@@ -15,15 +15,64 @@ import {
   buildPlayUrl,
   buildPublishBody,
   buildPublishTags,
+  classifyReleaseTypes,
   deployInputSchema,
+  missingPublishFields,
+  readDeployedSha,
   readParentVerseId,
   runDeploy,
+  suggestReleaseNote,
   unsafeInstallCommandTokens,
 } from "../../dist/tools/deploy.js";
+import { buildV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
 import { isMsuProject, stripComments } from "../../dist/context/msuProject.js";
 import { sanitizeChildEnv } from "../../dist/util/childEnv.js";
 
 const VERSE = "0xabc-1700000000000";
+const PLAY_URL = (sha) => `https://agent8-games.verse8.io/${VERSE}/index.html?chatId=u%2Fdemo&sha=${sha}&buildAt=1`;
+
+/** Everything the web publish dialog requires on a first deploy. */
+const FULL_FIRST = {
+  title: "My Game",
+  thumbnailPath: "thumb.png",
+  tags: ["rpg"],
+  releaseNoteTitle: "Initial release",
+  releaseNoteTypes: ["New"],
+  releaseNoteDescription: "First release.",
+};
+const NOTES = {
+  releaseNoteTitle: "v1.1",
+  releaseNoteTypes: ["BugFixes"],
+  releaseNoteDescription: "Fixed the respawn crash.",
+};
+
+function gitc(dir, ...args) {
+  return execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+    cwd: dir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+/** Commit with a V8-format message (what verse8_checkpoint writes). */
+function v8Commit(dir, userPrompt, workSummary) {
+  fs.appendFileSync(path.join(dir, "log.txt"), `${userPrompt}\n`);
+  gitc(dir, "add", "-A");
+  const msg = buildV8CommitMessage({ userPrompt, workSummary, problemStatement: userPrompt });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--no-verify", "-F", "-"], {
+    cwd: dir,
+    input: msg,
+  });
+  return gitc(dir, "rev-parse", "HEAD");
+}
+
+/** Plain (non-V8) commit, like the template's "Initial commit" / GitLab's "Add README.md". */
+function plainCommit(dir, subject) {
+  fs.appendFileSync(path.join(dir, "README.md"), `${subject}\n`);
+  gitc(dir, "add", "-A");
+  gitc(dir, "commit", "-q", "--no-verify", "-m", subject);
+  return gitc(dir, "rev-parse", "HEAD");
+}
 
 function makeProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-deploy-"));
@@ -240,7 +289,7 @@ test("runDeploy dryRun: 404 + id available → first deploy plan with create bod
   });
   const res = await withEnvToken(() =>
     withFetch(handler, () =>
-      runDeploy(dryRunInput(dir, { title: "My Game", thumbnailPath: "thumb.png" }), dir),
+      runDeploy(dryRunInput(dir, FULL_FIRST), dir),
     ),
   );
   assert.equal(res.ok, true, JSON.stringify(res));
@@ -248,6 +297,8 @@ test("runDeploy dryRun: 404 + id available → first deploy plan with create bod
   assert.equal(res.mode, "first");
   assert.equal(res.publishBody.verseId, VERSE);
   assert.equal(res.publishBody.title, "My Game");
+  assert.deepEqual(res.publishBody.tag, ["rpg"]);
+  assert.equal(res.publishBody.releaseNoteTitle, "Initial release");
   assert.equal(res.publishBody.imageUrl, "<upload:thumb.png>");
   assert.ok(res.plannedSteps.includes("POST /v1/verse/create"));
   assert.equal(calls[0].init.headers.Authorization, "Bearer test-token");
@@ -255,7 +306,7 @@ test("runDeploy dryRun: 404 + id available → first deploy plan with create bod
   assert.ok(!calls.some((c) => c.key.startsWith("POST")));
 });
 
-test("runDeploy dryRun: first deploy without title/image → invalid_input listing what is missing", async () => {
+test("runDeploy dryRun: bare first deploy → invalid_input with every web-dialog field and a release note draft", async () => {
   const dir = makeProject();
   const { handler } = router({
     "GET /v1/verse/verseId": () => json(404, {}),
@@ -264,7 +315,121 @@ test("runDeploy dryRun: first deploy without title/image → invalid_input listi
   const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir), dir)));
   assert.equal(res.ok, false);
   assert.equal(res.error, "invalid_input");
-  assert.deepEqual(res.missing, ["title", "thumbnailPath or imageUrl"]);
+  assert.deepEqual(res.missing, [
+    "title",
+    "tags",
+    "thumbnailPath or imageUrl",
+    "releaseNoteTitle",
+    "releaseNoteTypes",
+    "releaseNoteDescription",
+  ]);
+  assert.match(res.hint, /draft them from the project/);
+  assert.equal(res.suggestedReleaseNote.title, "Initial release");
+  assert.equal(res.suggestedReleaseNote.description, "First release.");
+  assert.deepEqual(res.suggestedReleaseNote.types, ["New"]);
+  assert.equal(res.suggestedReleaseNote.basedOn.sinceSha, null);
+});
+
+test("runDeploy dryRun: update without release note → invalid_input with only the Notes fields; draft starts at the deployed sha", async () => {
+  const dir = makeProject();
+  const deployed = v8Commit(dir, "make the player jump", "Added a jump button.");
+  v8Commit(dir, "it crashes on respawn", "Fixed the crash on respawn.");
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], playUrl: PLAY_URL(deployed), isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir), dir)));
+  assert.equal(res.error, "invalid_input");
+  assert.deepEqual(res.missing, ["releaseNoteTitle", "releaseNoteTypes", "releaseNoteDescription"]);
+  assert.equal(res.suggestedReleaseNote.basedOn.sinceSha, deployed);
+  assert.equal(res.suggestedReleaseNote.basedOn.commits, 1);
+  assert.equal(res.suggestedReleaseNote.description, "- Fixed the crash on respawn.");
+  assert.deepEqual(res.suggestedReleaseNote.types, ["BugFixes"]);
+  assert.match(res.suggestedReleaseNote.title, /^Update \d{4}-\d{2}-\d{2}$/);
+});
+
+// ── web publish dialog rules ─────────────────────────────────────────────
+
+test("missingPublishFields: first deploy needs Info + Visuals + Notes; update needs Notes and falls back to the live verse", () => {
+  assert.deepEqual(missingPublishFields("first", {}, null), [
+    "title",
+    "tags",
+    "thumbnailPath or imageUrl",
+    "releaseNoteTitle",
+    "releaseNoteTypes",
+    "releaseNoteDescription",
+  ]);
+  assert.deepEqual(missingPublishFields("first", FULL_FIRST, null), []);
+  // Hidden tags do not satisfy the visible-tag requirement.
+  assert.ok(missingPublishFields("first", { ...FULL_FIRST, tags: undefined }, { verseId: VERSE, tag: ["__MSU"] }).includes("tags"));
+  const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/a.png", tag: ["rpg"] };
+  assert.deepEqual(missingPublishFields("update", {}, live), ["releaseNoteTitle", "releaseNoteTypes", "releaseNoteDescription"]);
+  assert.deepEqual(missingPublishFields("update", NOTES, live), []);
+  assert.deepEqual(missingPublishFields("update", NOTES, { verseId: VERSE }), ["title", "tags", "thumbnailPath or imageUrl"]);
+});
+
+test("deployInputSchema: web dialog lengths (title 4–50, note title ≤50, types 1–3)", () => {
+  assert.throws(() => deployInputSchema.parse({ title: "abc" }));
+  assert.throws(() => deployInputSchema.parse({ title: "x".repeat(51) }));
+  assert.throws(() => deployInputSchema.parse({ releaseNoteTitle: "x".repeat(51) }));
+  assert.throws(() => deployInputSchema.parse({ releaseNoteTypes: [] }));
+  assert.throws(() => deployInputSchema.parse({ releaseNoteTypes: ["New", "Balance", "Events", "BugFixes"] }));
+  assert.throws(() => deployInputSchema.parse({ releaseNoteTypes: ["Hotfix"] }));
+  assert.ok(deployInputSchema.parse({ title: "abcd", releaseNoteTypes: ["New", "Balance", "Events"] }));
+});
+
+test("readDeployedSha: sha from the live playUrl; null when absent or malformed", () => {
+  assert.equal(readDeployedSha({ verseId: VERSE, playUrl: PLAY_URL("deadbeef") }), "deadbeef");
+  assert.equal(readDeployedSha({ verseId: VERSE, playUrl: `https://agent8-games.verse8.io/${VERSE}/index.html` }), null);
+  assert.equal(readDeployedSha({ verseId: VERSE, playUrl: PLAY_URL("not-a-sha!") }), null);
+  assert.equal(readDeployedSha({ verseId: VERSE, playUrl: "::nope" }), null);
+  assert.equal(readDeployedSha(null), null);
+});
+
+test("classifyReleaseTypes: keyword hits ranked, capped at 3, mode default when nothing matches", () => {
+  assert.deepEqual(classifyReleaseTypes("Fixed the crash on respawn. Fixed a bug in scoring. Added a new boss.", "update"), ["BugFixes", "New"]);
+  assert.deepEqual(classifyReleaseTypes("Halloween event with rebalanced damage, mobile touch controls, polished UI", "update").length, 3);
+  assert.deepEqual(classifyReleaseTypes("", "first"), ["New"]);
+  assert.deepEqual(classifyReleaseTypes("", "update"), ["Improvements"]);
+  assert.deepEqual(classifyReleaseTypes("점프 버그 수정", "update"), ["BugFixes"]);
+});
+
+test("suggestReleaseNote: summarizes V8 checkpoints only, skips template/manual commits, respects sinceSha", () => {
+  const dir = makeProject();
+  plainCommit(dir, "Initial commit");
+  plainCommit(dir, "Add README.md");
+  const first = v8Commit(dir, "make a platformer", "Built the base platformer with a tile map and a player.");
+  v8Commit(dir, "add enemies", "Added patrolling enemies and a hit reaction.");
+  v8Commit(dir, "add enemies", "Added patrolling enemies and a hit reaction."); // duplicate summary collapses
+
+  const all = suggestReleaseNote(dir, "first", null);
+  assert.equal(all.title, "Initial release");
+  assert.equal(all.description, "- Built the base platformer with a tile map and a player.\n- Added patrolling enemies and a hit reaction.");
+  assert.deepEqual(all.basedOn, { sinceSha: null, commits: 2, skipped: 2 });
+  assert.deepEqual(all.types, ["New"]);
+
+  const since = suggestReleaseNote(dir, "update", first);
+  assert.equal(since.description, "- Added patrolling enemies and a hit reaction.");
+  assert.deepEqual(since.basedOn, { sinceSha: first, commits: 1, skipped: 0 });
+
+  // Deployed from another clone: the sha is unknown here → whole history, sinceSha still reported.
+  const unknown = suggestReleaseNote(dir, "update", "0123456789abcdef0123456789abcdef01234567");
+  assert.equal(unknown.basedOn.commits, 2);
+  assert.equal(unknown.basedOn.sinceSha, "0123456789abcdef0123456789abcdef01234567");
+});
+
+test("suggestReleaseNote: no checkpoints → fixed fallback text; long histories are cut at the web limit", () => {
+  const empty = makeProject();
+  plainCommit(empty, "Initial commit");
+  assert.equal(suggestReleaseNote(empty, "first", null).description, "First release.");
+  assert.equal(suggestReleaseNote(empty, "update", null).description, "Maintenance update.");
+
+  const long = makeProject();
+  for (let i = 0; i < 30; i++) v8Commit(long, `step ${i}`, `Step ${i}: ${"detail ".repeat(12)}${i}.`);
+  const d = suggestReleaseNote(long, "update", null).description;
+  assert.ok(d.length <= 1000, `description is ${d.length} chars`);
+  assert.ok(d.endsWith("…"));
+  assert.ok(d.startsWith("- Step 0:"));
 });
 
 test("runDeploy dryRun: existing owned verse → update plan keeping current metadata; MSU tags added", async () => {
@@ -282,10 +447,11 @@ test("runDeploy dryRun: existing owned verse → update plan keeping current met
       }),
   });
   const res = await withEnvToken(() =>
-    withFetch(handler, () => runDeploy(dryRunInput(dir, { releaseNoteTitle: "v1.1" }), dir)),
+    withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)),
   );
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.mode, "update");
+  assert.equal(res.publishBody.releaseNoteTitle, "v1.1");
   assert.equal(res.msu, true);
   assert.equal(res.publishBody.title, "Live Game");
   assert.equal(res.publishBody.imageUrl, "https://contents.verse8.io/live.png");
@@ -311,7 +477,7 @@ test("runDeploy: unpublished but unavailable id (deleted) → verse_id_unavailab
     "GET /v1/verse/id-available": () => json(200, { verseId: VERSE, available: false, reason: "deleted" }),
   });
   const res = await withEnvToken(() =>
-    withFetch(handler, () => runDeploy(dryRunInput(dir, { title: "t", imageUrl: "https://contents.verse8.io/a.png" }), dir)),
+    withFetch(handler, () => runDeploy(dryRunInput(dir, { title: "Test Game", imageUrl: "https://contents.verse8.io/a.png" }), dir)),
   );
   assert.equal(res.ok, false);
   assert.equal(res.error, "verse_id_unavailable");

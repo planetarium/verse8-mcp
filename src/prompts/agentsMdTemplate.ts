@@ -57,20 +57,31 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
 1. Call \`verse8_deploy\` with \`dryRun: true\`. It resolves whether this is
    the **first deploy** or an **update** of the project's verse and returns
    the publish body it would send.
-2. First deploy needs a \`title\` and a cover image (\`thumbnailPath\` — a
-   local png/jpg/gif/webp ≤4 MB, e.g. made with \`image_asset_generate\` —
-   or \`imageUrl\`). Ask the user; never invent them. Updates keep the
-   current title / image / visibility / tags unless you pass new ones;
-   offer \`releaseNoteTitle\` + \`releaseNoteTypes\` for updates.
-3. Show the user the mode and metadata, and run \`verse8_deploy\` without
-   \`dryRun\` only after they confirm — publishing is public.
-4. If it returns \`captcha_required\`, the game files are uploaded but the
+2. The same fields as the web publish dialog are required. First deploy:
+   \`title\` (4–50 chars), \`tags\` (1–5), a cover image (\`thumbnailPath\` —
+   a local png/jpg/gif/webp ≤4 MB, e.g. made with \`image_asset_generate\` —
+   or \`imageUrl\`) and a release note. Every deploy (first and update):
+   \`releaseNoteTitle\` + \`releaseNoteTypes\` + \`releaseNoteDescription\`.
+   Updates keep the current title / image / visibility / tags unless you
+   pass new ones.
+3. When dryRun returns \`invalid_input\` with \`missing\`, do NOT ask the user
+   field by field. Draft every missing value yourself from the project
+   (title / tags / description from the game, cover via
+   \`image_asset_generate\`, release note from the returned
+   \`suggestedReleaseNote\` — edit it so it reads like a release note, not a
+   commit log) and re-run dryRun. Values the user already gave are used
+   as-is.
+4. Show the user that one dryRun result (mode + publishBody) and run
+   \`verse8_deploy\` without \`dryRun\` only after they approve or correct it —
+   publishing is public. Skip the confirmation only when the user
+   explicitly said to deploy without asking.
+5. If it returns \`captcha_required\`, the game files are uploaded but the
    first publish must be finished in the web editor (URL in the hint).
    Later updates work from \`verse8_deploy\`.
-5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
+6. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
    command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
    + push to gitlab.verse8.io; they do not publish.
-6. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
+7. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
    products and gameserver state are keyed by it. Never edit it to "fix" a
    deploy error.
 
