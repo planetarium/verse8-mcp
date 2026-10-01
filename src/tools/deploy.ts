@@ -64,6 +64,21 @@ const RELEASE_NOTE_TYPES = [
 ] as const;
 /** Values interpolated into argv under a Windows shell — keep them inert. */
 const SAFE_ARG = /^[A-Za-z0-9_.-]+$/;
+/**
+ * `installCommand` is split on whitespace and run with `shell: true` on
+ * Windows (npx / bun are .cmd shims), so a token carrying shell syntax
+ * (`&&`, `|`, `;`, `$(…)`, backticks, redirects, quotes, globs) would be
+ * interpreted by cmd.exe. Only plain package-manager argv is accepted.
+ */
+const INSTALL_TOKEN_RE = /^[A-Za-z0-9_.@/:=+-]+$/;
+
+/** Tokens of `installCommand` that could be interpreted by a shell. */
+export function unsafeInstallCommandTokens(installCommand: string): string[] {
+  return installCommand
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !INSTALL_TOKEN_RE.test(t));
+}
 
 export const deployInputSchema = checkpointInputSchema
   .extend({
@@ -122,7 +137,7 @@ export const deployInputSchema = checkpointInputSchema
       .string()
       .min(1)
       .default("bun update")
-      .describe("Dependency sync before the build. Default `bun update` (same as the web editor)."),
+      .describe("Dependency sync before the build. Default `bun update` (same as the web editor). Plain argv only — no shell operators."),
     stepTimeoutMs: z
       .number()
       .int()
@@ -484,6 +499,14 @@ export async function runDeploy(
   const reservedTags = (input.tags ?? []).filter((t) => t.startsWith("__"));
   if (reservedTags.length > 0) {
     return fail("validate", "invalid_input", `Tags starting with '__' are reserved: ${reservedTags.join(", ")}`);
+  }
+  const unsafeTokens = unsafeInstallCommandTokens(input.installCommand);
+  if (unsafeTokens.length > 0) {
+    return fail(
+      "validate",
+      "invalid_input",
+      `installCommand contains shell syntax (${unsafeTokens.join(" ")}); pass a plain package-manager command such as "bun update" or "npm ci".`,
+    );
   }
 
   // ── 3. First vs update ────────────────────────────────────────────────
