@@ -50,18 +50,43 @@ tool is the single source of truth.
 If you think you need Bash for \`git commit\` or \`bun run dev\`, stop and
 use the MCP tool instead. The only exception is \`VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m "..."\` for a deliberate, user-approved one-off fix.
 
-## 🚨 Deploy is web-only
+## 🚨 Deploy only through \`verse8_deploy\`
 
-Production deployment happens at **https://create.verse8.io/** (web UI),
-NOT through any MCP tool, npm script, or Bash command. When the user
-asks to deploy / publish / ship / 배포 / 출시 / 게시:
+When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
 
-1. Tell them deployment is done in the web editor.
-2. Show this URL: **https://create.verse8.io/**
-3. Do NOT attempt to run a deploy command via Bash, do NOT invoke a
-   non-existent MCP tool, do NOT push manually expecting auto-deploy.
-4. \`verse8_checkpoint\` / \`verse8_preview\` only commit + push to
-   gitlab.verse8.io. They do not trigger a public deploy.
+1. Call \`verse8_deploy\` with \`dryRun: true\`. It resolves whether this is
+   the **first deploy** or an **update** of the project's verse and returns
+   the publish body it would send.
+2. The same fields as the web publish dialog are required. First deploy:
+   \`title\` (4–50 chars), \`tags\` (1–5), a cover image (\`thumbnailPath\` —
+   a local png/jpg/gif/webp ≤4 MB, e.g. made with \`image_asset_generate\` —
+   or \`imageUrl\`) and a release note. Every deploy (first and update):
+   \`releaseNoteTitle\` + \`releaseNoteTypes\` + \`releaseNoteDescription\`.
+   Updates keep the current title / image / visibility / tags unless you
+   pass new ones.
+3. When dryRun returns \`invalid_input\` with \`missing\`, draft EVERY
+   missing value yourself — never ask the user for them one by one:
+   title / tags / description from the game, release note from the
+   returned \`suggestedReleaseNote\` (edit it so it reads like a release
+   note, not a commit log), cover via \`image_asset_generate\` from the
+   game's theme (pass the generated URL as \`imageUrl\`, or download it
+   and pass \`thumbnailPath\`). Values the user already gave are used
+   as-is. Then re-run dryRun.
+4. **First deploy**: show the user that one dryRun result (mode +
+   publishBody, cover URL included) and run \`verse8_deploy\` without
+   \`dryRun\` only after they approve or correct it — title, tags, cover
+   and visibility go public here. Skip the confirmation only when the
+   user explicitly said to deploy without asking.
+   **Update**: deploy right away — the live title / cover / tags /
+   visibility are kept and only the release note is new — then report
+   the playUrl and the release note you published. Confirm first only
+   if the user asked to see it before publishing.
+5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
+   command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
+   + push to gitlab.verse8.io; they do not publish.
+6. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
+   products and gameserver state are keyed by it. Never edit it to "fix" a
+   deploy error.
 
 ## You are operating inside a Verse8 project
 
@@ -78,7 +103,8 @@ MUST use for state-changing operations:
 | Commit + push changes | **\`verse8_checkpoint\`** | Native \`git commit\` via Bash |
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |
 | Generate game images | \`image_asset_generate\` / \`image_variation_generate\` | External image APIs |
-| **Deploy / publish to production** | Direct the user to **https://create.verse8.io/** (web UI) | Any deploy command via Bash; no MCP deploy tool exists |
+| **Deploy / publish to production** | **\`verse8_deploy\`** (\`dryRun: true\` first, then confirm) | Any deploy / build+upload command via Bash |
+| Upload a verse cover image / preview video | \`verse8_upload_thumbnail\` (or \`thumbnailPath\` on \`verse8_deploy\`) | \`verse8_upload_asset\` (that is for in-game assets) |
 
 ## Preview policy — the "see it = commit it" rule
 

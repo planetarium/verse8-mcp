@@ -59,6 +59,16 @@ export const ERROR_CODES = [
   "upstream_unreachable",
   "upstream_error",
   "not_yet_available",
+  // Deploy (verse8_deploy / verse8_upload_thumbnail)
+  "missing_account_env",
+  "verse_owned_by_other",
+  "verse_id_unavailable",
+  "captcha_required",
+  "build_failed",
+  "plugin_shim_missing",
+  "deploy_upload_failed",
+  "verse_publish_failed",
+  "media_too_large",
   // Asset upload (verse8_upload_asset)
   "missing_verse_env",
   "file_not_found",

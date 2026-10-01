@@ -158,7 +158,70 @@ interface RunError extends Error {
   status?: number | null;
 }
 
-// synthesizeFileChangesFromDiff moved to src/format/fileChangeSynthesis.ts (M1b-5)
+/**
+ * Files a checkpoint never commits, mirroring the agent8 container's
+ * `NEVER_COMMIT_FILES` (agent-process.ts). `.deployed` is written by
+ * `@agent8/deploy` after every upload and `.secret` holds project secrets;
+ * both are local state, and a committed `.deployed` can make the container's
+ * `--preview` upload skip files whose hash matches (emptying the preview).
+ */
+export const NEVER_COMMIT_FILES: readonly string[] = [".secret", ".deployed"];
+
+/** Paths currently staged for commit, relative to `cwd` (the project dir). */
+export function listStagedFiles(cwd: string): string[] {
+  return listStagedChanges(cwd).map((c) => c.path);
+}
+
+export interface StagedChange {
+  /** Path relative to `cwd`, not to the repo root (`--relative`). */
+  path: string;
+  /** git diff-filter letter: A M D R C T U X B */
+  status: string;
+}
+
+function listStagedChanges(cwd: string): StagedChange[] {
+  try {
+    const out = execFileSync("git", ["diff", "--cached", "--name-status", "--relative", "-z"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const parts = out.split("\0");
+    const changes: StagedChange[] = [];
+    for (let i = 0; i < parts.length; ) {
+      const status = parts[i];
+      if (!status) break;
+      // Renames/copies carry two paths (old, new); the new one is what lands in the commit.
+      const twoPaths = status.startsWith("R") || status.startsWith("C");
+      const p = twoPaths ? parts[i + 2] : parts[i + 1];
+      if (p) changes.push({ path: p, status: status[0] });
+      i += twoPaths ? 3 : 2;
+    }
+    return changes;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Drop NEVER_COMMIT_FILES from the index after staging. Returns the paths
+ * that were unstaged. Matches the names at the project dir level (the
+ * container's workspace root), so a project nested inside a larger repo is
+ * handled too. A staged *deletion* is left alone: that is how a previously
+ * committed `.deployed` gets removed from the remote. The working-tree
+ * files are never touched.
+ */
+export function unstageNeverCommitFiles(cwd: string): string[] {
+  const hits = listStagedChanges(cwd)
+    .filter((c) => NEVER_COMMIT_FILES.includes(c.path) && c.status !== "D")
+    .map((c) => c.path);
+  if (hits.length === 0) return [];
+  execFileSync("git", ["reset", "-q", "--", ...hits], {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return hits;
+}
 
 function getFilePath(entry: V8ToolCallEntry): string | undefined {
   const input = entry.input as Record<string, unknown> | undefined;
@@ -319,7 +382,9 @@ export async function runCheckpoint(
         stdio: ["ignore", "pipe", "pipe"],
       });
     } else {
-      execFileSync("git", ["add", "-A"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      // Scope to the project dir so staging and the `--relative` index listing
+      // below agree when the project is nested inside a larger repo.
+      execFileSync("git", ["add", "-A", "--", "."], { cwd, stdio: ["ignore", "pipe", "pipe"] });
     }
   } catch (e) {
     const err = e as RunError;
@@ -330,21 +395,26 @@ export async function runCheckpoint(
     };
   }
 
-  // Nothing to commit?
+  // Never commit local deploy / secret state (container parity).
   try {
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd,
-      encoding: "utf8",
-    });
-    if (status.trim().length === 0) {
-      return {
-        ok: false,
-        error: "nothing_to_commit",
-        hint: "working tree clean; no changes to checkpoint",
-      };
-    }
-  } catch {
-    // Non-fatal — the commit itself will fail with a clear message if needed.
+    unstageNeverCommitFiles(cwd);
+  } catch (e) {
+    const err = e as RunError;
+    return {
+      ok: false,
+      error: "stage_failed",
+      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}`,
+    };
+  }
+
+  // Nothing to commit? Judge by the index, not the working tree — an
+  // unstaged .deployed must not count as a pending change.
+  if (listStagedFiles(cwd).length === 0) {
+    return {
+      ok: false,
+      error: "nothing_to_commit",
+      hint: "nothing staged; no changes to checkpoint",
+    };
   }
 
   const { text: messageText, v8Format, subject, fileCount } = resolveMessage(
