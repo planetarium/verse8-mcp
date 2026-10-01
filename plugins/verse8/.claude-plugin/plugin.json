@@ -2,7 +2,7 @@
   "name": "verse8",
   "displayName": "Verse8",
   "version": "0.6.1",
-  "description": "Build, preview and publish Verse8 web games from Claude: project bootstrap, V8-format commits, local preview, asset generation, CDN uploads and one-step deploy to verse8.io.",
+  "description": "Vibe-code a web game with Claude and publish it on Verse8, simply and quickly: project bootstrap, V8-format commits, local preview, asset generation, CDN uploads and one-step deploy to verse8.io.",
   "author": {
     "name": "Verse8",
     "url": "https://verse8.io"
@@ -10,5 +10,11 @@
   "homepage": "https://github.com/planetarium/verse8-mcp#readme",
   "repository": "https://github.com/planetarium/verse8-mcp",
   "license": "MIT",
-  "keywords": ["verse8", "agent8", "game-dev", "web-games", "mcp"]
+  "keywords": [
+    "verse8",
+    "agent8",
+    "game-dev",
+    "web-games",
+    "mcp"
+  ]
 }

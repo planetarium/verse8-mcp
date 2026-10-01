@@ -1,6 +1,6 @@
 {
   "name": "verse8",
-  "description": "Verse8 plugins for Claude Code",
+  "description": "Verse8 plugins for Claude Code — vibe-code a web game and publish it on Verse8.",
   "owner": {
     "name": "Verse8",
     "url": "https://verse8.io"
@@ -9,7 +9,7 @@
     {
       "name": "verse8",
       "source": "./plugins/verse8",
-      "description": "Build, preview and publish Verse8 web games from Claude."
+      "description": "Vibe-code a web game and publish it on Verse8, simply and quickly: create, preview, generate assets and deploy from one chat."
     }
   ]
 }
