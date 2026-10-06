@@ -1,20 +1,25 @@
 // State contract of the Verse8 mod (hooks/verse8.mjs). `claude plugin validate`
 // checks every `$.state.get/set` in the module against this declaration.
 
-/** A reminder that files changed after the last `verse8_preview`. */
+/** Where git stood at the last preview, or at session start before any. */
+export type Verse8Baseline = {
+  /** Full commit hash of HEAD at that moment. */
+  head: string;
+  kind: "preview" | "session";
+};
+
+/** Files differ from the baseline: the preview is stale. */
 export type Verse8PreviewReminder = {
-  /** Edit/Write calls counted since the last preview. */
-  edits: number;
-  /** The main-loop turn that ended with the edits still unpreviewed. */
-  turnId: string;
+  /** Files committed since the baseline plus files the working tree changed. */
+  files: number;
+  since: "preview" | "session";
 };
 
 declare module "claude-code" {
   interface PluginState {
     verse8: {
-      /** Edit/Write calls in the current main-loop turn. */
-      edits: number;
-      /** Set when a turn ends with edits and no preview; null once previewed. */
+      baseline: Verse8Baseline | null;
+      /** Set at the end of a main-loop turn when git differs from the baseline; null otherwise. */
       reminder: Verse8PreviewReminder | null;
     };
   }

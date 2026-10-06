@@ -13,8 +13,10 @@ breaking changes when clearly documented.
 the MCP server (`hooks/hooks.json` `modules`). Inside a Verse8 project it
 refuses, before they run, Bash calls that bypass the workflow (`git commit`,
 `--no-verify`, `bun run dev` / `vite`) and names the tool to use instead,
-and it draws a line above the prompt when a turn edited files without
-`verse8_preview`. State contract in `plugins/verse8/types/index.d.ts`;
+and at the end of each turn it asks git what differs from the last preview
+(HEAD at that preview, or at session start) and draws a line above the prompt
+with the count — Edit, Bash edits, subagents, checkpoint commits and rebases
+all count the same way. State contract in `plugins/verse8/types/index.d.ts`;
 tests in `plugins/verse8/tests` (`npm run test:mod`). Hooks fail open; the
 git hooks remain the hard layer. No change to the npm package.
 
