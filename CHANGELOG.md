@@ -5,6 +5,19 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [Unreleased]
+
+### Added — Claude Code mod: gatekeeper + preview reminder (plugin only)
+
+`plugins/verse8/hooks/verse8.mjs` is loaded by Claude Code 2.1.287+ next to
+the MCP server (`hooks/hooks.json` `modules`). Inside a Verse8 project it
+refuses, before they run, Bash calls that bypass the workflow (`git commit`,
+`--no-verify`, `bun run dev` / `vite`) and names the tool to use instead,
+and it draws a line above the prompt when a turn edited files without
+`verse8_preview`. State contract in `plugins/verse8/types/index.d.ts`;
+tests in `plugins/verse8/tests` (`npm run test:mod`). Hooks fail open; the
+git hooks remain the hard layer. No change to the npm package.
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `verse8_deploy`: publish from the MCP (#7, #8)
