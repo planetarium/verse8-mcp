@@ -6,7 +6,7 @@ Build, preview and publish [Verse8](https://verse8.io) web games from Claude. Th
 
 ```
 /plugin marketplace add planetarium/verse8-mcp
-/plugin install verse8@verse8
+/plugin install verse8@verse8-plugins
 ```
 
 Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Claude signs you in with a browser code the first time (`verse8_login_start`).

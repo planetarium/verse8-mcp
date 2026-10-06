@@ -12,7 +12,7 @@ Claude Code, as a plugin (pins the server version and updates with the plugin):
 
 ```
 /plugin marketplace add planetarium/verse8-mcp
-/plugin install verse8@verse8
+/plugin install verse8@verse8-plugins
 ```
 
 Or add the MCP server directly:
