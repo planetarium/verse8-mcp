@@ -35,6 +35,7 @@
     "test:unit": "node --test tests/unit/*.test.mjs",
     "clean": "rm -rf dist",
     "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
+    "sync:agent8-skills": "node scripts/sync-agent8-skills.mjs",
     "audit": "npm audit --audit-level=high",
     "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs"
   },
@@ -52,7 +53,11 @@
   },
   "verse8": {
     "skillsVendor": {
-      "sha": "7a0e48285e72ae81e58700a92982b9d91e16f324eb7f0fb969aa99a22974d740"
+      "sha": "7a0e48285e72ae81e58700a92982b9d91e16f324eb7f0fb969aa99a22974d740",
+      "upstream": {
+        "repo": "planetarium/agent8-skills",
+        "commit": "f4eca9bda73f2b397fdb8989ea55abff54228936"
+      }
     },
     "gameserverPin": {
       "gameserver-node": "latest",
