@@ -1,3 +1,5 @@
 {
+  "description": "Keep the empty `hooks` object: Claude Code 2.1.240 and older require it, and without it they drop the whole plugin (MCP server included) with `hook-load-failed`. They ignore `modules`. See the header of verse8.mjs.",
+  "hooks": {},
   "modules": ["./verse8.mjs"]
 }

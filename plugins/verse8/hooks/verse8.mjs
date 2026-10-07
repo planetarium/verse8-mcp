@@ -1,5 +1,15 @@
 // Verse8 mod — runs inside Claude Code (2.1.287+) next to the MCP server.
 //
+// Older Claude Code (measured 2026-10-07 with `claude -p --plugin-dir`):
+//  - 2.1.251–2.1.286: `modules` is read, but this module fails to load
+//    (`session.start` unknown, or the mods rollout flag is off). The MCP
+//    server still connects — the mod degrades to nothing.
+//  - 2.1.240 and older: `modules` is ignored, and hooks.json MUST carry a
+//    `hooks` object (even `{}`). Without it the schema check fails and the
+//    WHOLE plugin is skipped: `Plugin not available for MCP: verse8 —
+//    error type: hook-load-failed`. That is why hooks.json keeps `"hooks": {}`
+//    next to `"modules"`; do not remove it.
+//
 // Two jobs, both scoped to a Verse8 project (cwd has .verse8/project.json):
 //
 //  1. Gatekeeper  — a Bash call that would bypass the Verse8 workflow
