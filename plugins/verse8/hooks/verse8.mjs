@@ -36,28 +36,96 @@ const REMINDER = { plugin: "verse8", key: "reminder" };
 const PROJECT_MARKER = ".verse8/project.json";
 
 // Bash commands the Verse8 MCP instructions (rules 2–4) forbid, and what to
-// use instead. Patterns stay narrow: a `git log`, `git commit` inside a quoted
-// string, or `grep commit` is not a commit.
+// use instead. A Bash call is read as a list of simple commands, and each
+// rule looks at ONE simple command: what it starts with (after env
+// assignments) and, for git, which subcommand it is. So `git log --grep
+// commit`, `git config commit.gpgsign`, `grep commit`, or `git commit` inside
+// a quoted string is not a commit, while `git -c core.hooksPath=x commit`,
+// a commit on the second line, or one after `then` still is.
+//
+// Deliberately NOT caught (the git hooks remain the hard layer): a commit
+// made by `sh -c`, a script file, `eval`, or through `git merge` / `revert` /
+// `cherry-pick` / `rebase` — the commit-msg hook lets git's own Merge/Revert
+// subjects through and rejects the rest.
+
+// Split a Bash command into its simple commands. Naive on purpose: a `;`
+// inside a quoted string only yields a segment that starts mid-string, which
+// no rule matches. `then` / `do` / `else` are stripped so `if …; then git
+// commit` is seen as `git commit`.
+function simpleCommands(cmd) {
+  return cmd.split(/[;&|\n]+/).map((s) => s.trim().replace(/^(?:then|do|else)\s+/, ""));
+}
+
+// `FOO=1 env BAR=2 git …` → { env: ["FOO=1", "BAR=2"], rest: "git …" }
+function splitEnv(segment) {
+  const env = [];
+  let rest = segment;
+  for (;;) {
+    const m = /^(?:env\s+|([A-Za-z_]\w*=\S*)\s+)/.exec(rest);
+    if (!m) break;
+    if (m[1]) env.push(m[1]);
+    rest = rest.slice(m[0].length);
+  }
+  return { env, rest };
+}
+
+// `git -c a=b -C dir commit -m x` → { sub: "commit", args: "-m x" }; null
+// when the command is not git. Global options before the subcommand
+// (`-c key=val`, `-C dir`, `--git-dir=…`, `--no-pager`) are skipped.
+const GIT_CALL = /^git(?:\s+(?:-[cC]\s+\S+|--?[\w-]+(?:=\S*)?))*\s+([a-z][\w-]*)(?:\s+(.*))?$/;
+function gitCall(rest) {
+  const m = GIT_CALL.exec(rest);
+  return m ? { sub: m[1], args: m[2] ?? "" } : null;
+}
+
+function hasFlag(args, flags) {
+  return new RegExp(`(^|\\s)(?:${flags})(?=\\s|=|$)`).test(args);
+}
+
+// The one sanctioned Bash commit: AGENTS.md allows
+// `VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m "…"` for a deliberate,
+// user-approved one-off. The commit-msg hook honours the same variable.
+// It never excuses --no-verify.
+const ALLOW_NONCOMPLIANT = "VERSE8_ALLOW_NONCOMPLIANT=1";
+
 const GUARDS = [
   {
-    test: (cmd) => /(^|[;&|]\s*)git\b[^;&|]*\b(commit|push)\b[^;&|]*(--no-verify|\s-n\b)/.test(cmd),
+    // `-n` is --no-verify on commit; on push it is --dry-run, so only the
+    // long form counts there.
+    test: ({ rest }) => {
+      const g = gitCall(rest);
+      if (!g) return false;
+      if (g.sub === "commit") return hasFlag(g.args, "--no-verify|-n");
+      if (g.sub === "push") return hasFlag(g.args, "--no-verify");
+      return false;
+    },
     deny: "Verse8 project: --no-verify is not allowed. The commit-msg / pre-commit hooks keep Verse8's commit format. Use verse8_checkpoint instead.",
   },
   {
-    test: (cmd) => /(^|[;&|]\s*)git\b[^;&|]*\bcommit\b/.test(cmd),
+    test: ({ env, rest }) => gitCall(rest)?.sub === "commit" && !env.includes(ALLOW_NONCOMPLIANT),
     deny: "Verse8 project: do not run `git commit` through Bash. Use the verse8_checkpoint tool (it commits and pushes in Verse8's V8 history format).",
   },
   {
-    test: (cmd) => /(^|[;&|]\s*)(bun|npm|pnpm|yarn)\s+(run\s+)?dev\b/.test(cmd) || /(^|[;&|]\s*)(npx\s+|bunx\s+)?vite\b(?!\s+build)/.test(cmd),
+    // `bun run dev`, `npm dev`, `npx vite`, `vite --port 3000`, `vite preview`
+    // (it serves too). Not `dev:server`, `vite build`, `vite --version`,
+    // `vitest`, `vite-node`.
+    test: ({ rest }) =>
+      /^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?dev(?:\s|$)/.test(rest) ||
+      /^(?:npx\s+|bunx\s+)?vite(?:$|\s+(?!build\b|--version\b|-v\b))/.test(rest),
     deny: "Verse8 project: do not start the dev server through Bash. Use the verse8_preview tool (it bundles a V8 commit with the spawn so the preview matches git).",
   },
 ];
 
+// The first rule, in GUARDS order, that any simple command trips.
+function findGuard(cmd) {
+  const parts = simpleCommands(cmd).map(splitEnv);
+  return GUARDS.find((g) => parts.some((p) => g.test(p)));
+}
+
 export function register(on) {
   // 1. Gatekeeper
   on("tool.call", { tool: "Bash" }, async ($, e, next) => {
-    const cmd = String(e.command ?? "");
-    const guard = GUARDS.find((g) => g.test(cmd));
+    const guard = findGuard(String(e.command ?? ""));
     if (!guard) return next(e);
     if (!(await inVerse8Project($))) return next(e);
     return { deny: guard.deny };

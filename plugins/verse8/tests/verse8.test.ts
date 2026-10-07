@@ -68,11 +68,59 @@ describe("gatekeeper", () => {
   test("lets harmless git and build commands through", async ($, on) => {
     stubs(on, { inProject: true, git: repo() });
     await $.session.start(SESSION);
-    for (const command of ["git log --oneline -5", "git status", "git rebase origin/develop", "bun run build", "vite build", "grep -rn commit src/"]) {
+    for (const command of [
+      "git log --oneline -5",
+      "git status",
+      "git rebase origin/develop",
+      "bun run build",
+      "vite build",
+      "grep -rn commit src/",
+      // the word `commit` after git, but not the subcommand
+      "git log --oneline --grep commit",
+      "git log -1 --format='commit %H'",
+      "git config commit.gpgsign false",
+      "git diff -- docs/commit.md",
+      // `-n` on push is --dry-run, not --no-verify
+      "git push -n origin main",
+      // vite-shaped things that are not the dev server
+      "vite --version",
+      "npx vitest run",
+      "npx vite-node scripts/x.ts",
+      "bun run dev:server",
+      "bun run lint && bun run build",
+      // the commit lives in a string, not in a command
+      "echo 'run git commit later'",
+    ]) {
       const r: any = await $.tool.call({ tool: "Bash", command });
       expect(r.deny).toBeUndefined();
       expect(r.result).toBe("ran");
     }
+  });
+
+  test("sees a commit wherever it sits in the script", async ($, on) => {
+    stubs(on, { inProject: true, git: repo() });
+    await $.session.start(SESSION);
+    for (const command of [
+      "echo hi\ngit commit -m x",
+      "if true; then git commit -m x; fi",
+      "git -c core.hooksPath=/dev/null commit -m x",
+      "GIT_AUTHOR_NAME=bot git commit -m x",
+    ]) {
+      const r: any = await $.tool.call({ tool: "Bash", command });
+      expect(r.deny).toMatch(/verse8_checkpoint/);
+    }
+    const dev: any = await $.tool.call({ tool: "Bash", command: "PORT=3000 bun run dev" });
+    expect(dev.deny).toMatch(/verse8_preview/);
+  });
+
+  test("lets the documented VERSE8_ALLOW_NONCOMPLIANT one-off through, never --no-verify", async ($, on) => {
+    stubs(on, { inProject: true, git: repo() });
+    await $.session.start(SESSION);
+    const ok: any = await $.tool.call({ tool: "Bash", command: 'VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m "bootstrap"' });
+    expect(ok.deny).toBeUndefined();
+    expect(ok.result).toBe("ran");
+    const no: any = await $.tool.call({ tool: "Bash", command: "VERSE8_ALLOW_NONCOMPLIANT=1 git commit -n -m x" });
+    expect(no.deny).toMatch(/--no-verify/);
   });
 
   test("does nothing outside a Verse8 project", async ($, on) => {
