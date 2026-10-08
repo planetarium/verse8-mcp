@@ -1,1 +1,0 @@
-<system-reminder>CRITICAL RULE: You MUST use built-in tools (read, write, edit, glob, grep) for ALL file operations. NEVER use shell commands like cat, head, tail, less, ls, find, grep, sed, awk, or echo/redirection for file operations. Violating this rule will cause failures. Use bash ONLY for commands with no dedicated tool (e.g., bun run build).</system-reminder>

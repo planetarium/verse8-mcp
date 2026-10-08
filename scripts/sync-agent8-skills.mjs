@@ -19,15 +19,22 @@
 //     README.md                      generated — where this tree comes from
 //     public.json                    the manifest, verbatim
 //     skills/<name>.md               one per `public.json :: skills[]`
-//     plugins/<plugin>/skills/*.md   one per `public.json :: plugins[]`,
-//                                    skill files only
+//     plugins/<plugin>/              one per `public.json :: plugins[]`:
+//       plugin.json                  the manifest, verbatim (its
+//                                    `requiresPackage` gates the plugin)
+//       instructions/AGENTS.md       when upstream ships one
+//       skills/*.md                  the plugin's skill files
 //
 // The layout mirrors upstream so a diff against it is a plain path diff, and
 // the MCP's skill discovery (`src/resources/skills.ts`, layout B: a `.md`
 // whose parent directory is literally `skills`, walked four levels deep)
-// picks both locations up. Plugin manifests, `instructions/AGENTS.md`,
-// assets, `prompts/` and the upstream README are container-side mechanisms
-// the MCP never reads, so they are not vendored.
+// picks both locations up. `verse8_attach` reads each plugin's `plugin.json`
+// to decide whether the plugin is active for a project and composes the
+// active plugins' `instructions/AGENTS.md` into the project's AGENTS.md
+// (`src/resources/pluginGate.ts`), the same way the Agent8 container does.
+// Assets, `prompts/`, the top-level `instructions/` and the upstream README
+// are container-side mechanisms the MCP never reads, so they are not
+// vendored.
 //
 // `public.json` is assumed to be `{ "skills": [...], "plugins": [...] }` —
 // two allowlists of names. A commit without the file is an explicit failure
@@ -45,6 +52,10 @@ export const PUBLIC_JSON = "public.json";
 /** Same rule as upstream's validator for skill and plugin names. */
 export const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME = 64;
+/** Upstream validator's rules for `plugin.json :: requiresPackage` entries. */
+const PACKAGE_RE = /^(?:@[a-z0-9-][a-z0-9-._]*\/)?[a-z0-9-][a-z0-9-._]*$/;
+const MAX_PACKAGES = 16;
+const MAX_PACKAGE_LEN = 214;
 
 export class SyncError extends Error {
   /**
@@ -174,6 +185,19 @@ export function planVendor(upstreamDir, manifest) {
       throw new SyncError("plugin_missing", `${PUBLIC_JSON} lists plugin '${plugin}' but ${dirRel}/ does not exist upstream`);
     }
     assertPluginEligible(dir, plugin);
+    files.push({ rel: `${dirRel}/plugin.json`, src: path.join(dir, "plugin.json") });
+
+    let hasInstructions = false;
+    if (realDir(upstreamDir, `${dirRel}/instructions`)) {
+      const rel = `${dirRel}/instructions/AGENTS.md`;
+      const src = path.join(dir, "instructions", "AGENTS.md");
+      if (isRegularFile(src)) {
+        files.push({ rel, src });
+        hasInstructions = true;
+      } else if (fs.existsSync(src)) {
+        throw new SyncError("plugin_invalid", `${rel} is not a regular file (symlinks are not vendored)`);
+      }
+    }
 
     const skillsDir = path.join(dir, "skills");
     const entries = realDir(upstreamDir, `${dirRel}/skills`)
@@ -203,8 +227,10 @@ export function planVendor(upstreamDir, manifest) {
       files.push({ rel, src });
       count += 1;
     }
-    if (count === 0) {
-      warnings.push(`plugin '${plugin}' is listed but ships no skills/*.md — nothing vendored for it`);
+    if (count === 0 && !hasInstructions) {
+      warnings.push(
+        `plugin '${plugin}' is listed but ships no skills/*.md and no instructions/AGENTS.md — only its plugin.json is vendored`,
+      );
     }
   }
 
@@ -245,6 +271,22 @@ function assertPluginEligible(dir, plugin) {
       "plugin_ineligible",
       `plugin '${plugin}' is tag-scoped (${manifest.tags.join(", ")}); the MCP has no tag gate, so it would reach every project`,
     );
+  }
+  // The MCP gates on `requiresPackage` like the container does, and fails
+  // closed on a value it cannot read — which would silently hide every skill
+  // of the plugin. Refuse it here so that never ships.
+  if (manifest.requiresPackage !== undefined) {
+    const packages = manifest.requiresPackage;
+    const ok =
+      Array.isArray(packages) &&
+      packages.length <= MAX_PACKAGES &&
+      packages.every((p) => typeof p === "string" && p.length <= MAX_PACKAGE_LEN && PACKAGE_RE.test(p));
+    if (!ok) {
+      throw new SyncError(
+        "plugin_invalid",
+        `plugins/${plugin}/plugin.json :: requiresPackage must be an array of at most ${MAX_PACKAGES} npm package names, got ${JSON.stringify(packages)}`,
+      );
+    }
   }
   const injected = (Array.isArray(manifest.assets) ? manifest.assets : [])
     .filter((a) => a && typeof a === "object")
@@ -294,7 +336,12 @@ export function renderVendorReadme() {
     "Only what upstream's `public.json` lists is here (the file is copied alongside):",
     "",
     "- `skills/<name>.md` — top-level skills",
-    "- `plugins/<plugin>/skills/*.md` — a public plugin's skill files, and nothing else of the plugin",
+    "- `plugins/<plugin>/plugin.json` — a public plugin's manifest; `requiresPackage` decides which",
+    "  projects `verse8_attach` installs the plugin for (a dependency in the project's `package.json`)",
+    "- `plugins/<plugin>/instructions/AGENTS.md` — composed into the project's AGENTS.md while the plugin is active",
+    "- `plugins/<plugin>/skills/*.md` — the plugin's skill files",
+    "",
+    "Plugin assets, `prompts/` and the top-level `instructions/` are not vendored.",
     "",
     "`package.json :: verse8.skillsVendor` pins the upstream commit (`upstream.commit`) and the",
     "content hash of this tree (`sha`, see `scripts/compute-subtree-sha.sh`).",

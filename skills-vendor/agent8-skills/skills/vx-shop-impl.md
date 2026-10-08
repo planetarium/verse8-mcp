@@ -23,8 +23,7 @@ VX Shop requires server-side logic. All payment-related operations including pur
 
 **Required Reading:**
 - Full GameServer SDK documentation (skill: `gameserver-sdk`)
-- Especially User State management: `/docs/gameserver/sdk/globalUserState`
-- Remote Function calls: `/docs/gameserver/sdk/remoteFunction`
+- Especially its "System Event Handlers" (`$onItemPurchased`), "Asset Management" (`$asset`), "Global State Management" (user state) and "remoteFunction" sections
 
 # VX Shop Implementation Steps
 
@@ -144,7 +143,7 @@ if (item?.purchaseLimitReached) {
 
 // Not purchasable
 if (!item?.purchasable) {
-  return <button disabled>{item.purchaseBlockReason || 'Cannot Buy'}</button>;
+  return <button disabled>{item?.purchaseBlockReason || 'Cannot Buy'}</button>;
 }
 ```
 
@@ -152,29 +151,45 @@ if (!item?.purchasable) {
 
 **IMPORTANT:** User state changes upon purchase completion MUST be handled on the server.
 
-### Implement $onItemPurchased in server.js
+### Implement $onItemPurchased in the Server class
+
+The handler is a method of the `Server` class — in `server/src/server.ts` for a structured project, or in the root `server.js` of a legacy one. The method below builds in either file; in `server/src/server.ts` give the parameter a type — `{ account, purchaseId, productId, quantity }: { account: string; purchaseId: number; productId: string; quantity: number; metadata?: Record<string, any> }` — plus `r: any` on each `ok` helper, and drop those annotations in a legacy `server.js`. A class has exactly ONE `$onItemPurchased`, so every product goes through its `switch`.
+
+It is a webhook, not a player's call, and the platform may run it again:
+
+- **Grant to the `account` argument.** It is the buyer. `$sender.account` is the buyer too, but a webhook `$sender` carries no auth data, so never gate a grant on them, and pass `account` explicitly to every `$global`/`$asset` call.
+- **Guard with `purchaseId`.** The platform dedupes claims, but a handler that THREW is recorded FAILED and may be re-run from the top. On a legacy 1.x `server.js` failures come back as `{ error }` instead of throwing, which is why every call goes through `ok()`. Record each applied `purchaseId` last, and return early when it is already there. That makes a retry after a fully applied claim a no-op; it does not cover a throw after a grant already landed, so keep each product to a single grant where you can.
+- **Currency and consumables go in `$asset`**, not in a read-modify-write of user state. Amounts are positive integers — multiply by `quantity`.
+- **A `$lock` inside the handler needs `{ maxWaitMs: 1500 }`**: the webhook gives the handler 5s, the same as `$lock`'s default wait.
 
 ```javascript
-// server.js
-async $onItemPurchased({ account, purchaseId, productId, quantity, metadata }) {
+// server/src/server.ts (server.js in a legacy project)
+async $onItemPurchased({ account, purchaseId, productId, quantity }) {
+  const ok = (r) => { if (r && typeof r.error === 'string' && Object.keys(r).length === 1) throw new Error(r.error); return r; }; // 1.x returns a failed call as exactly { error }; 2.x throws
+  // Makes a retry after a FULLY applied claim a no-op. It does not cover a throw after a
+  // grant landed (e.g. the marker write failing), so keep each case to a single grant.
+  const { grantedPurchases = {} } = ok(await $global.getUserState(account, ['grantedPurchases']));
+  if (grantedPurchases[purchaseId]) return { success: true };
+
   switch (productId) {
     case 'premium-subscription':
-      // One-time purchase: Set permanent flag
-      await $global.updateUserState(account, {
+      // One-time purchase: set a permanent flag
+      ok(await $global.updateUserState(account, {
         isPremium: true,
-        premiumDate: Date.now()
-      });
+        premiumDate: Date.now(),
+      }));
       break;
 
     case 'gold-pack-1000':
-      // Consumable: Add to existing value
-      const userState = await $global.getUserState(account);
-      await $global.updateUserState(account, {
-        gold: (userState.gold || 0) + 1000
-      });
+      // Consumable: currency lives in $asset
+      ok(await $asset.mint('gold', 1000 * quantity, account));
       break;
   }
 
+  // Written LAST, so it only marks a purchase whose grants all succeeded
+  ok(await $global.updateUserState(account, {
+    grantedPurchases: { ...grantedPurchases, [purchaseId]: true },
+  }));
   return { success: true };
 }
 ```
@@ -184,21 +199,22 @@ async $onItemPurchased({ account, purchaseId, productId, quantity, metadata }) {
 - `purchaseId`: Unique transaction ID
 - `productId`: Purchased product's Product ID
 - `quantity`: Purchase quantity
-- `metadata`: Custom JSON data
+- `metadata`: The object configured on the product, if any. If you read it, normalize it first: `const data = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;`
 
 ## Step 4: Real-time State Updates on Client
 
 When server changes state, client automatically receives updates.
 
-### Using useGlobalMyState (Recommended)
+### Using useGlobalMyState and useAsset (Recommended)
 ```tsx
-import { useGlobalMyState } from '@agent8/gameserver';
+import { useGlobalMyState, useAsset } from '@agent8/gameserver';
 
 function GameScreen() {
   const myState = useGlobalMyState(); // Auto-sync
+  const { assets } = useAsset();      // Auto-sync, read-only
 
   const isPremium = myState?.isPremium || false;
-  const gold = myState?.gold || 0;
+  const gold = assets?.gold || 0;
 
   return (
     <div>
@@ -215,6 +231,7 @@ function GameScreen() {
 
 ```tsx
 // Client
+import { useEffect } from 'react';
 import { useVXShop } from '@verse8/platform';
 import { useGlobalMyState } from '@agent8/gameserver';
 
@@ -242,34 +259,31 @@ function PremiumShop() {
 }
 ```
 
-```javascript
-// Server
-async $onItemPurchased({ account, productId }) {
-  if (productId === 'premium-subscription') {
-    await $global.updateUserState(account, { isPremium: true });
-  }
-  return { success: true };
-}
-```
+Server: the `'premium-subscription'` case of the single `$onItemPurchased` in Step 3, which sets `isPremium: true` for `account`.
 
 ## Example 2: Gacha System
 
 ```tsx
 // Client
+import { useEffect, useState } from 'react';
+import { useVXShop } from '@verse8/platform';
+import { useGameServer } from '@agent8/gameserver';
+
 function GachaShop() {
   const { getItem, buyItem, refresh, onClose } = useVXShop();
-  const myState = useGlobalMyState();
+  const { server } = useGameServer();
+  const [pullResult, setPullResult] = useState(null);
 
   useEffect(() => {
     const cancel = onClose(async (payload) => {
       refresh();
       if (payload.purchased && payload.productId === 'gacha-10pull') {
-        const result = await remoteFunction('openGachaBox', {});
+        const result = await server.remoteFunction('openGachaBox', []);
         setPullResult(result);
       }
     });
     return cancel;
-  }, [onClose, refresh]);
+  }, [onClose, refresh, server]);
 
   return (
     <button onClick={() => buyItem('gacha-10pull')}>
@@ -280,31 +294,31 @@ function GachaShop() {
 ```
 
 ```javascript
-// Server
-async $onItemPurchased({ account, productId }) {
-  if (productId === 'gacha-10pull') {
-    const state = await $global.getUserState(account);
-    await $global.updateUserState(account, {
-      gachaTickets: (state.gachaTickets || 0) + 10
-    });
-  }
-  return { success: true };
-}
+// server/src/server.ts (server.js in a legacy project)
+// Add this case to the $onItemPurchased switch in Step 3:
+    case 'gacha-10pull':
+      // Tickets are a consumable: keep them in $asset
+      ok(await $asset.mint('gacha_ticket', 10 * quantity, account));
+      break;
 
+// ...and this regular method to the Server class, called by the client after the shop closes:
 async openGachaBox() {
-  const state = await $global.getMyState();
-  if ((state.gachaTickets || 0) < 10) throw new Error('Not enough tickets');
+  const ok = (r) => { if (r && typeof r.error === 'string' && Object.keys(r).length === 1) throw new Error(r.error); return r; }; // 1.x returns a failed call as exactly { error }; 2.x throws
+  // The lock stops two quick calls from both passing the ticket check
+  return $lock('gacha:' + $sender.account, async () => {
+    if (!ok(await $asset.has('gacha_ticket', 10))) throw new Error('Not enough tickets');
+    ok(await $asset.burn('gacha_ticket', 10));
 
-  const results = [];
-  for (let i = 0; i < 10; i++) {
-    results.push(rollWithProbability());
-  }
-
-  await $global.updateMyState({
-    gachaTickets: state.gachaTickets - 10
+    const results = [];
+    for (let i = 0; i < 10; i++) {
+      results.push(rollWithProbability()); // returns an item id, e.g. 'hero_3'
+    }
+    // Grant the rolled items: one $asset balance per item id
+    for (const itemId of results) {
+      ok(await $asset.mint(itemId, 1));
+    }
+    return { items: results };
   });
-
-  return { items: results };
 }
 ```
 
@@ -315,9 +329,11 @@ async openGachaBox() {
 1. Change state directly on client
 2. Call buyItem without checking purchasable
 3. Forget to call refresh()
+4. Gate a grant on `$sender` auth fields (`isSubscriber`, `isFollower`, …) inside `$onItemPurchased`, or grant without the `purchaseId` guard
 
 ## ✅ Correct Approach
 
 1. Change state only on server
 2. Always check purchasable
 3. Always call refresh()
+4. Grant to the `account` argument, record each `purchaseId`, and keep currency and consumables in `$asset`

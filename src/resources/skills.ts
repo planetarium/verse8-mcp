@@ -12,7 +12,10 @@ import { fileURLToPath } from "node:url";
  * wins on name collisions.
  *
  *   1. `<repo root>/skills/<name>/SKILL.md`           — verse8-mcp core
- *   2. `<repo root>/skills-vendor/agent8-skills/skills/<name>.md`  — vendored (flat upstream layout)
+ *   2. `<repo root>/skills-vendor/agent8-skills/{skills,plugins/<p>/skills}/<name>.md`
+ *      — vendored (upstream layout). A skill under `plugins/<p>/skills/`
+ *      carries `plugin`/`pluginDir` so `verse8_attach` can gate it on the
+ *      plugin's `requiresPackage` (see `pluginGate.ts`).
  *   3. `~/.cache/verse8/skills/**\/SKILL.md`          — optional user cache
  *
  * **BREAKING CHANGE in 0.3.0**: prior versions inserted `cache` AFTER
@@ -39,6 +42,10 @@ export interface SkillResource {
   description?: string;
   mimeType: string;
   fsPath: string;
+  /** Vendored plugin that ships this skill; absent for top-level skills. */
+  plugin?: string;
+  /** Absolute path to `plugins/<plugin>/` (holds `plugin.json`). */
+  pluginDir?: string;
 }
 
 function resolveRepoRoot(): string {
@@ -70,6 +77,8 @@ function resolveRepoRoot(): string {
 interface DiscoveredSkill {
   skillName: string;
   fsPath: string;
+  plugin?: string;
+  pluginDir?: string;
 }
 
 /**
@@ -78,7 +87,11 @@ interface DiscoveredSkill {
  * collision WITHIN a single source; a stderr warn is emitted when a collision
  * is skipped so maintainers can notice shadowed duplicates.
  */
-function listSkillsUnder(root: string, sourceLabel: string): SkillResource[] {
+function listSkillsUnder(
+  root: string,
+  sourceLabel: string,
+  opts: { pluginLayout?: boolean } = {},
+): SkillResource[] {
   if (!fs.existsSync(root)) return [];
   const seen = new Map<string, DiscoveredSkill>();
 
@@ -114,7 +127,7 @@ function listSkillsUnder(root: string, sourceLabel: string): SkillResource[] {
       if (parentName === "skills" && entry.name !== "README.md") {
         const skillName = entry.name.slice(0, -3); // strip ".md"
         if (!isSafeSkillName(skillName)) continue;
-        recordSkill(seen, skillName, full, sourceLabel);
+        recordSkill(seen, skillName, full, sourceLabel, opts.pluginLayout ? pluginOf(full) : undefined);
       }
     }
   };
@@ -128,7 +141,18 @@ function listSkillsUnder(root: string, sourceLabel: string): SkillResource[] {
     description: `Verse8 skill: ${d.skillName}`,
     mimeType: "text/markdown",
     fsPath: d.fsPath,
+    ...(d.plugin ? { plugin: d.plugin, pluginDir: d.pluginDir } : {}),
   }));
+}
+
+/**
+ * `<…>/plugins/<plugin>/skills/<name>.md` → the plugin that ships it. Any
+ * other location is a top-level skill.
+ */
+function pluginOf(skillPath: string): { plugin: string; pluginDir: string } | undefined {
+  const pluginDir = path.dirname(path.dirname(skillPath));
+  if (path.basename(path.dirname(pluginDir)) !== "plugins") return undefined;
+  return { plugin: path.basename(pluginDir), pluginDir };
 }
 
 /**
@@ -152,6 +176,7 @@ function recordSkill(
   skillName: string,
   fsPath: string,
   sourceLabel: string,
+  owner?: { plugin: string; pluginDir: string },
 ): void {
   if (seen.has(skillName)) {
     // Intra-source duplicate: two different files claim the same skill name.
@@ -163,7 +188,12 @@ function recordSkill(
     );
     return;
   }
-  seen.set(skillName, { skillName, fsPath });
+  seen.set(skillName, { skillName, fsPath, ...owner });
+}
+
+/** `skills-vendor/agent8-skills/plugins/` — one directory per vendored plugin. */
+export function vendorPluginsRoot(): string {
+  return path.join(resolveRepoRoot(), "skills-vendor", "agent8-skills", "plugins");
 }
 
 export function listSkillResources(): SkillResource[] {
@@ -177,7 +207,7 @@ export function listSkillResources(): SkillResource[] {
   // Callers observe `core > vendor > cache` collision behavior.
   const byUri = new Map<string, SkillResource>();
   for (const s of listSkillsUnder(userCache, "userCache")) byUri.set(s.uri, s);
-  for (const s of listSkillsUnder(vendorSkills, "skills-vendor")) byUri.set(s.uri, s);
+  for (const s of listSkillsUnder(vendorSkills, "skills-vendor", { pluginLayout: true })) byUri.set(s.uri, s);
   // INV-4: Skill merge precedence is `core > vendor > cache`
   for (const s of listSkillsUnder(coreSkills, "skills")) byUri.set(s.uri, s);
   return Array.from(byUri.values()).sort((a, b) => a.uri.localeCompare(b.uri));

@@ -18,10 +18,18 @@ import { loadToken } from "../context/token.js";
 import { verifyToken } from "../api/v8MemeApi.js";
 import {
   listSkillResources,
-  type SkillResource,
+  vendorPluginsRoot,
 } from "../resources/skills.js";
 import {
+  selectProjectSkills,
+  type PluginGateReason,
+  type ProjectSkillSelection,
+} from "../resources/pluginGate.js";
+import {
   writeSkillFiles,
+  removeDirIfEmpty,
+  writeFileAtomic,
+  type SkillFileChange,
   type SkillWriteResult,
 } from "./skillWriter.js";
 import { isSafeAbsPath } from "../util/safePath.js";
@@ -30,7 +38,10 @@ import {
   AGENTS_MD_TEMPLATE_HAS_CATALOG_MARKER,
 } from "../prompts/agentsMdTemplate.js";
 import { resolveHooksDir, writeHook } from "../context/hooks.js";
-import { renderSkillsCatalog } from "../resources/skillCatalog.js";
+import {
+  renderPluginInstructions,
+  renderSkillsCatalog,
+} from "../resources/skillCatalog.js";
 import { RollbackJournal } from "../util/rollback.js";
 
 /**
@@ -74,7 +85,7 @@ export const attachInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "When true, remove .claude/skills/<name>/ directories whose skill is no longer bundled by verse8-mcp (and that still carry the verse8-mcp hash marker, proving we wrote them). Default false leaves orphans on disk to preserve user work.",
+        "When true, delete .claude/skills/<name>/SKILL.md for skills no longer bundled by verse8-mcp, but only where the file still carries an unedited verse8-mcp hash marker (proving we wrote it and the user has not changed it). Other files in the folder are kept; the folder goes only if that leaves it empty. Default false leaves orphans on disk to preserve user work.",
       ),
     overwriteEnv: z
       .boolean()
@@ -97,6 +108,7 @@ export type AttachResult =
         agentsDoc: "created" | "skipped-existing" | "overwritten";
         projectMarker: "created" | "already-present";
         skills: SkillWriteResult;
+        skillPlugins: SkillPluginsReport;
         env: EnsureVerse8EnvResult;
         gitIgnore: EnsureGitIgnoreResult;
         claudeGitIgnore: EnsureGitIgnoreResult;
@@ -202,9 +214,32 @@ export interface ApplyAttachmentArtifactsResult {
   agentsDoc: "created" | "skipped-existing" | "overwritten";
   projectMarker: "created" | "already-present";
   skills: SkillWriteResult;
+  skillPlugins: SkillPluginsReport;
   env: EnsureVerse8EnvResult;
   gitIgnore: EnsureGitIgnoreResult;
   claudeGitIgnore: EnsureGitIgnoreResult;
+}
+
+/**
+ * Which vendored plugins this project gets, and why — read from the
+ * project's `package.json` at attach time (see `pluginGate.ts`).
+ */
+export interface SkillPluginsReport {
+  dependencies: "package.json" | "missing" | "invalid";
+  active: Array<{ name: string; reason: PluginGateReason; matched?: string[] }>;
+  inactive: Array<{ name: string; reason: PluginGateReason; requiresPackage: string[] }>;
+}
+
+function reportSkillPlugins(selection: ProjectSkillSelection): SkillPluginsReport {
+  return {
+    dependencies: selection.dependencies.source,
+    active: selection.plugins
+      .filter((p) => p.active)
+      .map((p) => ({ name: p.name, reason: p.reason, ...(p.matched ? { matched: p.matched } : {}) })),
+    inactive: selection.plugins
+      .filter((p) => !p.active)
+      .map((p) => ({ name: p.name, reason: p.reason, requiresPackage: p.requiresPackage })),
+  };
 }
 
 // INV-7: `overwriteAllSkills: true` does not cascade to .env (and vice-versa)
@@ -219,7 +254,9 @@ export function applyAttachmentArtifacts(
       `[verse8-attach] writing hooks to custom core.hooksPath: ${hooksDir}`,
     );
   }
-  const skills = listSkillResources();
+  // Only skills that apply to this project: top-level ones plus those of
+  // plugins whose `requiresPackage` the project's package.json satisfies.
+  const selection = selectProjectSkills(listSkillResources(), projectDir, vendorPluginsRoot());
   const journal = new RollbackJournal();
 
   try {
@@ -238,7 +275,7 @@ export function applyAttachmentArtifacts(
 
     // Step 2 — AGENTS.md / CLAUDE.md.
     const agentsSnapshot = snapshotAgentsDocs(projectDir);
-    const agentsDoc = writeAgentsDoc(projectDir, opts.overwrite, skills);
+    const agentsDoc = writeAgentsDoc(projectDir, opts.overwrite, selection);
     if (agentsDoc !== "skipped-existing") {
       journal.record(() => restoreAgentsDocs(projectDir, agentsSnapshot));
     }
@@ -254,16 +291,21 @@ export function applyAttachmentArtifacts(
 
     // Step 4 — skills.
     const skillsRoot = path.join(projectDir, ".claude", "skills");
-    const skillsRootExistedBefore = safeIsDir(skillsRoot);
-    const result = writeSkillFiles(projectDir, skills, {
+    const createdDirs = {
+      claude: !safeIsDir(path.dirname(skillsRoot)),
+      skillsRoot: !safeIsDir(skillsRoot),
+    };
+    // Registered before writing: `changes` fills in as files change, so a
+    // throw halfway through (EACCES, ENOSPC, …) still rolls back the skills
+    // already written, overwritten or removed.
+    const changes: SkillFileChange[] = [];
+    journal.record(() => reverseSkillWrites(skillsRoot, changes, createdDirs));
+    const result = writeSkillFiles(projectDir, selection.active, {
       overwriteAll: opts.overwriteAllSkills === true,
       pruneOrphaned: opts.pruneOrphanedSkills === true,
+      retire: selection.inactive.map((s) => s.name),
+      onChange: (change) => changes.push(change),
     });
-    if (result.created.length > 0 || result.updated.length > 0) {
-      journal.record(() =>
-        reverseSkillWrites(skillsRoot, result, skillsRootExistedBefore),
-      );
-    }
     maybeFail(opts.__failAfter, "skills");
 
     // Step 5 — .env.
@@ -307,6 +349,7 @@ export function applyAttachmentArtifacts(
       agentsDoc,
       projectMarker,
       skills: result,
+      skillPlugins: reportSkillPlugins(selection),
       env,
       gitIgnore,
       claudeGitIgnore,
@@ -409,41 +452,43 @@ function safeIsDir(p: string): boolean {
   }
 }
 
+/**
+ * Undo exactly the file changes `writeSkillFiles` reported, newest first.
+ * A skill directory is removed only when this run created it; one that
+ * already existed (a retired skill's folder can keep the user's notes)
+ * loses at most the SKILL.md this run wrote. `.claude/skills/` and
+ * `.claude/` go only if this run created them and they end up empty.
+ */
+// INV-6: Skills outside the bundle are never touched
 function reverseSkillWrites(
   skillsRoot: string,
-  result: SkillWriteResult,
-  skillsRootExistedBefore: boolean,
+  changes: SkillFileChange[],
+  createdDirs: { claude: boolean; skillsRoot: boolean },
 ): void {
-  for (const name of result.created) {
+  for (const change of [...changes].reverse()) {
+    const dir = path.join(skillsRoot, change.name);
+    const file = path.join(dir, "SKILL.md");
     try {
-      fs.rmSync(path.join(skillsRoot, name), { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
-  }
-  // Updated skills were already verse8-mcp-authored; no content restore needed.
-  if (!skillsRootExistedBefore) {
-    try {
-      // Clean up the whole tree if we brought it into existence.
-      fs.rmSync(skillsRoot, { recursive: true, force: true });
-      const parent = path.dirname(skillsRoot); // .claude/
-      // Only remove .claude if it's now empty AND we created it.
-      try {
-        const entries = fs.readdirSync(parent);
-        if (entries.length === 0) fs.rmdirSync(parent);
-      } catch {
-        /* best-effort */
+      if (change.kind === "created") {
+        fs.rmSync(file, { force: true });
+        if (change.dirCreated) removeDirIfEmpty(dir);
+      } else {
+        // overwritten / removed: put the previous bytes and mode back.
+        fs.mkdirSync(dir, { recursive: true });
+        writeFileAtomic(file, change.previous.bytes, change.previous.mode);
       }
     } catch {
       /* best-effort */
     }
   }
+  if (createdDirs.skillsRoot) removeDirIfEmpty(skillsRoot);
+  if (createdDirs.claude) removeDirIfEmpty(path.dirname(skillsRoot));
 }
 
 function writeAgentsDoc(
   projectDir: string,
   overwrite: boolean,
-  skills: SkillResource[],
+  selection: ProjectSkillSelection,
 ): "created" | "skipped-existing" | "overwritten" {
   // Dual-write: AGENTS.md (OMC/OpenAI) + CLAUDE.md (Claude Code native).
   const agentsPath = path.join(projectDir, "AGENTS.md");
@@ -459,9 +504,12 @@ function writeAgentsDoc(
     return false;
   })();
   if (existsAny && !overwrite) return "skipped-existing";
-  const rendered = AGENTS_MD_TEMPLATE.replace(
-    "{{SKILLS_CATALOG}}",
-    renderSkillsCatalog(skills),
+  // Active plugins' instructions follow the catalog, as the container
+  // appends them after its base instructions.
+  const catalog = renderSkillsCatalog(selection.active);
+  const instructions = renderPluginInstructions(selection.plugins);
+  const rendered = AGENTS_MD_TEMPLATE.replace("{{SKILLS_CATALOG}}", () =>
+    instructions ? `${catalog}\n${instructions}` : catalog,
   );
   fs.writeFileSync(agentsPath, rendered);
   fs.writeFileSync(claudePath, rendered);

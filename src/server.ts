@@ -137,7 +137,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_attach",
     description:
-      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (removes only files bearing our hash marker), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (deletes only our unedited SKILL.md of skills no longer bundled; other files in the folder stay), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
     inputSchema: zodToJsonSchema(attachInputSchema),
   },
 ];

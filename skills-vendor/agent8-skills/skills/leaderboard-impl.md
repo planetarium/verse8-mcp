@@ -5,107 +5,93 @@ description: A method to implement leaderboards and rankings in a game. Explain 
 
 # Leaderboard Implementation
 
-This document explains how to implement leaderboards using Agent8 GameServer SDK's Collection functionality. We cover two main approaches.
+A leaderboard is a global collection with **one item per player**, keyed by the player's account. Using the account as the item id (`options.id`) turns every submission into an upsert of that player's single entry, so there are no duplicates to clean up and every query stays small.
 
 ## Prerequisites
 
-**Important:** This implementation uses the Agent8 GameServer SDK. Before implementing a leaderboard, you must:
+**Important:** This implementation uses the Agent8 GameServer SDK 2.x. Before implementing a leaderboard, you must:
 
 1. Read and understand the `gameserver-sdk` skill
-2. Set up Agent8 GameServer in your project
-3. Create a `server.js` file in your project root
+2. Set up the server the way that skill describes — a structured project (`server/src/server.ts`, created by `bunx @agent8/gameserver-node init`), or the project's existing root `server.js`, which holds the same class without `export` and type annotations
+3. On a project still pinned to `@agent8/gameserver` 1.x, upgrade first: the item id below is passed as `options.id`, and 2.x ignores the 1.x `item.__id` form.
+4. If the game already has a `rankings` collection from an earlier implementation (generated ids, possibly several items per player), use a new collection name such as `leaderboard`. The account-keyed upsert only replaces the item whose id is the account, so the old items would list players twice, and `getMyEntry` could read a stale lower score
 
-The leaderboard uses global Collections (`$global.addCollectionItem`, `$global.getCollectionItems`, etc.) and requires understanding of the SDK's state management system.
+The leaderboard uses global Collections (`$global.addCollectionItem`, `$global.getCollectionItems`, `$global.countCollectionItems`) and `$lock`.
 
-## 1. Multiple Scores per User Approach
+## Server Code
 
-This approach stores all game play records for each user, allowing users to submit multiple scores.
-
-### Server Code Implementation
-
-```js filename='server.js'
-class Server {
+```ts filename="server/src/server.ts"
+export class Server {
   /**
-   * Submits a new score to the leaderboard.
-   * @param {number} score The player's score.
-   * @param {string} nickname The player's nickname.
-   * @returns {Promise<Item>} The newly created leaderboard entry.
+   * Records a score if it beats the player's best.
+   * @returns {Promise<{ updated: boolean, entry: Item | null }>}
    */
-  async submitScore(score, nickname) {
-    if (typeof score !== "number" || score < 0) {
+  async submitScore(score: number, nickname: string) {
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0) {
       throw new Error("Invalid score.");
     }
-    if (
-      typeof nickname !== "string" ||
-      nickname.length < 1 ||
-      nickname.length > 15
-    ) {
+    const name = typeof nickname === "string" ? nickname.trim() : "";
+    if (name.length < 1 || name.length > 15) {
       throw new Error("Nickname must be between 1 and 15 characters.");
     }
 
-    const entry = {
-      account: $sender.account,
-      score,
-      nickname,
-      createdAt: Date.now(),
-    };
+    // Read-compare-write on this player's entry: the lock stops two
+    // submissions in flight from both passing the comparison.
+    return $lock(`score:${$sender.account}`, async () => {
+      const best = await this.getMyEntry();
+      if (best && best.score >= score) return { updated: false, entry: best };
 
-    return await $global.addCollectionItem("rankings", entry);
+      const entry = await $global.addCollectionItem(
+        "rankings",
+        { account: $sender.account, nickname: name, score, updatedAt: Date.now() },
+        { id: $sender.account } // upsert: replaces this player's previous entry
+      );
+      return { updated: true, entry };
+    });
   }
 
-  /**
-   * Retrieves the top 20 rankings.
-   * @returns {Promise<Item[]>} A list of the top 20 players.
-   */
+  /** The top 20, highest first. */
   async getTopRankings() {
-    return await $global.getCollectionItems("rankings", {
+    return $global.getCollectionItems("rankings", {
       orderBy: [{ field: "score", direction: "desc" }],
       limit: 20,
     });
   }
 
-  /**
-   * Retrieves the current player's best score and rank.
-   * @returns {Promise<{bestEntry: Item | null, rank: number}>} The player's best score entry and their rank.
-   */
-  async getMyBestRank() {
-    const myRankings = await this.getMyAllRankings();
+  /** The caller's entry and rank; ties share a rank. */
+  async getMyRank() {
+    const entry = await this.getMyEntry();
+    if (!entry) return { entry: null, rank: null };
 
-    if (myRankings.length === 0) {
-      return { bestEntry: null, rank: -1 };
-    }
-
-    // getMyAllRankings returns rankings sorted by score desc, so first item is the best
-    const bestEntry = myRankings[0];
-
-    const higherRankCount = await $global.countCollectionItems("rankings", {
-      filters: [{ field: "score", operator: ">", value: bestEntry.score }],
+    const higher = await $global.countCollectionItems("rankings", {
+      filters: [{ field: "score", operator: ">", value: entry.score }],
     });
-
-    return {
-      bestEntry,
-      rank: higherRankCount + 1,
-    };
+    return { entry, rank: higher + 1 };
   }
 
-  /**
-   * Retrieves all rankings for the current player.
-   * @returns {Promise<Item[]>} All rankings for the current player.
-   */
-  async getMyAllRankings() {
-    const myRankings = await $global.getCollectionItems("rankings", {
+  // A filtered read rather than getCollectionItem, which throws for a player
+  // who has no entry yet — this returns null instead.
+  async getMyEntry() {
+    const [entry] = await $global.getCollectionItems("rankings", {
       filters: [{ field: "account", operator: "==", value: $sender.account }],
     });
-
-    // Sort on client side since we can't use both filters and orderBy
-    return myRankings.sort((a, b) => b.score - a.score);
+    return entry ?? null;
   }
 }
 ```
 
-### Client-Side Implementation
+Why it holds up:
 
-#### Leaderboard Dialog Component
+- **No composite index needed.** `getTopRankings` orders on `score` with no filter, and `getMyEntry` filters on `account` with no order — each touches one field. Global collections accept `filters` and `orderBy` together only on the SAME field, so never add a tiebreaker sort (`score` desc, then `updatedAt` asc) or filter one field while ordering by another.
+- **The rank is exact.** `countCollectionItems` is not capped at 100. It does not yet include writes from the last ~2s, so a very recent submission from another player can be missing from the count.
+- **One item per player, never one per play.** `getCollectionItems` returns at most 100 items per call, so a collection of every play cannot be deduplicated or sorted reliably later.
+- **Scores are not currency.** Grant rewards with `$asset`, whose balance changes are atomic, not by writing to this collection.
+
+To keep a history of every play as well, write each one to a second collection (e.g. `plays`, with a generated id). Keep the leaderboard itself at one item per player.
+
+## Client-Side Implementation
+
+### Leaderboard Dialog Component
 
 Create a separate file for the leaderboard component:
 
@@ -125,16 +111,24 @@ interface ScoreEntry {
   score: number;
 }
 
+interface MyRank {
+  entry: ScoreEntry | null;
+  rank: number | null;
+}
+
 const LeaderboardDialog: React.FC<LeaderboardDialogProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { connected, server } = useGameServer();
+  const { connected, server, account } = useGameServer();
   const [topRanks, setTopRanks] = useState<ScoreEntry[]>([]);
-  const [myRank, setMyRank] = useState<{
-    bestEntry: ScoreEntry | null;
-    rank: number;
-  } | null>(null);
+  // Ties share a rank, matching getMyRank: a row's rank is 1 + the number of rows with a higher score.
+  const rankAt = (i: number) => {
+    let r = i;
+    while (r > 0 && topRanks[r - 1].score === topRanks[i].score) r--;
+    return r + 1;
+  };
+  const [myRank, setMyRank] = useState<MyRank | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -143,12 +137,13 @@ const LeaderboardDialog: React.FC<LeaderboardDialogProps> = ({
     const fetchLeaderboard = async () => {
       try {
         setLoading(true);
+        // Neither function takes arguments, so the args array is omitted.
         const [top, my] = await Promise.all([
           server.remoteFunction("getTopRankings"),
-          server.remoteFunction("getMyBestRank"),
+          server.remoteFunction("getMyRank"),
         ]);
         setTopRanks(top as ScoreEntry[]);
-        setMyRank(my as { bestEntry: ScoreEntry | null; rank: number });
+        setMyRank(my as MyRank);
       } catch (error) {
         console.error("Failed to fetch leaderboard:", error);
       } finally {
@@ -189,13 +184,11 @@ const LeaderboardDialog: React.FC<LeaderboardDialogProps> = ({
                 <div
                   key={entry.__id}
                   className={`flex justify-between items-center p-2 rounded ${
-                    entry.account === server.account
-                      ? "bg-blue-100"
-                      : "bg-gray-50"
+                    entry.account === account ? "bg-blue-100" : "bg-gray-50"
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">#{index + 1}</span>
+                    <span className="font-medium">#{rankAt(index)}</span>
                     <span>{entry.nickname}</span>
                   </div>
                   <span className="font-bold">
@@ -205,16 +198,18 @@ const LeaderboardDialog: React.FC<LeaderboardDialogProps> = ({
               ))}
             </div>
 
-            {myRank?.bestEntry && myRank.rank > 20 && (
+            {/* Show the player's row when it is not in the list — not when rank > 20: ties at the
+                cut-off, and counts that lag buffered writes, can leave a rank-20 player off the list */}
+            {myRank?.entry && !topRanks.some((e) => e.account === account) && (
               <div className="border-t pt-4">
                 <h2 className="font-medium mb-2">Your Best</h2>
                 <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
                   <div className="flex items-center gap-2">
                     <span className="font-medium">#{myRank.rank}</span>
-                    <span>{myRank.bestEntry.nickname}</span>
+                    <span>{myRank.entry.nickname}</span>
                   </div>
                   <span className="font-bold">
-                    {myRank.bestEntry.score.toLocaleString()}
+                    {myRank.entry.score.toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -236,215 +231,9 @@ const LeaderboardDialog: React.FC<LeaderboardDialogProps> = ({
 export default LeaderboardDialog;
 ```
 
-#### Score Submission Component
+### Score Submission Component
 
-```tsx filename='components/GameOverDialog.tsx'
-import React, { useState } from "react";
-import { useGameServer } from "@agent8/gameserver";
-
-interface GameOverDialogProps {
-  score: number;
-  onRestart: () => void;
-  onScoreSubmitted: () => void;
-}
-
-const GameOverDialog: React.FC<GameOverDialogProps> = ({
-  score,
-  onRestart,
-  onScoreSubmitted,
-}) => {
-  const { connected, server } = useGameServer();
-  const [nickname, setNickname] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleSubmit = async () => {
-    if (!connected) {
-      setError("Not connected to server.");
-      return;
-    }
-    if (nickname.trim().length === 0) {
-      setError("Nickname cannot be empty.");
-      return;
-    }
-    if (nickname.length > 15) {
-      setError("Nickname cannot exceed 15 characters.");
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError("");
-    try {
-      await server.remoteFunction("submitScore", [score, nickname.trim()]);
-      onScoreSubmitted(); // recommend: close gameOver dialog and show leaderboard dialog
-    } catch (e: any) {
-      setError(e.message || "Failed to submit score.");
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
-        <h1 className="text-2xl font-bold text-center mb-4">Game Over</h1>
-        <p className="text-center text-lg mb-6">
-          Final Score: {score.toLocaleString("en-US")}
-        </p>
-
-        <div className="space-y-4">
-          <input
-            type="text"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="Enter your nickname"
-            className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-            maxLength={15}
-            disabled={isSubmitting}
-          />
-
-          <button
-            onClick={handleSubmit}
-            disabled={!connected || isSubmitting}
-            className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-          >
-            {isSubmitting ? "Submitting..." : "Submit Score"}
-          </button>
-
-          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-
-          <button
-            onClick={onRestart}
-            className="w-full px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
-          >
-            Play Again
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default GameOverDialog;
-```
-
-#### Usage Example
-
-```tsx filename='YourGameComponent.tsx'
-import React, { useState } from "react";
-import LeaderboardDialog from "./LeaderboardDialog";
-import GameOverDialog from "./GameOverDialog";
-
-const YourGame = () => {
-  const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [showGameOver, setShowGameOver] = useState(false);
-  const [finalScore, setFinalScore] = useState(0);
-
-  const handleGameOver = (score: number) => {
-    setFinalScore(score);
-    setShowGameOver(true);
-  };
-
-  const handleScoreSubmitted = () => {
-    setShowGameOver(false);
-    setShowLeaderboard(true);
-  };
-
-  return (
-    <div>
-      {/* Your game content */}
-      <button
-        onClick={() => setShowLeaderboard(true)}
-        className="px-4 py-2 bg-blue-600 text-white rounded"
-      >
-        Show Leaderboard
-      </button>
-
-      <LeaderboardDialog
-        isOpen={showLeaderboard}
-        onClose={() => setShowLeaderboard(false)}
-      />
-
-      <GameOverDialog
-        score={finalScore}
-        onRestart={() => setShowGameOver(false)}
-        onScoreSubmitted={handleScoreSubmitted}
-      />
-    </div>
-  );
-};
-```
-
-## 2. Best Score Only Approach
-
-This approach maintains only one highest score per user. You only need to modify the `submitScore` function from the basic code above.
-
-### Key Difference: submitScore Function
-
-Unlike the basic approach, this only updates when the new score is higher than the existing best score, and deletes all existing scores to prevent duplicates.
-
-```js filename='server.js'
-  /**
-   * Submits a score, updating only if it's higher than the current best.
-   * @param {number} score The player's score.
-   * @param {string} nickname The player's nickname.
-   * @returns {Promise<{updated: boolean, entry: Item | null, message: string}>} Update result.
-   */
-  async submitScore(score, nickname) {
-    if (typeof score !== "number" || score < 0) {
-      throw new Error("Invalid score.");
-    }
-    if (
-      typeof nickname !== "string" ||
-      nickname.length < 1 ||
-      nickname.length > 15
-    ) {
-      throw new Error("Nickname must be between 1 and 15 characters.");
-    }
-
-    // Get all current rankings (sorted desc by score)
-    const myRankings = await this.getMyAllRankings();
-    const currentBest = myRankings.length > 0 ? myRankings[0] : null;
-
-    // If no previous score or new score is higher
-    if (!currentBest || score > currentBest.score) {
-      // Delete all existing rankings to ensure only one ranking per user
-      for (const rankingEntry of myRankings) {
-        await $global.deleteCollectionItem("rankings", rankingEntry.__id);
-      }
-
-      // Add new score
-      const entry = {
-        account: $sender.account,
-        score,
-        nickname,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-
-      const newEntry = await $global.addCollectionItem("rankings", entry);
-
-      return {
-        updated: true,
-        entry: newEntry,
-        message: currentBest
-          ? `New best score! Previous: ${currentBest.score}`
-          : `First score recorded!`,
-      };
-    } else {
-      return {
-        updated: false,
-        entry: currentBest,
-        message: `Score ${score} is not higher than your best: ${currentBest.score}`,
-      };
-    }
-  }
-```
-
-**All other functions (`getTopRankings`, `getMyBestRank`, `getMyAllRankings`) remain the same as the basic approach above.**
-
-### Key Difference: GameOverDialog Component
-
-For the best score only approach, the GameOverDialog needs to check if the current score is higher than the player's best score before showing the submission form:
+The dialog reads the player's best first, so a score that cannot place skips the nickname prompt. `submitScore` still re-checks on the server — `updated` is `false` when the score did not beat the player's best:
 
 ```tsx filename='components/GameOverDialog.tsx'
 import React, { useState, useEffect } from "react";
@@ -475,8 +264,8 @@ const GameOverDialog: React.FC<GameOverDialogProps> = ({
     const fetchMyBestScore = async () => {
       try {
         setLoading(true);
-        const myRank = await server.remoteFunction("getMyBestRank");
-        setMyBestScore(myRank.bestEntry?.score || null);
+        const myRank = await server.remoteFunction("getMyRank");
+        setMyBestScore(myRank.entry?.score ?? null); // ?? keeps a best score of 0
       } catch (error) {
         console.error("Failed to fetch best score:", error);
       } finally {
@@ -496,7 +285,7 @@ const GameOverDialog: React.FC<GameOverDialogProps> = ({
       setError("Nickname cannot be empty.");
       return;
     }
-    if (nickname.length > 15) {
+    if (nickname.trim().length > 15) {
       setError("Nickname cannot exceed 15 characters.");
       return;
     }
@@ -509,7 +298,11 @@ const GameOverDialog: React.FC<GameOverDialogProps> = ({
         nickname.trim(),
       ]);
       if (result.updated) {
-        onScoreSubmitted(); // New high score submitted
+        onScoreSubmitted(); // recommend: close gameOver dialog and show leaderboard dialog
+      } else {
+        // A higher best was stored meanwhile (another tab/device): the "not high enough" box explains it.
+        setMyBestScore(result.entry?.score ?? null);
+        setIsSubmitting(false);
       }
     } catch (e: any) {
       setError(e.message || "Failed to submit score.");
@@ -518,10 +311,17 @@ const GameOverDialog: React.FC<GameOverDialogProps> = ({
   };
 
   if (loading) {
+    // Keep a way out while the server is unreachable — loading never ends until it connects.
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
           <div className="text-center py-8">Loading...</div>
+          <button
+            onClick={onRestart}
+            className="w-full mt-4 px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+          >
+            Play Again
+          </button>
         </div>
       </div>
     );
@@ -607,4 +407,51 @@ const GameOverDialog: React.FC<GameOverDialogProps> = ({
 export default GameOverDialog;
 ```
 
-**Other components (LeaderboardDialog) remain the same as the basic approach above.**
+### Usage Example
+
+```tsx filename='YourGameComponent.tsx'
+import React, { useState } from "react";
+import LeaderboardDialog from "./LeaderboardDialog";
+import GameOverDialog from "./GameOverDialog";
+
+const YourGame = () => {
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showGameOver, setShowGameOver] = useState(false);
+  const [finalScore, setFinalScore] = useState(0);
+
+  const handleGameOver = (score: number) => {
+    setFinalScore(score);
+    setShowGameOver(true);
+  };
+
+  const handleScoreSubmitted = () => {
+    setShowGameOver(false);
+    setShowLeaderboard(true);
+  };
+
+  return (
+    <div>
+      {/* Your game content */}
+      <button
+        onClick={() => setShowLeaderboard(true)}
+        className="px-4 py-2 bg-blue-600 text-white rounded"
+      >
+        Show Leaderboard
+      </button>
+
+      <LeaderboardDialog
+        isOpen={showLeaderboard}
+        onClose={() => setShowLeaderboard(false)}
+      />
+
+      {showGameOver && (
+        <GameOverDialog
+          score={finalScore}
+          onRestart={() => setShowGameOver(false)}
+          onScoreSubmitted={handleScoreSubmitted}
+        />
+      )}
+    </div>
+  );
+};
+```
