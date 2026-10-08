@@ -48,7 +48,7 @@ npm run audit
 
 ## Invariants
 
-The production invariants are listed in [security.md › Invariants](./security.md#invariants). Every test or source line that enforces one carries an `INV-n:` / `MCP-UP-n:` tag comment (`//` in TS/JS, `#` in `tests/smoke.sh`); list them with `git grep -nE '(INV|MCP-UP)-[0-9]+:'`. When you change or move a tagged test, move its tag with it.
+The production invariants are listed in [security.md › Invariants](./security.md#invariants). Every test or source line that enforces one carries an `INV-n:` / `MCP-UP-n:` tag comment (`//` in TS/JS, `#` in `tests/smoke.sh`); list them with `git grep -nE '(INV|MCP-UP)-[0-9]+:'`. `bash scripts/verify-invariants.sh` (run in CI) fails when a listed invariant has no tag or a tag names an unlisted ID. When you change or move a tagged test, move its tag with it.
 
 ```bash
 bash scripts/check-subtree-sha.sh

@@ -41,5 +41,6 @@ jobs:
       # skills-vendor/ must match package.json :: verse8.skillsVendor.sha.
       - run: bash scripts/check-subtree-sha.sh
 
-      # Every test / source reference in .omc/INVARIANTS.md must resolve.
+      # Every invariant in docs/security.md is tagged in code/tests, and every
+      # `INV-n:` / `MCP-UP-n:` tag names a listed invariant.
       - run: bash scripts/verify-invariants.sh
