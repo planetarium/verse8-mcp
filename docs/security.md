@@ -16,10 +16,11 @@
 
 ## Invariants
 
-Promises that must survive any refactor. Each test case or source line that enforces one carries a tag comment of the form `// INV-3: …`. To find them:
+Promises that must survive any refactor. Each test case or source line that enforces one carries a tag comment `<ID>: <title>` (`//` in TS/JS, `#` in `tests/smoke.sh`), e.g. `// INV-3: URL overrides are host-validated`. To find them:
 
 ```bash
-git grep -n 'INV-3:'
+git grep -nE '(INV|MCP-UP)-[0-9]+:'   # every tag
+git grep -n 'INV-3:'                  # one invariant
 ```
 
 When you change or move a tagged test, move its tag with it. A new invariant takes the next free number.
@@ -31,7 +32,7 @@ When you change or move a tagged test, move its tag with it. A new invariant tak
 | INV-3 | **URL overrides are host-validated.** Every env-driven base URL goes through `parseOverrideHost` plus a per-caller `isAllowed*` predicate (`*.verse8.io` + loopback); a rejected value falls back to the default URL |
 | INV-4 | **Skill merge precedence is `core > vendor > cache`.** `listSkillResources` calls `Map.set` in cache → vendor → core order, so the last write wins |
 | INV-5 | **`.env` ACCOUNT/VERSE is immutable once set.** A mismatch returns `mismatch-preserved` with a hint pointing at `verse8_attach({overwriteEnv: true})` |
-| INV-6 | **User skills are never touched.** `writeSkillFiles` writes only to directories named after bundled skills; a directory without the verse8-mcp hash marker is left alone even under `overwriteAllSkills` / `pruneOrphanedSkills` |
+| INV-6 | **Skills outside the bundle are never touched.** `writeSkillFiles` writes only to directories named after bundled skills. `pruneOrphanedSkills` removes a non-bundled directory only when its `SKILL.md` carries an unedited verse8-mcp hash marker. `overwriteAllSkills` is the one escape hatch: it overwrites bundled-name directories even when the user edited them |
 | INV-7 | **Overwrite flags stay in their lane.** `overwriteAllSkills` affects skills only, `overwriteEnv` affects `.env` only |
 | INV-8 | **The V8 commit format is an on-wire contract.** `buildV8CommitMessage` is deterministic, the parser accepts everything the builder emits, and structurally drifted messages are rejected |
 | INV-9 | **Narrative lives inside `<V8AssistantMessage>`.** `<problemStatement>` / `<workSummary>` are emitted there and duplicated into the `<V8AgentMessage>` JSON. The legacy `## Problem` / `## Work` layout is parsed but never emitted |
