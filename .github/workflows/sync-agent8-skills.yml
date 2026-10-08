@@ -1,0 +1,246 @@
+name: Sync agent8-skills
+
+# Receives the `agent8-skills-updated` repository_dispatch that
+# planetarium/agent8-skills sends on every push to its main (its
+# .github/workflows/notify-verse8-mcp.yml; contract in its README, "Syncing
+# to verse8-mcp"): checks that commit out, re-vendors what its public.json
+# lists into skills-vendor/agent8-skills/ (scripts/sync-agent8-skills.mjs),
+# re-pins package.json :: verse8.skillsVendor and opens — or force-updates —
+# the PR on branch `sync/agent8-skills`. Skips when nothing it vendors
+# changed, or when the commit is already pinned — on main or on the open
+# sync branch — or older than that pin (the sender coalesces back-to-back
+# merges, so dispatches may arrive out of order or not at all for
+# intermediate heads, and a re-run or manual `sha` may be stale).
+on:
+  repository_dispatch:
+    types: [agent8-skills-updated]
+  # Manual run: vendor the head of upstream main, or a specific commit on it
+  # (e.g. the dispatch was lost, or the secret was registered after a merge).
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "planetarium/agent8-skills commit to vendor (must be on main; empty = head of main)"
+        required: false
+        default: ""
+
+# One sync at a time; a queued run is replaced by a newer one, which is fine
+# because each run re-vendors from the commit it was given against main.
+concurrency:
+  group: sync-agent8-skills
+  cancel-in-progress: false
+
+# The clone of the private upstream, the push and the PR all use
+# AGENT8_SKILLS_SYNC_TOKEN (a PR opened with GITHUB_TOKEN would not trigger
+# CI). GITHUB_TOKEN itself only needs to read.
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: planetarium/agent8-skills
+  UPSTREAM_DIR: upstream/agent8-skills
+  SYNC_BRANCH: sync/agent8-skills
+
+jobs:
+  sync:
+    name: Re-vendor from public.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Keep AGENT8_SKILLS_SYNC_TOKEN as an environment secret here with the
+    # environment's deployment branches limited to `main`, so a workflow on
+    # any other branch cannot read it. (A repository-level secret of the same
+    # name also resolves, but is readable from any branch.)
+    environment: agent8-skills-sync
+    env:
+      SYNC_TOKEN: ${{ secrets.AGENT8_SKILLS_SYNC_TOKEN }}
+      REQUESTED_SHA: ${{ github.event.client_payload.sha || github.event.inputs.sha }}
+      REQUESTED_REF: ${{ github.event.client_payload.ref }}
+      SENDER_RUN_URL: ${{ github.event.client_payload.run_url }}
+
+    steps:
+      # Fail loudly rather than "succeed" without doing anything.
+      - name: Require AGENT8_SKILLS_SYNC_TOKEN
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::Secret AGENT8_SKILLS_SYNC_TOKEN is not set. Register a fine-grained PAT (or GitHub App token) with contents:read on $UPSTREAM_REPO and contents:write + pull-requests:write on $GITHUB_REPOSITORY, then re-run."
+            exit 1
+          fi
+
+      # The sender promises `sha` is on its main. Refuse anything else before
+      # spending a clone on it.
+      - name: Require refs/heads/main
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          if [ "$REQUESTED_REF" != "refs/heads/main" ]; then
+            echo "::error::client_payload.ref is '$REQUESTED_REF'; only refs/heads/main of $UPSTREAM_REPO is vendored."
+            exit 1
+          fi
+          if [ -z "$REQUESTED_SHA" ]; then
+            echo "::error::client_payload.sha is empty."
+            exit 1
+          fi
+
+      # Always sync against main, whatever ref the event carries.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.AGENT8_SKILLS_SYNC_TOKEN }}
+
+      # The open sync branch (if any) carries its own pin; the skip check
+      # below needs it so a stale dispatch cannot rewind a newer sync PR.
+      - name: Fetch the sync branch
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" 2>/dev/null \
+            && echo "origin/$SYNC_BRANCH fetched" \
+            || echo "no $SYNC_BRANCH branch on origin"
+
+      # Full history of upstream main: the ancestry checks below need it.
+      - uses: actions/checkout@v4
+        with:
+          repository: planetarium/agent8-skills
+          ref: main
+          token: ${{ secrets.AGENT8_SKILLS_SYNC_TOKEN }}
+          path: upstream/agent8-skills
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve the upstream commit
+        id: upstream
+        run: |
+          set -euo pipefail
+          cd "$UPSTREAM_DIR"
+          if [ -n "$REQUESTED_SHA" ]; then
+            if ! sha="$(git rev-parse --verify --quiet "${REQUESTED_SHA}^{commit}")"; then
+              echo "::error::$REQUESTED_SHA is not a commit on $UPSTREAM_REPO main."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$sha" origin/main; then
+              echo "::error::$sha is not on $UPSTREAM_REPO main; only main is vendored."
+              exit 1
+            fi
+          else
+            sha="$(git rev-parse origin/main)"
+          fi
+
+          # Already vendored when `sha` is one of the pins or an ancestor of
+          # one — main's pin, and the open sync branch's pin if the branch
+          # exists (scripts/sync-skip-check.mjs explains why both).
+          pinned="$(node -p 'require(process.env.GITHUB_WORKSPACE + "/package.json").verse8?.skillsVendor?.upstream?.commit ?? ""')"
+          branch_pin=""
+          if git -C "$GITHUB_WORKSPACE" rev-parse --verify --quiet "origin/$SYNC_BRANCH^{commit}" >/dev/null; then
+            branch_pin="$(git -C "$GITHUB_WORKSPACE" show "origin/$SYNC_BRANCH:package.json" \
+              | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).verse8?.skillsVendor?.upstream?.commit ?? ""')"
+          fi
+          skip="$(node "$GITHUB_WORKSPACE/scripts/sync-skip-check.mjs" --upstream . --sha "$sha" \
+            --pin "main=$pinned" --pin "$SYNC_BRANCH=$branch_pin")"
+          echo "$skip" >> "$GITHUB_OUTPUT"
+          if [ "$skip" = "skip=true" ]; then
+            exit 0
+          fi
+
+          git checkout --quiet "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          echo "Vendoring $UPSTREAM_REPO@$sha (pinned: ${pinned:-none})"
+
+      # Exit 2 with `public_json_missing` when the commit has no public.json.
+      - name: Re-vendor skills-vendor/agent8-skills
+        id: sync
+        if: steps.upstream.outputs.skip != 'true'
+        run: node scripts/sync-agent8-skills.mjs --upstream "$UPSTREAM_DIR" --commit "${{ steps.upstream.outputs.sha }}"
+
+      - name: Verify the pin and the diff
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/check-subtree-sha.sh
+          # The sync may only touch the vendor tree and package.json.
+          stray="$(git status --porcelain -- . ':!skills-vendor' ':!package.json' ':!upstream' || true)"
+          if [ -n "$stray" ]; then
+            echo "::error::sync touched files outside skills-vendor/ and package.json:"
+            echo "$stray"
+            exit 1
+          fi
+
+      - name: Commit, push and open or update the PR
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT8_SKILLS_SYNC_TOKEN }}
+          SHA: ${{ steps.upstream.outputs.sha }}
+          SHORT: ${{ steps.upstream.outputs.short }}
+          PINNED: ${{ steps.upstream.outputs.pinned }}
+          NEW_CONTENT_SHA: ${{ steps.sync.outputs.sha }}
+          OLD_CONTENT_SHA: ${{ steps.sync.outputs.previous_sha }}
+          SUMMARY: ${{ steps.sync.outputs.summary }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          title="chore(skills-vendor): sync agent8-skills ($SHORT)"
+          upstream_url="$GITHUB_SERVER_URL/$UPSTREAM_REPO"
+          if [ -n "$PINNED" ]; then
+            range="$upstream_url/compare/${PINNED}...${SHA}"
+            previous="[\`${PINNED:0:7}\`]($upstream_url/commit/$PINNED)"
+          else
+            range=""
+            previous="none"
+          fi
+
+          {
+            echo "Re-vendors \`skills-vendor/agent8-skills/\` from [\`$UPSTREAM_REPO@$SHORT\`]($upstream_url/commit/$SHA) as its \`public.json\` allows, and re-pins \`package.json :: verse8.skillsVendor\`."
+            echo
+            echo "- Upstream commit: [\`$SHORT\`]($upstream_url/commit/$SHA) (previously pinned: $previous)"
+            [ -n "$range" ] && echo "- Upstream changes: $range"
+            [ -n "$SENDER_RUN_URL" ] && echo "- Sent by: $SENDER_RUN_URL"
+            echo "- This run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Content hash: \`${OLD_CONTENT_SHA:-none}\` → \`$NEW_CONTENT_SHA\`"
+            echo
+            echo "$SUMMARY"
+            echo
+            echo "---"
+            echo "Opened by \`.github/workflows/sync-agent8-skills.yml\`. The branch \`$SYNC_BRANCH\` is force-pushed on every upstream change — fix content upstream, not here."
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          {
+            echo "$title"
+            echo
+            echo "$UPSTREAM_REPO@$SHA per its public.json (previously pinned: ${PINNED:-none})."
+            [ -n "$SENDER_RUN_URL" ] && echo "Dispatched by $SENDER_RUN_URL"
+            echo
+            echo "$SUMMARY"
+          } > "$RUNNER_TEMP/commit-msg.txt"
+
+          git checkout -B "$SYNC_BRANCH"
+          git add package.json skills-vendor
+          git commit --quiet -F "$RUNNER_TEMP/commit-msg.txt"
+          git push --force origin "HEAD:refs/heads/$SYNC_BRANCH"
+
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$SYNC_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
+            echo "Updated PR #$existing"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$SYNC_BRANCH" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
+
+      # Upstream moved but the public surface is identical to main: a PR left
+      # open from an earlier run would now be stale, so close it.
+      - name: Close a stale sync PR
+        if: steps.upstream.outputs.skip != 'true' && steps.sync.outputs.changed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT8_SKILLS_SYNC_TOKEN }}
+          SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$SYNC_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr close "$existing" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "Closing: $UPSTREAM_REPO@$SHA vendors identically to \`main\`, so this sync is no longer needed."
+            echo "Closed stale PR #$existing"
+          else
+            echo "Nothing to vendor and no open sync PR."
+          fi

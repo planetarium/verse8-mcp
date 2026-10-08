@@ -1,0 +1,45 @@
+name: CI
+
+# Build, unit tests and the two repo gates (vendor content hash, invariant
+# references). Runs on every pushed branch so a sync PR opened by
+# sync-agent8-skills.yml — and any other PR — is checked against the pin it
+# ships. The smoke suite (tests/smoke.sh) needs the live mocks and stays
+# local.
+on:
+  push:
+    branches:
+      - "**"
+      - "!a8-assets"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build, unit tests, gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm run test:unit
+
+      # skills-vendor/ must match package.json :: verse8.skillsVendor.sha.
+      - run: bash scripts/check-subtree-sha.sh
+
+      # Every test / source reference in .omc/INVARIANTS.md must resolve.
+      - run: bash scripts/verify-invariants.sh

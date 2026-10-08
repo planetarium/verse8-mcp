@@ -56,22 +56,38 @@ async function startMock(extraArgs = []) {
   try {
     fs.unlinkSync(CALLS_FILE);
   } catch {}
-  const proc = spawn("npx", ["--yes", "tsx", MOCK_SCRIPT, ...extraArgs], {
-    stdio: ["ignore", "pipe", "pipe"],
+  // Run the mock in ONE node process (`--import tsx` loads TypeScript
+  // in-process) rather than `npx tsx …`: that form is npx → tsx → node, and
+  // `proc.kill()` only reached npx, leaving the real server orphaned. The
+  // orphan kept this process's stdout/stderr pipes open, so the test file
+  // never exited and `node --test` hung until the job timeout. Nothing reads
+  // the mock's output here (calls go to CALLS_FILE), so no pipes at all.
+  const proc = spawn(process.execPath, ["--import", "tsx", MOCK_SCRIPT, ...extraArgs], {
+    stdio: "ignore",
   });
   const ok = await waitForFile(PORT_FILE);
   if (!ok) {
-    proc.kill();
+    await stopMock({ proc });
     throw new Error("agent8-backend-mock did not start in time");
   }
   const port = fs.readFileSync(PORT_FILE, "utf8").trim();
   return { proc, port: Number(port) };
 }
 
-function stopMock(handle) {
-  if (handle && handle.proc) {
-    handle.proc.kill("SIGTERM");
-  }
+/** SIGTERM (the mock closes its server and exits), SIGKILL if it has not gone in 5s. */
+async function stopMock(handle) {
+  const proc = handle && handle.proc;
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+    }, 5000);
+    proc.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    proc.kill("SIGTERM");
+  });
 }
 
 function readCalls() {
@@ -124,7 +140,7 @@ test("start → happy path returns template + startCallId", async () => {
     assert.ok(r.suggestedTitle.length > 0);
     assert.ok(r.suggestedProjectRepo.length > 0);
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -160,7 +176,7 @@ test("confirm template_mismatch: no HTTP after digest mismatch (AC-11)", async (
     // Zero new select-template calls.
     assert.equal(countCalls("/api/select-template"), baselineSelect);
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -188,7 +204,7 @@ test("confirm template_mismatch: unknown startCallId fails loud without HTTP", a
     assert.match(bad.hint, /MCP server may have restarted/);
     assert.equal(countCalls("/api/select-template"), baselineSelect);
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -235,7 +251,7 @@ test("confirm happy path: clones fixture + attaches + nextCallRequires.projectDi
       ".verse8/project.json must not contain a GitLab PAT",
     );
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -267,7 +283,7 @@ test("confirm retry safety: projectPath skips select-template (AC-13)", async ()
     const firstSelectCount = countCalls("/api/select-template");
     assert.equal(firstSelectCount, 1, "first confirm should have called select-template once");
   } finally {
-    stopMock(fail);
+    await stopMock(fail);
   }
 
   // Now start a healthy mock. Second confirm echoes projectPath back; it MUST
@@ -296,7 +312,7 @@ test("confirm retry safety: projectPath skips select-template (AC-13)", async ()
     // Token endpoints MUST have been called.
     assert.equal(countCalls("/api/gitlab/project-access-token"), 2);
   } finally {
-    stopMock(healthy);
+    await stopMock(healthy);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -345,7 +361,7 @@ test("confirm concurrency guard: parallel returns confirm_in_flight (AC-14)", as
       `expected exactly one confirm_in_flight, got outcomes: ${outcomes.join(",")}`,
     );
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -378,7 +394,7 @@ test("confirm tolerates snake_case response shape (clone_command, git_url)", asy
     // Server-returned snake_case `expires_at` must populate tokenExpiresAt.
     assert.ok(typeof r.tokenExpiresAt === "string" && r.tokenExpiresAt.length > 0);
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -410,7 +426,7 @@ test("confirm synthesizes cloneCommand from gitUrl when backend omits it", async
     assert.equal(r.ok, true, `expected synth fallback to clone, got: ${JSON.stringify(r)}`);
     assert.ok(fs.existsSync(path.join(r.projectDir, ".git")));
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -449,7 +465,7 @@ test("confirm: when backend omits BOTH cloneCommand and gitUrl → token_grant_f
       `hint should surface observed keys for debugging, got: ${r.hint}`,
     );
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
@@ -484,7 +500,7 @@ test("confirm rejects traversal slug: hostile backend slug '..' → clone_parse_
       `expected empty targetDir after rejection, saw: ${entries.join(",")}`,
     );
   } finally {
-    stopMock(handle);
+    await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;
     delete process.env.VERSE8_ACCESS_TOKEN;
   }
