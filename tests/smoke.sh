@@ -1369,7 +1369,10 @@ test_upload_happy_path() {
   stop_agent8_mock
   rm -rf "$TEST_TMPDIR"
 
-  if json_contains "$resp" '\\"ok\\":true' && json_contains "$resp" 'agent8-games.verse8.io'; then
+  # The tool text is JSON.stringify(…, null, 2) inside a JSON string: `\"ok\": true`
+  # (one backslash, a space). json_contains is a literal substring match.
+  if { json_contains "$resp" '\"ok\":true' || json_contains "$resp" '\"ok\": true'; } \
+    && json_contains "$resp" 'agent8-games.verse8.io'; then
     pass "upload_happy_path"
   else
     fail "upload_happy_path" "$resp"
