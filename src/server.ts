@@ -95,6 +95,8 @@ const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session
 
 7) **Deploy / publish** → use \`verse8_deploy\` (call with \`dryRun: true\` first and confirm with the user — publishing is public). NEVER run \`@agent8/deploy --prod\` or a build+upload via Bash.
 
+8) **3D engine: Incanto by default.** On \`vibe-starter-3d\`, \`vibe-starter-3d-environment\`, \`@react-three/fiber\` or \`incanto\`? Keep it; never add a second 3D engine. A 3D game with none of those (nor \`three\`) uses Incanto — steps in AGENTS.md.
+
 Violating any of 2–5 will either corrupt git state (rejected commit), desynchronize preview from repo (2 and 3), or silently lose the V8 metadata that Verse8 tooling depends on.`;
 
 const BASE_TOOLS: Tool[] = [
