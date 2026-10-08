@@ -95,6 +95,8 @@ const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session
 
 7) **Deploy / publish** → use \`verse8_deploy\` (call with \`dryRun: true\` first and confirm with the user — publishing is public). NEVER run \`@agent8/deploy --prod\` or a build+upload via Bash.
 
+8) **3D engine: Incanto by default.** A project whose \`package.json\` depends on \`vibe-starter-3d\`, \`vibe-starter-3d-environment\`, \`@react-three/fiber\` or \`incanto\` gets that stack's skills and rules from \`verse8_attach\` — keep using that stack and never add a second 3D engine. When the user wants a **3D** game and the project depends on none of those (nor on \`three\`), use Incanto: read \`verse8://skill/incanto-on-agent8/SKILL.md\` and \`verse8://skill/incanto-your-first-game/SKILL.md\` via \`resources/read\` before the first edit, add the engine with \`bun add incanto three\`, then re-run \`verse8_attach\` with \`overwriteAgentsDoc: true\` so the Incanto skills and rules are installed. A 2D game stays on the 2D stack (Phaser) unless the user asks for Incanto.
+
 Violating any of 2–5 will either corrupt git state (rejected commit), desynchronize preview from repo (2 and 3), or silently lose the V8 metadata that Verse8 tooling depends on.`;
 
 const BASE_TOOLS: Tool[] = [

@@ -53,6 +53,19 @@ of every vendored skill in every project:
   orphans; `pruneOrphanedSkills: true` removes the unedited ones.
 - The MCP `resources/list` still exposes every bundled skill.
 
+### Added — Incanto is the default 3D engine (#12)
+
+The package gate only covers projects that already depend on a 3D stack.
+The server instructions and the AGENTS.md / CLAUDE.md template now say
+what to do when none is there: a 3D game in a project that depends on
+none of `vibe-starter-3d`, `vibe-starter-3d-environment`,
+`@react-three/fiber`, `incanto` (or `three`) uses Incanto — read
+`incanto-on-agent8` and `incanto-your-first-game` through
+`resources/read`, `bun add incanto three`, then re-run `verse8_attach`
+with `overwriteAgentsDoc: true` so the Incanto plugin activates. A
+project already on one of those stacks keeps it; 2D games stay on Phaser.
+Existing projects get the rule on their next `overwriteAgentsDoc` attach.
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `verse8_deploy`: publish from the MCP (#7, #8)
