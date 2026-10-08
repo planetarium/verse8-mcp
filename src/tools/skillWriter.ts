@@ -226,6 +226,7 @@ export function writeSkillFiles(
     result.updated.push(skill.name);
   }
 
+  // INV-6: Skills outside the bundle are never touched
   for (const name of opts.retire ?? []) {
     if (bundledNames.has(name) || !isSafeSkillName(name)) continue;
     const dir = path.join(skillsRoot, name);

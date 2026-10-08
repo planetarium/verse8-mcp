@@ -239,6 +239,7 @@ function reportSkillPlugins(selection: ProjectSkillSelection): SkillPluginsRepor
   };
 }
 
+// INV-7: `overwriteAllSkills: true` does not cascade to .env (and vice-versa)
 export function applyAttachmentArtifacts(
   projectDir: string,
   opts: ApplyAttachmentArtifactsOptions,
@@ -547,6 +548,7 @@ async function resolveWalletAddress(projectDir: string): Promise<string | null> 
   return null;
 }
 
+// INV-2: `.verse8/project.json` carries no secrets
 function ensureProjectMarker(
   projectDir: string,
   projectId: string | undefined,

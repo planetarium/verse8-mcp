@@ -6,6 +6,7 @@ import {
   detectContentType,
 } from "../../dist/format/attachmentExts.js";
 
+// MCP-UP-3: `ATTACHMENT_EXTS` is the pre-network extension gate
 test("ATTACHMENT_EXTS includes core image/audio/3d/font/text", () => {
   for (const ext of [
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",

@@ -4,6 +4,7 @@
  * MCP-UP-3 requires both to stay equal.
  */
 
+// MCP-UP-3: `ATTACHMENT_EXTS` is the pre-network extension gate
 export const ATTACHMENT_EXTS = [
   ".png",
   ".jpg",

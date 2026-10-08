@@ -73,6 +73,7 @@ const CASES = [
   ["manifest missing", undefined, false, "manifest_missing"],
 ];
 
+// INV-12: The plugin package gate fails closed
 for (const [label, manifest, active, reason] of CASES) {
   test(`evaluatePlugin: ${label} → ${active ? "active" : "inactive"} (${reason})`, () => {
     const status = evaluatePlugin("p", manifest, DEPS);
@@ -112,6 +113,7 @@ test("readProjectDependencies: dependencies ∪ devDependencies; peer/optional i
   }
 });
 
+// INV-12: The plugin package gate fails closed
 test("readProjectDependencies: missing, unparseable, or non-object package.json → empty set", () => {
   const dir = scratch("verse8-gate-deps-");
   try {
@@ -287,6 +289,7 @@ test("attach: an R3F project gets r3f skills and instructions, no incanto / vibe
   }
 });
 
+// INV-6: Skills outside the bundle are never touched
 test("attach: removing a dependency retires our copies of that plugin's skills, keeps user-owned ones", () => {
   const root = attachFixture(pkg({ incanto: "^1" }));
   try {
@@ -341,6 +344,7 @@ test("attach: a failure after the skills step restores retired skills", () => {
   }
 });
 
+// INV-12: The plugin package gate fails closed
 test("attach: a project with no package.json gets no package-scoped plugin", () => {
   const root = attachFixture(undefined);
   try {

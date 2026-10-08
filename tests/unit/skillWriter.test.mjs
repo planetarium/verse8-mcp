@@ -182,6 +182,8 @@ test("writeSkillFiles: user edit preserved, others update (AC-8)", () => {
   }
 });
 
+// INV-6: Skill no-touch invariant
+// INV-7: `overwriteAllSkills: true` does not cascade to .env (and vice-versa)
 test("writeSkillFiles: overwriteAll bypasses user-edit protection (AC-9)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();
@@ -203,6 +205,7 @@ test("writeSkillFiles: overwriteAll bypasses user-edit protection (AC-9)", () =>
   }
 });
 
+// INV-6: Skill no-touch invariant
 test("writeSkillFiles: unrelated user skill not touched (AC-15)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();
@@ -227,6 +230,7 @@ test("writeSkillFiles: unrelated user skill not touched (AC-15)", () => {
   }
 });
 
+// INV-6: Skill no-touch invariant
 test("writeSkillFiles: pruneOrphaned removes only marker-bearing orphans (AC-16)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();

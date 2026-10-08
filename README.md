@@ -107,7 +107,6 @@ Resources: `verse8://skill/<name>/SKILL.md`.
 - Observability (audit log) → [docs/observability.md](./docs/observability.md)
 - Security → [docs/security.md](./docs/security.md)
 - Development / build / test / invariants → [docs/development.md](./docs/development.md)
-- Master plan + invariants → [.omc/ARCHITECTURE.md](./.omc/ARCHITECTURE.md), [.omc/INVARIANTS.md](./.omc/INVARIANTS.md)
 
 ---
 

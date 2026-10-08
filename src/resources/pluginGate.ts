@@ -67,6 +67,7 @@ export interface ProjectSkillSelection {
 }
 
 /** `dependencies` ∪ `devDependencies` keys of `<projectDir>/package.json`. */
+// INV-12: The plugin package gate fails closed
 export function readProjectDependencies(projectDir: string): ProjectDependencies {
   let raw: string;
   try {
@@ -93,6 +94,7 @@ export function readProjectDependencies(projectDir: string): ProjectDependencies
  * Decide one plugin from its parsed `plugin.json` (`undefined` = file
  * missing, `null` = not valid JSON) and the project's dependency set.
  */
+// INV-12: The plugin package gate fails closed
 export function evaluatePlugin(
   name: string,
   manifest: unknown,

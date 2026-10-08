@@ -97,4 +97,3 @@ If the host LLM has `@verse8/mcp` installed, it can call these tools directly in
 - Backend: `g2-sync/src/service/deviceAuth.service.ts`, `g2-sync/src/controller/deviceAuth.controller.ts`
 - Frontend: `verse8-vibe/src/app/device-auth/page.tsx`
 - Verify endpoint: `g2-sync/src/controller/auth.controller.ts` (`GET /v1/auth/verify`)
-- Current architecture: `.omc/ARCHITECTURE.md` §4.1 (Login data flow) and §5 (cross-cutting invariants)
