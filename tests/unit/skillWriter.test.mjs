@@ -262,6 +262,67 @@ test("writeSkillFiles: pruneOrphaned removes only marker-bearing orphans (AC-16)
   }
 });
 
+// INV-6: Skill no-touch invariant
+test("writeSkillFiles: prune and retire delete only our SKILL.md, never the user's files next to it", () => {
+  const src = tmpSourceDir();
+  const proj = tmpProject();
+  try {
+    const skills = [writeSourceSkill(src, "orphan", "# O\n"), writeSourceSkill(src, "inactive", "# I\n")];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false });
+    for (const name of ["orphan", "inactive"]) {
+      fs.writeFileSync(path.join(proj, ".claude/skills", name, "NOTES.md"), "mine\n");
+    }
+    const changes = [];
+    const r = writeSkillFiles(proj, [], {
+      overwriteAll: false,
+      pruneOrphaned: true,
+      retire: ["inactive"],
+      onChange: (c) => changes.push(c),
+    });
+    assert.deepEqual(r.deactivated, ["inactive"]);
+    assert.deepEqual(r.pruned, ["orphan"]);
+    for (const name of ["orphan", "inactive"]) {
+      assert.ok(!fs.existsSync(path.join(proj, ".claude/skills", name, "SKILL.md")));
+      assert.equal(fs.readFileSync(path.join(proj, ".claude/skills", name, "NOTES.md"), "utf8"), "mine\n");
+    }
+    assert.deepEqual(
+      changes.map((c) => [c.kind, c.name, c.previous.includes("verse8-skill-hash")]),
+      [
+        ["removed", "inactive", true],
+        ["removed", "orphan", true],
+      ],
+    );
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test("writeSkillFiles: onChange tells a new directory from an existing one", () => {
+  const src = tmpSourceDir();
+  const proj = tmpProject();
+  try {
+    const skills = [writeSourceSkill(src, "fresh", "# F\n"), writeSourceSkill(src, "kept-dir", "# K\n")];
+    fs.mkdirSync(path.join(proj, ".claude/skills/kept-dir"), { recursive: true });
+    fs.writeFileSync(path.join(proj, ".claude/skills/kept-dir/NOTES.md"), "mine\n");
+    const changes = [];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false, onChange: (c) => changes.push(c) });
+    assert.deepEqual(changes, [
+      { kind: "created", name: "fresh", dirCreated: true },
+      { kind: "created", name: "kept-dir", dirCreated: false },
+    ]);
+    // An update reports the bytes it replaced.
+    fs.writeFileSync(path.join(src, "fresh.md"), "# F v2\n");
+    const before = fs.readFileSync(path.join(proj, ".claude/skills/fresh/SKILL.md"), "utf8");
+    const updates = [];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false, onChange: (c) => updates.push(c) });
+    assert.deepEqual(updates, [{ kind: "overwritten", name: "fresh", previous: before }]);
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test("writeSkillFiles: result envelope contains all five buckets (AC-14)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();

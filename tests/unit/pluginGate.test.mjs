@@ -344,6 +344,71 @@ test("attach: a failure after the skills step restores retired skills", () => {
   }
 });
 
+// INV-6: Skills outside the bundle are never touched
+test("attach: dependency removed → restored → attach fails: the user's file in the skill folder survives", () => {
+  const root = attachFixture(pkg({ incanto: "^1" }));
+  const skillDir = path.join(root, ".claude", "skills", "incanto-audio");
+  const notes = path.join(skillDir, "NOTES.md");
+  const skillFile = path.join(skillDir, "SKILL.md");
+  try {
+    applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    fs.writeFileSync(notes, "mine\n");
+
+    // Dependency removed: our SKILL.md is retired, the folder stays for NOTES.md.
+    write(root, "package.json", pkg({}));
+    applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    assert.ok(!fs.existsSync(skillFile));
+    assert.equal(fs.readFileSync(notes, "utf8"), "mine\n");
+
+    // Dependency restored, but a later step fails: SKILL.md is "created" in a
+    // folder this run did not create, so the rollback removes only SKILL.md.
+    write(root, "package.json", pkg({ incanto: "^1" }));
+    assert.throws(
+      () => applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null, __failAfter: "env" }),
+      /__failAfter:env/,
+    );
+    assert.equal(fs.readFileSync(notes, "utf8"), "mine\n", "user file kept through the rollback");
+    assert.ok(!fs.existsSync(skillFile), "this run's SKILL.md rolled back");
+
+    // And the next successful attach reinstalls next to it.
+    const r = applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    assert.ok(r.skills.created.includes("incanto-audio"));
+    assert.ok(fs.existsSync(skillFile));
+    assert.equal(fs.readFileSync(notes, "utf8"), "mine\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("attach: a failed first attach leaves no .claude/ behind; a failed overwriteAll restores the user's edit", () => {
+  const root = attachFixture(pkg({ incanto: "^1" }));
+  try {
+    assert.throws(
+      () => applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null, __failAfter: "env" }),
+      /__failAfter:env/,
+    );
+    assert.ok(!fs.existsSync(path.join(root, ".claude")), "everything this run created is gone");
+
+    applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    const file = path.join(root, ".claude", "skills", "incanto-hud", "SKILL.md");
+    fs.appendFileSync(file, "\nmy edit\n");
+    const edited = fs.readFileSync(file, "utf8");
+    assert.throws(
+      () =>
+        applyAttachmentArtifacts(root, {
+          overwrite: true,
+          walletAddress: null,
+          overwriteAllSkills: true,
+          __failAfter: "env",
+        }),
+      /__failAfter:env/,
+    );
+    assert.equal(fs.readFileSync(file, "utf8"), edited);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // INV-12: The plugin package gate fails closed
 test("attach: a project with no package.json gets no package-scoped plugin", () => {
   const root = attachFixture(undefined);

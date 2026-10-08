@@ -51,9 +51,25 @@ export interface SkillWriteOptions {
    * dependencies rule out is not an orphan the user might still want.
    */
   retire?: string[];
-  /** Called with the removed SKILL.md bytes so the caller can roll back. */
-  onRetire?: (name: string, raw: string) => void;
+  /**
+   * Called for every file this run creates, overwrites or removes, with what
+   * the caller needs to undo exactly that change (see `SkillFileChange`).
+   */
+  onChange?: (change: SkillFileChange) => void;
 }
+
+/**
+ * One file-level change made by `writeSkillFiles`. A rollback reverses
+ * these and nothing else, so a skill directory that already existed (and
+ * may hold the user's own files) is never removed wholesale.
+ */
+export type SkillFileChange =
+  /** SKILL.md written where none existed; `dirCreated` = the directory too. */
+  | { kind: "created"; name: string; dirCreated: boolean }
+  /** SKILL.md replaced; `previous` is what was there. */
+  | { kind: "overwritten"; name: string; previous: string }
+  /** SKILL.md deleted (retired or pruned); `previous` is what was there. */
+  | { kind: "removed"; name: string; previous: string };
 
 /**
  * Normalize line endings — hashes must be deterministic regardless of the
@@ -184,9 +200,13 @@ export function writeSkillFiles(
     }
 
     if (!destExists) {
+      // The directory may already exist without a SKILL.md — e.g. a retired
+      // skill whose folder kept the user's notes. Then it is not ours.
+      const dirCreated = !fs.existsSync(destDir);
       fs.mkdirSync(destDir, { recursive: true });
       fs.writeFileSync(destPath, finalBytes);
       result.created.push(skill.name);
+      opts.onChange?.({ kind: "created", name: skill.name, dirCreated });
       continue;
     }
 
@@ -194,6 +214,7 @@ export function writeSkillFiles(
     if (opts.overwriteAll) {
       fs.writeFileSync(destPath, finalBytes);
       result.updated.push(skill.name);
+      opts.onChange?.({ kind: "overwritten", name: skill.name, previous: destRaw });
       continue;
     }
 
@@ -224,6 +245,7 @@ export function writeSkillFiles(
     // Source changed; our previous write is still intact; safe to overwrite.
     fs.writeFileSync(destPath, finalBytes);
     result.updated.push(skill.name);
+    opts.onChange?.({ kind: "overwritten", name: skill.name, previous: destRaw });
   }
 
   // INV-6: Skills outside the bundle are never touched
@@ -238,14 +260,9 @@ export function writeSkillFiles(
       continue; // never installed
     }
     if (!destIsUnedited(raw)) continue; // user-written or user-edited
-    try {
-      // Only our file goes; anything the user added next to it keeps the dir.
-      fs.rmSync(file, { force: true });
-      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+    if (removeOwnSkillFile(skillsRoot, name)) {
       result.deactivated.push(name);
-      opts.onRetire?.(name, raw);
-    } catch {
-      /* best-effort */
+      opts.onChange?.({ kind: "removed", name, previous: raw });
     }
   }
 
@@ -274,14 +291,32 @@ export function writeSkillFiles(
         continue; // no SKILL.md in the dir, leave it alone
       }
       if (!destIsUnedited(candidateRaw)) continue; // user-edited or user-owned
-      try {
-        fs.rmSync(path.join(skillsRoot, entry.name), { recursive: true, force: true });
+      if (removeOwnSkillFile(skillsRoot, entry.name)) {
         result.pruned.push(entry.name);
-      } catch {
-        /* best-effort */
+        opts.onChange?.({ kind: "removed", name: entry.name, previous: candidateRaw });
       }
     }
   }
 
   return result;
+}
+
+/**
+ * Delete `<skillsRoot>/<name>/SKILL.md` — the one file verse8-mcp owns in a
+ * skill directory — and the directory only if that leaves it empty, so
+ * anything the user added next to it survives. False when nothing was removed.
+ */
+function removeOwnSkillFile(skillsRoot: string, name: string): boolean {
+  const dir = path.join(skillsRoot, name);
+  try {
+    fs.rmSync(path.join(dir, "SKILL.md"), { force: true });
+  } catch {
+    return false;
+  }
+  try {
+    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  } catch {
+    /* best-effort */
+  }
+  return true;
 }

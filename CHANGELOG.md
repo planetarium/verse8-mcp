@@ -27,7 +27,15 @@ of every vendored skill in every project:
 - **Behavior change:** an inactive plugin's skill that verse8-mcp
   installed earlier and the user has not edited is removed on re-attach
   (`installed.skills.deactivated`), regardless of `pruneOrphanedSkills`.
-  User-written or edited copies stay.
+  User-written or edited copies stay, and so does any other file in the
+  skill folder: only our `SKILL.md` is deleted, the folder only if empty.
+  `pruneOrphanedSkills` now follows the same rule (it used to delete the
+  whole folder).
+- A failed attach rolls back only what that run changed: replaced or
+  removed `SKILL.md` files get their previous bytes back (including a
+  user's edit overwritten by `overwriteAllSkills`), and a skill folder is
+  removed only if that run created it. Previously the rollback deleted
+  every "created" skill folder recursively.
 - `installed.skillPlugins` reports where the dependency set came from and
   each plugin's verdict (`active[]` with `matched`, `inactive[]` with the
   reason). Re-run `verse8_attach` after adding a dependency.

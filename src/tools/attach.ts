@@ -27,6 +27,7 @@ import {
 } from "../resources/pluginGate.js";
 import {
   writeSkillFiles,
+  type SkillFileChange,
   type SkillWriteResult,
 } from "./skillWriter.js";
 import { isSafeAbsPath } from "../util/safePath.js";
@@ -288,22 +289,19 @@ export function applyAttachmentArtifacts(
 
     // Step 4 — skills.
     const skillsRoot = path.join(projectDir, ".claude", "skills");
-    const skillsRootExistedBefore = safeIsDir(skillsRoot);
-    const retired = new Map<string, string>();
+    const createdDirs = {
+      claude: !safeIsDir(path.dirname(skillsRoot)),
+      skillsRoot: !safeIsDir(skillsRoot),
+    };
+    const changes: SkillFileChange[] = [];
     const result = writeSkillFiles(projectDir, selection.active, {
       overwriteAll: opts.overwriteAllSkills === true,
       pruneOrphaned: opts.pruneOrphanedSkills === true,
       retire: selection.inactive.map((s) => s.name),
-      onRetire: (name, raw) => retired.set(name, raw),
+      onChange: (change) => changes.push(change),
     });
-    if (
-      result.created.length > 0 ||
-      result.updated.length > 0 ||
-      retired.size > 0
-    ) {
-      journal.record(() =>
-        reverseSkillWrites(skillsRoot, result, skillsRootExistedBefore, retired),
-      );
+    if (changes.length > 0 || createdDirs.skillsRoot) {
+      journal.record(() => reverseSkillWrites(skillsRoot, changes, createdDirs));
     }
     maybeFail(opts.__failAfter, "skills");
 
@@ -451,44 +449,44 @@ function safeIsDir(p: string): boolean {
   }
 }
 
+/**
+ * Undo exactly the file changes `writeSkillFiles` reported, newest first.
+ * A skill directory is removed only when this run created it; one that
+ * already existed (a retired skill's folder can keep the user's notes)
+ * loses at most the SKILL.md this run wrote. `.claude/skills/` and
+ * `.claude/` go only if this run created them and they end up empty.
+ */
+// INV-6: Skills outside the bundle are never touched
 function reverseSkillWrites(
   skillsRoot: string,
-  result: SkillWriteResult,
-  skillsRootExistedBefore: boolean,
-  retired: Map<string, string>,
+  changes: SkillFileChange[],
+  createdDirs: { claude: boolean; skillsRoot: boolean },
 ): void {
-  // Deactivated skills were verse8-mcp-authored and unedited; put them back.
-  for (const [name, raw] of retired) {
+  for (const change of [...changes].reverse()) {
+    const dir = path.join(skillsRoot, change.name);
+    const file = path.join(dir, "SKILL.md");
     try {
-      fs.mkdirSync(path.join(skillsRoot, name), { recursive: true });
-      fs.writeFileSync(path.join(skillsRoot, name, "SKILL.md"), raw);
-    } catch {
-      /* best-effort */
-    }
-  }
-  for (const name of result.created) {
-    try {
-      fs.rmSync(path.join(skillsRoot, name), { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
-  }
-  // Updated skills were already verse8-mcp-authored; no content restore needed.
-  if (!skillsRootExistedBefore) {
-    try {
-      // Clean up the whole tree if we brought it into existence.
-      fs.rmSync(skillsRoot, { recursive: true, force: true });
-      const parent = path.dirname(skillsRoot); // .claude/
-      // Only remove .claude if it's now empty AND we created it.
-      try {
-        const entries = fs.readdirSync(parent);
-        if (entries.length === 0) fs.rmdirSync(parent);
-      } catch {
-        /* best-effort */
+      if (change.kind === "created") {
+        fs.rmSync(file, { force: true });
+        if (change.dirCreated) removeDirIfEmpty(dir);
+      } else {
+        // overwritten / removed: put the previous bytes back.
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(file, change.previous);
       }
     } catch {
       /* best-effort */
     }
+  }
+  if (createdDirs.skillsRoot) removeDirIfEmpty(skillsRoot);
+  if (createdDirs.claude) removeDirIfEmpty(path.dirname(skillsRoot));
+}
+
+function removeDirIfEmpty(dir: string): void {
+  try {
+    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  } catch {
+    /* best-effort */
   }
 }
 
