@@ -31,9 +31,9 @@
    ```
 
    플러그인의 `plugin.json`, `instructions/AGENTS.md`, `assets/`, 상류의 `prompts/`·`instructions/`·README는 Agent8 컨테이너용이라 MCP가 읽지 않으므로 가져오지 않습니다. 상류 레이아웃을 그대로 따르므로 MCP의 스킬 탐색(`src/resources/skills.ts`, 부모 디렉터리가 `skills`인 `.md`)이 두 위치를 모두 찾습니다.
-3. 변경이 있으면 `package.json :: verse8.skillsVendor`를 갱신하고(`sha` = `scripts/compute-subtree-sha.sh` 콘텐츠 해시, `upstream.commit` = 벤더링한 상류 커밋) 브랜치 `sync/agent8-skills`에 force-push해 PR을 열거나 기존 PR을 갱신합니다. 공개 대상에 변경이 없으면 PR 없이 끝나고, 받은 `sha`가 이미 핀된 커밋이거나 그 조상이면 건너뜁니다.
+3. 변경이 있으면 `package.json :: verse8.skillsVendor`를 갱신하고(`sha` = `scripts/compute-subtree-sha.sh` 콘텐츠 해시, `upstream.commit` = 벤더링한 상류 커밋) 브랜치 `sync/agent8-skills`에 force-push해 PR을 열거나 기존 PR을 갱신합니다. 공개 대상에 변경이 없으면 PR 없이 끝나고, 받은 `sha`가 이미 핀된 커밋(main의 핀, 또는 열려 있는 `sync/agent8-skills` 브랜치의 핀)이거나 그 조상이면 건너뜁니다(`scripts/sync-skip-check.mjs`). 늦게 도착했거나 재실행된 오래된 dispatch가 더 새로운 sync PR을 되돌리지 못하게 하기 위해서입니다.
 
-수신 측에서도 플러그인 적격성을 확인합니다: `tags`가 있는(태그 스코프) 플러그인과 `preview`/`publish` 에셋을 싣는 플러그인은 MCP에 태그 게이트·에셋 주입 경로가 없으므로 allowlist에 있어도 실패시킵니다. 같은 이름의 스킬이 두 곳에서 오면(`skill_name_collision`) 역시 실패합니다.
+수신 측에서도 플러그인 적격성을 확인합니다: `tags`가 있는(태그 스코프) 플러그인과 `preview`/`publish` 에셋을 싣는 플러그인은 MCP에 태그 게이트·에셋 주입 경로가 없으므로 allowlist에 있어도 실패시킵니다. 같은 이름의 스킬이 두 곳에서 오면(`skill_name_collision`) 역시 실패합니다. `skills/`·`plugins/`·`plugins/<p>/`·`plugins/<p>/skills/`가 symlink이거나 스킬 파일이 symlink이면 따라가지 않고 실패합니다(`symlink_rejected`) — allowlist 밖의 파일이 링크를 타고 들어오는 길을 막기 위해서입니다.
 
 수동으로 돌리려면 상류를 체크아웃해 두고:
 

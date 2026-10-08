@@ -155,6 +155,7 @@ export function planVendor(upstreamDir, manifest) {
     claimed.set(skillName, rel);
   };
 
+  if (manifest.skills.length > 0) realDir(upstreamDir, "skills");
   for (const name of manifest.skills) {
     const rel = `skills/${name}.md`;
     const src = path.join(upstreamDir, rel);
@@ -165,16 +166,17 @@ export function planVendor(upstreamDir, manifest) {
     files.push({ rel, src });
   }
 
+  if (manifest.plugins.length > 0) realDir(upstreamDir, "plugins");
   for (const plugin of manifest.plugins) {
     const dirRel = `plugins/${plugin}`;
     const dir = path.join(upstreamDir, dirRel);
-    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    if (!realDir(upstreamDir, dirRel)) {
       throw new SyncError("plugin_missing", `${PUBLIC_JSON} lists plugin '${plugin}' but ${dirRel}/ does not exist upstream`);
     }
     assertPluginEligible(dir, plugin);
 
     const skillsDir = path.join(dir, "skills");
-    const entries = fs.existsSync(skillsDir)
+    const entries = realDir(upstreamDir, `${dirRel}/skills`)
       ? fs.readdirSync(skillsDir, { withFileTypes: true }).filter((e) => e.name.endsWith(".md"))
       : [];
     let count = 0;
@@ -255,12 +257,31 @@ function assertPluginEligible(dir, plugin) {
   }
 }
 
+/** lstat, so a symlinked file is "not a regular file" rather than followed. */
 function isRegularFile(p) {
   try {
     return fs.lstatSync(p).isFile();
   } catch {
     return false;
   }
+}
+
+/**
+ * True when `<upstreamDir>/<rel>` is a real directory, false when absent.
+ * A symlink is an error: following `skills/` or `plugins/<p>/` elsewhere
+ * would vendor `.md` files public.json never named.
+ */
+function realDir(upstreamDir, rel) {
+  let st;
+  try {
+    st = fs.lstatSync(path.join(upstreamDir, ...rel.split("/")));
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink()) {
+    throw new SyncError("symlink_rejected", `${rel} is a symlink; symlinked directories are not vendored`);
+  }
+  return st.isDirectory();
 }
 
 export function renderVendorReadme() {

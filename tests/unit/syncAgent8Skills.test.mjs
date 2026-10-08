@@ -103,8 +103,13 @@ function seedRepo(dir, { vendor = {} } = {}) {
   }
 }
 
+/**
+ * realpath'd: on macOS `os.tmpdir()` is `/var/…` while the module loader
+ * reports `/private/var/…`, so a prefix comparison against the raw path
+ * matches nothing.
+ */
 function scratch(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function listFiles(dir) {
@@ -258,6 +263,62 @@ test("planVendor: plugin without a manifest, with a bad manifest, or with a mis-
       "plugin_skill_invalid",
       /must be named 'gameserver\.md' or 'gameserver-\*\.md'/,
     );
+  });
+});
+
+/** A directory symlink; `junction` needs no privilege on Windows. */
+function symlinkDir(target, link) {
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
+test("planVendor: symlinked skills/, plugins/<p>/ or plugins/<p>/skills/ is rejected, not followed", () => {
+  // Everything under `elsewhere/` is outside the allowlist's reach by path;
+  // a symlink must not become a way in.
+  withScratch((up) => {
+    seedUpstream(up, { manifest: { skills: [], plugins: ["r3f"] } });
+    const elsewhere = path.join(up, "elsewhere");
+    fs.mkdirSync(path.join(elsewhere, "skills"), { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "plugin.json"), '{ "version": 1, "assets": [] }\n');
+    fs.writeFileSync(path.join(elsewhere, "skills", "r3f-smuggled.md"), "# not public\n");
+    fs.rmSync(path.join(up, "plugins", "r3f"), { recursive: true, force: true });
+    symlinkDir(elsewhere, path.join(up, "plugins", "r3f"));
+    expectSyncError(() => planVendor(up, readPublicManifest(up)), "symlink_rejected", /^plugins\/r3f is a symlink/);
+  });
+  withScratch((up) => {
+    seedUpstream(up, { manifest: { skills: [], plugins: ["gameserver"] } });
+    const elsewhere = path.join(up, "elsewhere");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "gameserver-smuggled.md"), "# not public\n");
+    fs.rmSync(path.join(up, "plugins", "gameserver", "skills"), { recursive: true, force: true });
+    symlinkDir(elsewhere, path.join(up, "plugins", "gameserver", "skills"));
+    expectSyncError(
+      () => planVendor(up, readPublicManifest(up)),
+      "symlink_rejected",
+      /^plugins\/gameserver\/skills is a symlink/,
+    );
+  });
+  withScratch((up) => {
+    seedUpstream(up, { manifest: { skills: ["ads-impl"], plugins: [] } });
+    const elsewhere = path.join(up, "elsewhere");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "ads-impl.md"), "# a different ads-impl\n");
+    fs.rmSync(path.join(up, "skills"), { recursive: true, force: true });
+    symlinkDir(elsewhere, path.join(up, "skills"));
+    expectSyncError(() => planVendor(up, readPublicManifest(up)), "symlink_rejected", /^skills is a symlink/);
+  });
+  // A symlinked skill *file* was already refused; keep that pinned too.
+  // (File symlinks need a privilege on Windows that a plain user lacks.)
+  withScratch((up) => {
+    seedUpstream(up, { manifest: { skills: ["ads-impl"], plugins: [] } });
+    fs.rmSync(path.join(up, "skills", "ads-impl.md"));
+    try {
+      fs.symlinkSync(path.join(up, "skills", "secret-impl.md"), path.join(up, "skills", "ads-impl.md"), "file");
+    } catch (e) {
+      if (process.platform === "win32" && e.code === "EPERM") return;
+      throw e;
+    }
+    expectSyncError(() => planVendor(up, readPublicManifest(up)), "skill_missing");
   });
 });
 
