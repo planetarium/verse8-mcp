@@ -1,5 +1,5 @@
 ---
-name: input-system-guide
+name: r3f-input-system
 description: |
   Core document on implementing unified input management for mobile and desktop in React Three Fiber (R3F) using InputController and Zustand stores.
   

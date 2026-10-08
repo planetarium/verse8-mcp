@@ -1,5 +1,5 @@
 ---
-name: projectile-systems
+name: r3f-projectile-systems
 description: |
   Mandatory reference for all projectile, launch, or throw system tasks in React Three Fiber (R3F). Applies to any object (rocks, spells, bullets, missiles, markers) being thrown, fired, or launched.
 

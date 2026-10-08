@@ -1,5 +1,5 @@
 ---
-name: how-to-use-3d-tree
+name: r3f-tree
 description: |
   Core document on procedurally generating realistic 3D trees and forests in a React Three Fiber (R3F) environment using the `@dgreenheck/ez-tree` library.
   

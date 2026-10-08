@@ -1,11 +1,11 @@
 ---
 name: gameserver-sdk-crossramp
 description: |
-  This document focuses on work related to crossramp (cross-chain) integration.
-  Any logic involving the server should reference this document, which provides methods for writing server code and communicating with the server from the client.
+  CROSS Mini Hub (crossramp) integration for Agent8 games: opening the hub where players exchange game items, coins, and CROSS, via the SDK built-in server.getCrossRampShopUrl(lang).
+  Read it ONLY when CROSS Mini Hub keywords appear in the conversation (crossramp, CROSS Mini Hub, mini hub, Cross Game Token, getCrossRampShopUrl, or "cross" together with exchange/DEX/token). Read the gameserver-sdk skill first (gameserver-sdk-v1 in a project that stays on 1.x).
 ---
 
-# CROSS Mini Hub Integration System Prompt
+# CROSS Mini Hub Integration
 
 This document provides guidance for CROSS Mini Hub integration in Agent8 games.
 
@@ -13,7 +13,7 @@ This document provides guidance for CROSS Mini Hub integration in Agent8 games.
 
 ## PREREQUISITE - MUST READ FIRST
 
-**DEPENDENCY**: Before using this document, you MUST first read the `gameserver-sdk-v2` skill. CROSS Mini Hub integration depends on:
+**DEPENDENCY**: Before using this document, you MUST first read the `gameserver-sdk` skill (`gameserver-sdk-v1` in a project that stays on 1.x — the CROSS Mini Hub client call below exists in both). CROSS Mini Hub integration depends on:
 - `useGameServer` hook and `server` object
 - `$asset` API for asset management
 - Understanding of Agent8's authentication system
@@ -52,20 +52,29 @@ This document provides guidance for CROSS Mini Hub integration in Agent8 games.
 
 CROSS Mini Hub enables players to easily exchange game items, coins, and CROSS. Integration is simple: generate a URL and open it in a popup.
 
-### Available Features
-
-| Feature | Method | Purpose |
-|---------|--------|---------|
-| **CROSS Mini Hub** | `getCrossRampShopUrl()` | Open CROSS Mini Hub for item and token exchange |
+`server.getCrossRampShopUrl(lang)` returns the hub URL to open in a popup.
 
 **Important**: This method is SDK built-in. Call it directly on the `server` object. Do NOT implement server-side code or use `remoteFunction()` for CROSS Mini Hub APIs.
 
 ### Quick Start
 
 ```tsx
-// Open CROSS Mini Hub in a popup
-const url = await server.getCrossRampShopUrl("en");
-window.open(url, "CrossRampShop", "width=1024,height=768");
+// Two things this call needs that are easy to miss:
+//  1. It requires a Verse8-logged-in session. A guest gets 403 ("You must be
+//     logged in to Verse8"), so hide the entry point for guests (read
+//     $sender.isGuest in a server function), or handle the rejection here.
+//  2. window.open must be called from the click, NOT after the await — popup
+//     blockers swallow a window opened in a later task. Open a placeholder
+//     synchronously and redirect it once the URL arrives.
+const openShop = async () => {
+  const popup = window.open("", "CrossRampShop", "width=1024,height=768");
+  try {
+    popup.location = await server.getCrossRampShopUrl("en");
+  } catch (e) {
+    popup?.close();          // don't leave a blank window on failure
+    showError(e.message);    // e.g. not logged in to Verse8
+  }
+};
 ```
 
 ### Supported Languages
@@ -89,10 +98,13 @@ export default function CrossRampShop() {
   const openShop = async () => {
     if (!connected || !server) return;
     setLoading(true);
+    // Open synchronously inside the click, then redirect — a window opened
+    // after the await is a later task and gets blocked.
+    const popup = window.open("", "CrossRampShop", "width=1024,height=768");
     try {
-      const url = await server.getCrossRampShopUrl("en");
-      window.open(url, "CrossRampShop", "width=1024,height=768");
+      popup.location = await server.getCrossRampShopUrl("en");
     } catch (error) {
+      popup?.close(); // don't leave a blank window behind
       console.error("Failed to open CROSS Mini Hub:", error);
     } finally {
       setLoading(false);
@@ -112,3 +124,4 @@ export default function CrossRampShop() {
 ```
 
 **Note**: CROSS Mini Hub handles all blockchain complexity. Asset synchronization happens automatically.
+

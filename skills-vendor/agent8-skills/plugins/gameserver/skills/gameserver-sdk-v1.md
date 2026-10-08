@@ -1,11 +1,17 @@
 ---
-name: gameserver-sdk
+name: gameserver-sdk-v1
 description: |
-  Any logic related to the server must refer to this document. It provides methods for writing server code and communicating with the server from the client.
-  This document is for legacy use. Please refer to this document when using a single server.js file in the project root.
+  Frozen reference for Agent8 GameServer SDK 1.x (@agent8/gameserver 1.x). Read it to understand, maintain or extend server code in a project that stays on 1.x: package.json pins @agent8/gameserver 1.x and a root server.js or server/ directory already exists. New code there may use only the 1.x APIs listed in it.
+  Everything else follows the gameserver-sdk skill (2.x), which also holds the 1.x to 2.0 upgrade steps. 1.x room APIs ($global.joinRoom, the $global room-state methods) throw on 2.x.
 ---
 
-# Agent8 GameServer SDK
+# Agent8 GameServer SDK (1.x — legacy)
+
+> **1.x reference, frozen.** This describes `@agent8/gameserver` 1.x and is kept so that server code a project already wrote against 1.x can be read, maintained and extended. A 1.x client talks to the 1.x game server, where the APIs below exist as listed. It is no longer updated — the current SDK is 2.x, documented in the `gameserver-sdk` skill, which also lists every step of the 1.x → 2.0 upgrade. Do not apply this document to a 2.0 project: `$global.joinRoom()` throws, collection ids move from `item.__id` to an `options.id` argument, and `getCollectionItem` throws instead of returning `{}`.
+>
+> New code in a 1.x project may use ONLY the APIs listed here. The 2.x additions in `gameserver-sdk` do not exist on the 1.x server: `$asset.getMany` / `$asset.clear`, the `clear*State` methods and `getUserStates` throw, `paths` and `{ returnState: false }` are ignored, and an `account` argument to `$asset.*` is dropped, so `$asset.mint(id, n, account)` credits the caller. If a task needs any of them, or touches rooms or collections, upgrade to 2.x first.
+>
+> The examples below use the root `server.js` layout. A 1.x project that already uses `server/src/server.ts` has the same runtime API; its layout (`export class Server`, init, test, build) is described in `gameserver-sdk` — but run its tooling as `bunx @agent8/gameserver-node@0.1.13 …` and keep `server/package.json` on `^0.1.13`: its local emulator has the 1.x `$global` room API, which the unpinned 2.x CLI does not (`$global.joinRoom` and the `$global` room-state calls throw there). Neither CLI emulates 1.x collections: both ignore `item.__id` (every add gets a generated id) and throw on `getCollectionItem` / `updateCollectionItem` for a missing item. A local test cannot verify a 1.x `__id` upsert or a `{}` return — do not change such code to make a test pass.
 
 Agent8 GameServer is a fully managed game server solution. You don't need to worry about server setup or management when developing your game. Simply create a server.js file with your game logic, and you'll have a server-enabled game ready to go.
 
@@ -30,7 +36,7 @@ const { connected, server } = useGameServer();
 
     if (!connected) return "Connecting...";
 
-    const callServer = () => {
+    const callServer = async () => {
       const args = [1, 2];
       const result = await server.remoteFunction("add", args);
       console.log(result); // expected: 3
@@ -105,7 +111,7 @@ Users can have subscription and follower status in their authentication context.
 - `$sender.isFollower` - boolean indicating if user follows the creator
 - `$sender.isSubscriber` - boolean indicating if user has active subscription (checks expiration)
 - `$sender.subscription` is `{ tier: string, exp: number } | null` (default tier: 'basic', expandable)
-- `isFollower`, `isSubscriber`, `subscription` are only available from server-signed authentication tokens (security feature)
+- `isFollower`, `isSubscriber`, `subscription` are only available from server-signed authentication tokens (security feature). They are also absent in webhook handlers such as `$onItemPurchased`.
 
 ```js filename='server.js'
 class Server {
@@ -162,10 +168,10 @@ class Server {
 - `$global.countCollectionItems(collectionId: string, options?: CollectionOptions): Promise<number>` - Retrieves number of items
 - `$global.getCollectionItems(collectionId: string, options?: CollectionOptions): Promise<Item[]>` - Retrieves filtered/sorted items
 - `$global.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Gets single item by ID. Returns an empty object `{}` (NOT `null`) when the item does not exist, so check existence with `item?.\_\_id`
-- `$global.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds new item. Set `item.\_\_id` to choose the ID yourself; omit it and one is generated. An existing `\_\_id` merges fields into that item (upsert). `\_\_id` must be a non-empty string without `/`
-- `$global.updateCollectionItem(collectionId: string, item: any): Promise<Item>` - Updates existing item
+- `$global.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds new item. Set `item.\_\_id` to choose the ID yourself (a number is converted to a string); omit it and one is generated. The id must be a non-empty string without `/`, not `.`/`..`/`\_\_...\_\_`, and <=1500 bytes, or the call throws. Re-adding an existing `\_\_id` merges the passed fields into the cached item — send the whole item anyway: if the item is not in the server cache, the stored document is replaced
+- `$global.updateCollectionItem(collectionId: string, item: any): Promise<{ \_\_id: string }>` - Merges `item` (which must carry `\_\_id`) into the cached item; returns only `{ \_\_id }`. If the item is not in the server cache (e.g. you only read it with `getCollectionItems`), the stored document is REPLACED by just the fields you passed plus `\_\_id`, so send the whole item. An `\_\_id` that does not exist yet creates the item instead of failing
 - `$global.deleteCollectionItem(collectionId: string, itemId: string): Promise<{ \_\_id: string }>` - Deletes item
-- `$global.deleteCollection(collectionId: string): Promise<string>` - Deletes Collection
+- `$global.deleteCollection(collectionId: string): Promise<{ collectionId: string }>` - Deletes Collection
 
 CollectionOptions uses Firebase-style filtering:
 
@@ -235,18 +241,18 @@ To join/leave rooms, you must call these functions:
 IMPORTANT: `joinRoom()` request without roomId will always create a new random room. If you want users to join the same room by default, use a default roomId as a parameter.
 
 
-Eexample for joining the room
+Example for joining the room
 ```js filename='server.js'
 class Server {
-  const MAX_ROOM_USER = 3;
+  MAX_ROOM_USER = 3;
   async joinRoom(roomId) {
     if (roomId) {
-      if ($global.countRoomUsers(roomId) >= MAX_ROOM_USER) throw Error('room is full');
+      if ((await $global.countRoomUsers(roomId)) >= this.MAX_ROOM_USER) throw Error('room is full');
     }
 
     const joinedRoomId = await $global.joinRoom(roomId)
 
-    if ($global.countRoomUsers(joinedRoomId) === MAX_ROOM_USER) { // or you can use `$room.countUsers() === MAX_ROOM_USER`
+    if ((await $global.countRoomUsers(joinedRoomId)) === this.MAX_ROOM_USER) { // or you can use `(await $room.countUsers()) === this.MAX_ROOM_USER`
       await $room.updateRoomState({ status: 'START' })
     } else {
       await $room.updateRoomState({ status: 'READY' })
@@ -301,10 +307,10 @@ Important: roomState contains these default values:
 - `$room.countCollectionItems(collectionId: string, options?: CollectionOptions): Promise<number>` - Retrieves number of items from a room collection based on filtering, sorting, and pagination options.
 - `$room.getCollectionItems(collectionId: string, options?: CollectionOptions): Promise<Item[]>` - Retrieves multiple items from a room collection based on filtering, sorting, and pagination options.
 - `$room.getCollectionItem(collectionId: string, itemId: string): Promise<Item>` - Retrieves a single item from the room collection using its unique ID. Returns an empty object `{}` (NOT `null`) when the item does not exist, so check existence with `item?.\_\_id`.
-- `$room.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds a new item to the specified room collection and returns the added item with its unique identifier. Set `item.\_\_id` to choose the ID yourself; omit it and one is generated. An existing `\_\_id` merges fields into that item (upsert). `\_\_id` must be a non-empty string without `/`.
-- `$room.updateCollectionItem(collectionId: string, item: any): Promise<Item>` - Updates an existing item in the room collection and returns the updated item.
+- `$room.addCollectionItem(collectionId: string, item: any): Promise<Item>` - Adds a new item to the specified room collection and returns the added item with its unique identifier. Set `item.\_\_id` to choose the ID yourself (a number is converted to a string); omit it and one is generated. The id must be a non-empty string without `/`, not `.`/`..`/`\_\_...\_\_`, and <=1500 bytes, or the call throws. Re-adding an existing `\_\_id` merges the passed fields into the cached item — send the whole item anyway: if the item is not in the server cache, the stored document is replaced.
+- `$room.updateCollectionItem(collectionId: string, item: any): Promise<{ \_\_id: string }>` - Merges `item` (which must carry `\_\_id`) into the cached room-collection item; returns only `{ \_\_id }`. If the item is not in the server cache, the stored document is REPLACED by just the fields you passed plus `\_\_id`, so send the whole item.
 - `$room.deleteCollectionItem(collectionId: string, itemId: string): Promise<{ \_\_id: string }>` - Deletes an item from the room collection and returns a confirmation containing the deleted item's ID.
-- `$room.deleteCollection(collectionId: string): Promise<string>` - Delete room collection.
+- `$room.deleteCollection(collectionId: string): Promise<{ collectionId: string }>` - Delete room collection.
 
 # Messaging
 
@@ -500,4 +506,4 @@ class Server {
 ```
 
 ULTRA IMPORTANT: Does not support `setInterval` or `setTimeout` in `server.js`. NEVER use them.
-ULTRA IMPORTANT: `server.js` must be placed in the root of the project. <boltAction type="file" filePath="server.js">
+ULTRA IMPORTANT: `server.js` must be placed in the root of the project.

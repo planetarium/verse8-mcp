@@ -1,11 +1,11 @@
 ---
-name: how-to-3d-multiplayer-character-sync
+name: r3f-character-sync
 description: |
   3D multiplayer character synchronization patterns built on @agent8/gameserver SDK.
   Covers Zustand network store, throttled position sync, and 3D remote player interpolation (lerp/slerp) with React Three Fiber + Rapier.
   MANDATORY: Always read this skill when converting a single-player 3D game into a multiplayer game, or when adding multiplayer features to any 3D game.
-  DEPENDENCY: Requires the appropriate gameserver-sdk skill for raw SDK API reference ($room, $global, remoteFunction, subscriptions).
-  Use gameserver-sdk-v2 for new projects (server/ directory, TypeScript). Use gameserver-sdk for existing projects with server.js in root.
+  DEPENDENCY: Requires the gameserver-sdk skill for the raw SDK API reference ($room, $global, remoteFunction, joinRoom/rsConnected, subscriptions).
+  Written for @agent8/gameserver 2.x; a project pinned to 1.x must upgrade first, as gameserver-sdk describes.
 ---
 
 # Multiplayer Game State Synchronization
@@ -16,21 +16,14 @@ This skill provides reusable sync patterns for sharing player state across clien
 
 ## PREREQUISITE - MUST READ FIRST
 
-**DEPENDENCY**: Before implementing anything in this skill, you MUST first read the appropriate gameserver-sdk skill. Multiplayer sync depends on:
-- `useGameServer` hook, `server.remoteFunction`, `throttle`/`needResponse` options
-- `$room`, `$global` APIs for state read/write
+**DEPENDENCY**: Before implementing anything in this skill, you MUST first read the `gameserver-sdk` skill. Multiplayer sync depends on:
+- `useGameServer` hook: `server.remoteFunction` with the `throttle`/`throttleTrailing` options, and `joinRoom`/`leaveRoom`/`rsConnected`/`currentRoomId`
+- `$room`, `$global` APIs for state read/write, and the room lifecycle hooks (`onRoomJoin`, `onRoomLeave`)
 - Client subscription APIs (`subscribeRoomAllUserStates`, `subscribeRoomState`, `onRoomUserLeave`)
 
-**Which skill(s) to read:**
+**SDK version**: every pattern below is written for `@agent8/gameserver` 2.x. If the project's `package.json` pins 1.x, upgrade it first as `gameserver-sdk` describes — 1.x has no client-side `joinRoom`/`rsConnected`, and the 1.x server-side join (`$global.joinRoom`) throws on 2.x. The server layout (a root `server.js` or `server/src/server.ts`) does not change the patterns; `gameserver-sdk` covers both.
 
-| Project type | Skills to read |
-|--------------|----------------|
-| `server/` directory exists, or new project | `gameserver-sdk-v2` only |
-| `server.js` in project root (legacy) | `gameserver-sdk-v2` + **`gameserver-sdk`** both |
-
-For legacy projects, `gameserver-sdk` contains the actual conventions that apply (no export, JS syntax). Read it alongside `gameserver-sdk-v2`.
-
-**DO NOT** implement multiplayer sync without first loading the appropriate gameserver-sdk skill context.
+**DO NOT** implement multiplayer sync without first loading the `gameserver-sdk` skill context.
 
 ---
 
@@ -48,14 +41,17 @@ For legacy projects, `gameserver-sdk` contains the actual conventions that apply
 **DO NOT** activate this skill when:
 - User asks only about room joining/matching without player state sync
 - User asks about game logic (HP, score, kills) without mentioning position/state sync
-- User asks about general gameserver SDK usage → use `gameserver-sdk-v2` (new projects) or `gameserver-sdk` (legacy) instead
+- User asks about general gameserver SDK usage → use `gameserver-sdk` instead
 
 ---
 
 ## Architecture
 
 ```
-Client A (useFrame game loop)
+Client A: remoteFunction("findRoom") → roomId → joinRoom(roomId)   [SDK connects to the Room Server]
+  → Server: onRoomJoin hook initializes the player's room user state
+
+Client A (useFrame game loop, once rsConnected)
   → detect change (threshold) → updateCharacterState() [throttled 50ms]
       → Server: $room.updateMyState({ characterState })
           → broadcasts to all room subscribers
@@ -87,6 +83,7 @@ export interface BaseCharacterState<AnimationType, ActionType = never> {
   transform: Transform;
   currentAnimation: AnimationType;
   currentAction: ActionType | null;
+  actionSeq?: number;          // changes ONLY when a one-shot action is sent — replays it on remotes
   isPositionStable?: boolean;  // gates remote player rendering — false until position is valid
 }
 
@@ -106,7 +103,7 @@ export interface MyRoomUserState {
 
 ## Pattern 2: Network Store
 
-Generic Zustand factory — same store shape for every project, different types.
+Generic Zustand factory — same store shape for every project, different types. The joined room's id is not kept here: `currentRoomId` from `useGameServer()` is the SDK's own record of it.
 
 ```typescript
 // core/store/networkStore.ts
@@ -119,7 +116,6 @@ export const createNetworkStore = <TGlobal, TRoom, TRoomUser>(
     myState: initialState.myState,
     roomState: initialState.roomState,
     roomUsersState: {} as Record<string, TRoomUser>,
-    currentRoomId: undefined as string | undefined,
 
     setMyState: (state) => set((prev) => ({ myState: { ...prev.myState, ...state } })),
     setRoomState: (state) => set((prev) => ({ roomState: { ...prev.roomState, ...state } })),
@@ -130,7 +126,6 @@ export const createNetworkStore = <TGlobal, TRoom, TRoomUser>(
           [account]: { ...prev.roomUsersState[account], ...state },
         },
       })),
-    setCurrentRoomId: (roomId) => set({ currentRoomId: roomId }),
     clearAllRoomStates: () => set({ roomState: initialState.roomState, roomUsersState: {} }),
     removeRoomUser: (account) =>
       set((prev) => {
@@ -154,56 +149,100 @@ Central hook composing SDK calls into a game-ready interface.
 
 | Pattern | Config |
 |---------|--------|
-| Character sync | `throttle: 50` + `needResponse: false` — fire-and-forget at 20Hz |
-| Room operations | `needResponse: true` — await server confirmation |
-| Subscriptions | Use `useNetworkStore.getState()` inside callbacks to avoid stale closures |
+| Character sync | `throttle: 50` + `throttleTrailing: true` — at most 20 sends/sec, fire-and-forget. The throttle is leading-edge only by default, so without `throttleTrailing` the final resting pose of a movement is the call that gets dropped |
+| Send only once `rsConnected` | The SDK builds a throttled sender once per function + key and keeps the Game Server / Room Server route of its FIRST call. A first call made before the room connection is up sends every later update to the Game Server, where `$room` throws — and throttled calls never report the error |
+| One-shot actions | Unthrottled and separate from the position stream: within a throttle window only the latest payload is sent, so the next frame's position update would replace an attack |
+| Room join | A server function RETURNS a `roomId`; the client passes it to `joinRoom(roomId)` from `useGameServer()`. Never name a server function `joinRoom`/`leaveRoom` — the SDK rejects those names in `remoteFunction()` |
+| Subscriptions | Subscribe in an effect keyed on `rsConnected` + `currentRoomId` (a room subscription issued before `rsConnected` is dropped, and none survive a reconnect). Use `useNetworkStore.getState()` inside callbacks to avoid stale closures |
+| Room UI | Gate room screens on `rsConnected`, not `connected` |
 
 ```typescript
 // hooks/useGameNetwork.ts
+// Mount once, in the component that owns the room session — every instance runs its own subscriptions.
 export const useGameNetwork = () => {
-  const { connected, server } = useGameServer();
-  const { setRoomState, setRoomUserState, setCurrentRoomId, clearAllRoomStates, removeRoomUser } = useNetworkStore();
+  const { connected, rsConnected, currentRoomId, server, joinRoom, leaveRoom } = useGameServer();
+  const clearAllRoomStates = useNetworkStore((s) => s.clearAllRoomStates);
+  const leavingRef = useRef(false);
+  const joiningRef = useRef(false);  // one join at a time: overlapping joins break the SDK's Room Server connection
 
+  // Position/animation stream. Returns false when nothing was sent, so the caller can retry.
+  // Never send before the room connection is up (see the table above), and swallow rejections:
+  // throttled calls are fire-and-forget.
   const updateCharacterState = useCallback(
-    (characterState: Partial<MyCharacterState>) =>
+    (characterState: Partial<MyCharacterState>): boolean => {
+      if (leavingRef.current || !server.rsConnected) return false;
       server.remoteFunction("updateCharacterState", [{ ...characterState, updateTimestamp: Date.now() }], {
-        needResponse: false, throttle: 50, throttleKey: "updateCharacter",
-      }),
+        throttle: 50, throttleTrailing: true, throttleKey: "updateCharacter",
+      }).catch(() => {});
+      return true;
+    },
     [server]
   );
 
-  const joinRoom = useCallback(async (roomId: string) => {
-    if (!connected) return null;
-    const result = await server.remoteFunction("joinRoom", [roomId], { needResponse: true });
-    setCurrentRoomId(roomId);
-    // Populate store with existing room state so late-joining players see current state immediately
-    if (result?.roomState) setRoomState(result.roomState);
-    return result;
-  }, [connected, server, setCurrentRoomId, setRoomState]);
+  // One-shot actions (attack, hit): unthrottled, with their own sequence number (see Pattern 6).
+  const sendAction = useCallback(
+    (action: MyActionType) => {
+      if (leavingRef.current || !server.rsConnected) return;
+      server.remoteFunction("updateCharacterState", [{ currentAction: action, actionSeq: Date.now() }])
+        .catch(() => {});
+    },
+    [server]
+  );
 
-  const leaveRoom = useCallback(async () => {
-    const result = await server.remoteFunction("leaveRoom", [], { needResponse: true });
-    setCurrentRoomId("");
+  // The server only picks the room; the SDK joins it (Gateway routing + Room Server connection).
+  const findAndJoinRoom = useCallback(async () => {
+    if (!connected || joiningRef.current) return null;
+    joiningRef.current = true;
+    try {
+      const roomId: string = await server.remoteFunction("findRoom", []);
+      await joinRoom(roomId);
+      return roomId;
+    } finally {
+      joiningRef.current = false;
+    }
+  }, [connected, server, joinRoom]);
+
+  const leaveCurrentRoom = useCallback(async () => {
+    leavingRef.current = true;  // no new sync calls
+    // Skipping calls does not cancel a trailing throttled call that is already scheduled (up to 50 ms
+    // away): wait it out, so it cannot land after markLeaving and restore isPositionStable.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Hide me from the others now (see Pattern 7); a failure here must not block leaving.
+    await server.remoteFunction("markLeaving", []).catch(() => {});
+    leaveRoom();  // synchronous: disconnects from the Room Server
     clearAllRoomStates();
-    return result;
-  }, [server, setCurrentRoomId, clearAllRoomStates]);
+    leavingRef.current = false;
+  }, [server, leaveRoom, clearAllRoomStates]);
 
-  // Combines all room subscriptions into a single cleanup function
-  const subscribeRoom = useCallback((roomId: string) => {
-    const unsub1 = server.subscribeRoomState(roomId, (state) =>
+  // Room subscriptions need the Room Server connection and are not restored after a reconnect,
+  // so they live in an effect that re-runs whenever rsConnected or the room changes.
+  // Each subscription delivers the current value once on subscribe, so a late joiner sees the room immediately.
+  useEffect(() => {
+    if (!rsConnected || !currentRoomId) return;
+    // Drop the previous room's players and fields; the snapshots below repopulate the store.
+    useNetworkStore.getState().clearAllRoomStates();
+    const unsub1 = server.subscribeRoomState(currentRoomId, (state) =>
       useNetworkStore.getState().setRoomState(state)
     );
-    const unsub2 = server.subscribeRoomAllUserStates(roomId, (states) =>
+    const unsub2 = server.subscribeRoomAllUserStates(currentRoomId, (states) =>
       states.forEach((s) => useNetworkStore.getState().setRoomUserState(s.account, s))
     );
-    const unsub3 = server.onRoomUserLeave(roomId, (account) => {
+    const unsub3 = server.onRoomUserLeave(currentRoomId, (account) => {
       useNetworkStore.getState().removeRoomUser(account);  // remove departed player from store
     });
     return () => { unsub1?.(); unsub2?.(); unsub3?.(); };
-  }, [server]);
+  }, [rsConnected, currentRoomId, server]);
 
-  return { connected, updateCharacterState, joinRoom, leaveRoom, subscribeRoom };
+  return { connected, rsConnected, currentRoomId, updateCharacterState, sendAction, findAndJoinRoom, leaveCurrentRoom };
 };
+```
+
+Choose the screen from the SDK's own room record. A lost room — `leaveRoom()`, a Game Server drop (the SDK tears the room down with it and does not rejoin), or an admin close — sets `currentRoomId` back to null, so the player lands in the lobby and simply matches again:
+
+```tsx
+const { currentRoomId, rsConnected } = useGameServer();
+if (!currentRoomId) return <Lobby />;              // findAndJoinRoom() from here
+if (!rsConnected) return <div>Joining room…</div>; // Room Server connecting or reconnecting
 ```
 
 ---
@@ -212,15 +251,22 @@ export const useGameNetwork = () => {
 
 Read position every frame, send only when changed beyond threshold.
 
-**Position stability**: The local player starts with `isPositionStable: false`. After `STABLE_FRAME_COUNT` frames above a valid Y threshold, it flips to `true`. Remote clients use this flag to gate rendering and prevent flicker at origin (0,0,0).
+**Position stability**: The local player starts with `isPositionStable: false`. After `STABLE_FRAME_COUNT` frames above a valid Y threshold, it flips to `true`. Remote clients use this flag to gate rendering and prevent flicker at origin (0,0,0). The flip itself triggers a send — a player who spawns and stands still would otherwise stay hidden — and the flag is sent again after every (re)join, because the server resets it (`onRoomJoin`, `markLeaving`).
 
 ```typescript
 // Example: 3D physics with React Three Fiber + Rapier
 const THRESHOLD = 0.01;
 const STABLE_FRAME_COUNT = 30;
-const lastSync = useRef({ position: [0, 0, 0], rotation: [0, 0, 0, 1], animation: "" });
+const lastSync = useRef({ position: [0, 0, 0], rotation: [0, 0, 0, 1], animation: "", stable: false });
 const frameCount = useRef(0);
 const isStable = useRef(false);
+const { currentRoomId, rsConnected } = useGameServer();
+// updateCharacterState comes from the session owner's useGameNetwork() — pass it down as a prop or
+// context; calling the hook again here would run a second set of room subscriptions.
+
+// After every (re)join and Room Server reconnect, send a full payload again: the server may have reset
+// isPositionStable (onRoomJoin), and a throttled update flushed while the connection was down is lost.
+useEffect(() => { if (rsConnected) lastSync.current.stable = false; }, [currentRoomId, rsConnected]);
 
 useFrame(() => {
   if (!rigidBodyRef.current) return;
@@ -241,16 +287,17 @@ useFrame(() => {
   const changed =
     curPos.some((v, i) => Math.abs(v - lastSync.current.position[i]) > THRESHOLD) ||
     curRot.some((v, i) => Math.abs(v - lastSync.current.rotation[i]) > THRESHOLD) ||
-    curAnim !== lastSync.current.animation;
+    curAnim !== lastSync.current.animation ||
+    isStable.current !== lastSync.current.stable;
 
-  if (changed) {
-    updateCharacterState({
-      transform: { position: curPos, rotation: curRot },
-      currentAnimation: curAnim,
-      isGrounded,
-      isPositionStable: isStable.current,
-    });
-    lastSync.current = { position: curPos, rotation: curRot, animation: curAnim };
+  // Only remember what was actually sent: before rsConnected nothing goes out.
+  if (changed && updateCharacterState({
+    transform: { position: curPos, rotation: curRot },
+    currentAnimation: curAnim,
+    isGrounded,
+    isPositionStable: isStable.current,
+  })) {
+    lastSync.current = { position: curPos, rotation: curRot, animation: curAnim, stable: isStable.current };
   }
 });
 ```
@@ -282,6 +329,7 @@ const targetPos = useRef(new Vector3());
 const targetRot = useRef(new Quaternion());
 const currentPos = useRef(new Vector3());
 const currentRot = useRef(new Quaternion());
+const hasTarget = useRef(false);
 
 // Update interpolation targets when network state changes
 useEffect(() => {
@@ -290,6 +338,12 @@ useEffect(() => {
   const [rx, ry, rz, rw] = characterState.transform.rotation as number[];
   targetPos.current.set(x, y, z);
   targetRot.current.set(rx, ry, rz, rw);
+  if (!hasTarget.current) {
+    // First transform: start there instead of sliding in from the origin
+    currentPos.current.copy(targetPos.current);
+    currentRot.current.copy(targetRot.current);
+    hasTarget.current = true;
+  }
 }, [
   characterState?.transform?.position?.[0],
   characterState?.transform?.position?.[1],
@@ -380,8 +434,14 @@ const RemotePlayer = ({ characterState, animations, groupRef }) => {
 **One-shot actions** (attack, hit, death) — play once and return to loop:
 
 ```typescript
-// currentAction: one-shot events sent with a unique timestamp to force re-trigger
+// Replays when actionSeq changes — NOT on every state update (updateTimestamp changes ~20x a second
+// while the player moves, and would restart the clip on every frame). The action already in state
+// when this player mounts (late join, or the stability gate re-showing them) is old news: skip it.
+const lastActionSeq = useRef(characterState?.actionSeq);
 useEffect(() => {
+  const seq = characterState?.actionSeq;
+  if (seq === undefined || seq === lastActionSeq.current) return;
+  lastActionSeq.current = seq;
   const actionName = characterState?.currentAction;
   if (!actionName) return;
   const action = actions[actionName];
@@ -395,20 +455,18 @@ useEffect(() => {
   const onFinish = () => loopAnim?.reset().fadeIn(0.2).play();
   mixer.addEventListener("finished", onFinish);
   return () => mixer.removeEventListener("finished", onFinish);
-}, [characterState?.currentAction, characterState?.updateTimestamp, actions, mixer]);
+}, [characterState?.currentAction, characterState?.actionSeq, actions, mixer]);
 ```
 
 **Sending one-shot actions from local player:**
 
 ```typescript
-// Attach updateTimestamp so the same action can re-trigger (e.g., rapid attacks)
-updateCharacterState({
-  currentAction: "attack",
-  updateTimestamp: Date.now(),
-});
+// sendAction (Pattern 3) stamps a fresh actionSeq, so the same action can re-trigger (rapid attacks).
+// It is NOT sent through the throttled updateCharacterState: the next frame's position payload would replace it.
+sendAction("attack");
 ```
 
-> **Key**: `currentAnimation` drives looping states; `currentAction` + `updateTimestamp` drives one-shot events. `updateTimestamp` forces a new effect invocation even when `currentAction` string is identical.
+> **Key**: `currentAnimation` drives looping states; `currentAction` + `actionSeq` drives one-shot events. `actionSeq` changes only when an action is sent, so the same action string can replay while ordinary position updates never restart it. Unthrottled calls are rate-limited to 10 per second per function name — plenty for actions, never for the position stream.
 
 **Gate rendering on position stability** — skip render until remote player has valid position
 
@@ -440,32 +498,55 @@ const networkPlayers = useMemo(() =>
 
 ## Pattern 7: Server Side
 
+The server never joins or leaves rooms — the client does, with `joinRoom`/`leaveRoom` from `useGameServer()`. The server picks a room and initializes each player in the `onRoomJoin` hook.
+
 ```typescript
-// server/src/server.ts
+// server/src/server.ts  (a root server.js holds the same class, without `export` and types)
 export class Server {
-  // Initialize player state — isPositionStable: false until client confirms valid position
-  async joinRoom(roomId: string) {
-    await $global.joinRoom(roomId);
-    await $room.updateMyState({
+  private MAX_ROOM_USERS = 8;
+
+  // Matchmaking: RETURN a roomId; the client joins it with joinRoom(roomId).
+  // Never name this joinRoom/leaveRoom — the SDK rejects those names in remoteFunction().
+  async findRoom(): Promise<string> {
+    for (const roomId of await $global.getAllRoomIds()) {
+      if ((await $global.countRoomUsers(roomId)) < this.MAX_ROOM_USERS) return roomId;
+    }
+    return "room-" + Math.random().toString(16).substring(2, 10);
+  }
+
+  // Runs on the Room Server as each player enters. A player's room user state survives
+  // leaving and rejoining a room that stayed alive, so reset per-match fields here.
+  // isPositionStable: false until the client confirms a valid position.
+  // Rejoining the SAME room within the 30 s grace after leaveRoom() counts as a reconnect and does
+  // not run this hook; the client re-sends the flag on every (re)join (Pattern 4), so that case is covered.
+  async onRoomJoin(roomId: string, account: string) {
+    // Hook names are callable as remote functions too; in the real hook $sender.account is the joiner,
+    // so this stops a client from resetting another player.
+    if (account !== $sender.account) return;
+    await $room.updateUserState(account, {
       characterState: {
         transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
         isPositionStable: false,
       },
     });
-    return { roomState: await $room.getRoomState(), myRoomState: await $room.getMyState() };
   }
 
-  // Relay partial character state update from client and broadcast to room
+  // Relay partial character state update from client and broadcast to room.
+  // State updates merge at the TOP LEVEL only, so the nested characterState is spread by hand.
   async updateCharacterState(updated: Partial<CharacterState>) {
     const prev = await $room.getMyState();
     await $room.updateMyState({ characterState: { ...prev.characterState, ...updated } });
   }
 
-  async leaveRoom() {
-    return $room.leave();
+  // Called (awaited, unthrottled) right before the client's leaveRoom(): hides the leaver at once.
+  async markLeaving() {
+    const prev = await $room.getMyState();
+    await $room.updateMyState({ characterState: { ...prev.characterState, isPositionStable: false } });
   }
 }
 ```
+
+> **Leaving is not instant.** A player who calls `leaveRoom()` — or whose network drops — stays in `$users` for a 30s grace period before `onRoomLeave` fires and the other clients get `onRoomUserLeave`; closing the tab removes them at once. To hide a deliberate leaver immediately, `leaveCurrentRoom` (Pattern 3) stops the local sync, waits out the throttle window — skipping calls does not cancel a trailing call that is already scheduled — and then awaits `markLeaving` before `leaveRoom()`. The rendering gate in Pattern 6 already skips players without a stable position. Do not use the throttled `updateCharacterState` itself for this: its trailing call can fire after `leaveRoom()` has closed the room connection, and is then lost.
 
 ---
 
@@ -473,13 +554,15 @@ export class Server {
 
 | Pattern | Why |
 |---------|-----|
-| `throttle: 50` + `throttleKey` | Caps to 20 updates/sec per entity, prevents server overload |
+| `throttle: 50` + `throttleTrailing: true` + `throttleKey` | Caps to 20 updates/sec per entity, prevents server overload, and still delivers the final pose of each movement |
 | Position threshold 0.01 | Skips trivial movements, reduces network traffic |
 | `isPositionStable` gate | Prevents remote player flicker on spawn |
 | `kinematicPosition` RigidBody (3D) | No physics sim overhead for remote players |
 | `useNetworkStore.getState()` in callbacks | Avoids stale closure bugs in subscriptions |
 | `useMemo` for `$users` → record lookup | O(1) access to remote player states |
-| Cleanup all subscriptions in `useEffect` return | Prevents memory leaks and ghost subscriptions |
+| Subscribe in an effect keyed on `rsConnected` + `currentRoomId`, clear the store at its start, clean up in its return | Re-subscribes after a Room Server reconnect, never shows the previous room's players, prevents ghost subscriptions |
+| No room call before `rsConnected` | A throttled function keeps the route of its first call for good |
+| Lobby whenever `currentRoomId` is null, one join at a time | A lost room (leave, Game Server drop, admin close) returns the player to matchmaking; overlapping joins break the Room Server connection |
 | `fadeIn/fadeOut(0.2)` on animation switch | Smooth crossfade — avoids jarring snaps between clips |
-| `currentAction` + `updateTimestamp` | Forces re-trigger for repeated one-shot actions (e.g., rapid attacks) |
+| `currentAction` + `actionSeq`, sent unthrottled | Replays repeated one-shot actions (rapid attacks) without restarting them on every position update |
 | `LoopOnce` + `clampWhenFinished` on actions | One-shot clips freeze on last frame instead of snapping back |
