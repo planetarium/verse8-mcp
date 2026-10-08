@@ -43,11 +43,7 @@ for (const [label, read] of Object.entries(sources)) {
   test(`${label}: names Incanto as the default 3D engine`, () => {
     const text = read();
     assert.match(text, /3D engine: Incanto by default/);
-    assert.match(text, /bun add incanto three/);
-    assert.match(text, /verse8_attach` with `overwriteAgentsDoc: true`/);
     assert.match(text, /never add a second 3D engine/);
-    // Incanto upstream keeps 2D games off the engine; the default must not override that.
-    assert.match(text, /2D game stays on the 2D stack \(Phaser\)/);
   });
 
   test(`${label}: lists every 3D stack the vendored plugins are gated on`, () => {
@@ -56,15 +52,29 @@ for (const [label, read] of Object.entries(sources)) {
       assert.ok(text.includes(`\`${pkg}\``), `${label} does not mention \`${pkg}\``);
     }
   });
-
-  test(`${label}: points at Incanto skills the server actually serves`, () => {
-    const text = read();
-    const uris = [...text.matchAll(/verse8:\/\/skill\/(incanto-[\w-]+)\/SKILL\.md/g)].map((m) => m[0]);
-    assert.ok(uris.length >= 2, `expected Incanto skill URIs in ${label}`);
-    const served = new Set(listSkillResources().map((s) => s.uri));
-    for (const uri of uris) assert.ok(served.has(uri), `${uri} is not in resources/list`);
-  });
 }
+
+// The server instructions only carry the condition (Claude Code truncates
+// them at 2,048 chars); the steps live in the AGENTS.md template.
+test("SERVER_INSTRUCTIONS: defers the Incanto steps to AGENTS.md", () => {
+  assert.match(createServer()._instructions, /uses Incanto — steps in AGENTS\.md/);
+});
+
+test("AGENTS_MD_TEMPLATE: spells out the Incanto steps", () => {
+  assert.match(AGENTS_MD_TEMPLATE, /bun add incanto three/);
+  assert.match(AGENTS_MD_TEMPLATE, /verse8_attach` with `overwriteAgentsDoc: true`/);
+  // Incanto upstream keeps 2D games off the engine; the default must not override that.
+  assert.match(AGENTS_MD_TEMPLATE, /2D game stays on the 2D stack \(Phaser\)/);
+});
+
+test("AGENTS_MD_TEMPLATE: points at skills the vendored Incanto plugin ships", () => {
+  const uris = [...AGENTS_MD_TEMPLATE.matchAll(/verse8:\/\/skill\/(incanto-[\w-]+)\/SKILL\.md/g)].map((m) => m[0]);
+  assert.ok(uris.length >= 2, "expected Incanto skill URIs in AGENTS_MD_TEMPLATE");
+  // Only the vendored plugin — a same-named skill in ~/.cache/verse8/skills
+  // must not hide an upstream rename.
+  const served = new Set(listSkillResources().filter((s) => s.plugin === "incanto").map((s) => s.uri));
+  for (const uri of uris) assert.ok(served.has(uri), `${uri} is not shipped by the incanto plugin`);
+});
 
 test("AGENTS_MD_TEMPLATE: the rule precedes the skills catalog and plugin instructions", () => {
   const rule = AGENTS_MD_TEMPLATE.indexOf("## 3D engine: Incanto by default");

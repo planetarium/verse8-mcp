@@ -65,6 +65,9 @@ none of `vibe-starter-3d`, `vibe-starter-3d-environment`,
 with `overwriteAgentsDoc: true` so the Incanto plugin activates. A
 project already on one of those stacks keeps it; 2D games stay on Phaser.
 Existing projects get the rule on their next `overwriteAgentsDoc` attach.
+The server instructions carry only the condition and point at AGENTS.md
+for the steps, so they stay within Claude Code's 2,048-char limit (now
+asserted by `serverInstructions.test.mjs`).
 
 ## [0.7.0] — 2026-10-01
 
