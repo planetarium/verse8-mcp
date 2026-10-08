@@ -28,6 +28,7 @@ export type ResolveCdnPathResult =
       hint: string;
     };
 
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 function sanitizeCdnPath(raw: string): ResolveCdnPathResult {
   if (raw.length === 0) {
     return {

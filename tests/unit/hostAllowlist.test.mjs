@@ -66,6 +66,7 @@ test("isAllowedOverrideHost (proxy/registry): accepts verse8.io subdomains + loo
   assert.equal(isAllowedOverrideHost("http://127.0.0.1:9999"), true);
 });
 
+// INV-3: URL overrides are host-validated
 test("isAllowedOverrideHost: rejects foreign hosts and malformed URLs", () => {
   assert.equal(isAllowedOverrideHost("https://evil.example.com"), false);
   assert.equal(isAllowedOverrideHost("https://verse8.io.evil.com"), false);
@@ -97,6 +98,7 @@ test("AC-STRUCTURE-2: parseOverrideHost is exported from exactly one file", () =
   assert.equal(exportSites, 1, "parseOverrideHost must be exported from exactly one file");
 });
 
+// INV-3: URL overrides are host-validated
 test("AC-STRUCTURE-2: each per-caller predicate sources the parser, not raw new URL", () => {
   const callerFiles = [
     "../../src/proxy/registry.ts",

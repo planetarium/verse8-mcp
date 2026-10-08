@@ -327,6 +327,7 @@ export async function callProxiedTool(
 
   // Session-expiry retry: evict cache, rediscover to get a fresh session,
   // then re-issue the same tools/call exactly once.
+  // INV-10: MCP proxy session retry is single-shot
   if (isSessionExpiredResponse(resp)) {
     evictServiceCache(url);
     const { services } = resolveMcpServices();

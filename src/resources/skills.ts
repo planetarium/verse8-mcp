@@ -178,6 +178,7 @@ export function listSkillResources(): SkillResource[] {
   const byUri = new Map<string, SkillResource>();
   for (const s of listSkillsUnder(userCache, "userCache")) byUri.set(s.uri, s);
   for (const s of listSkillsUnder(vendorSkills, "skills-vendor")) byUri.set(s.uri, s);
+  // INV-4: Skill merge precedence is `core > vendor > cache`
   for (const s of listSkillsUnder(coreSkills, "skills")) byUri.set(s.uri, s);
   return Array.from(byUri.values()).sort((a, b) => a.uri.localeCompare(b.uri));
 }

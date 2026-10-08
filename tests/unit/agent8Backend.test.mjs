@@ -50,6 +50,7 @@ test("getAgent8BackendBaseUrl: localhost override accepted", () => {
   });
 });
 
+// INV-3: URL overrides are host-validated
 test("getAgent8BackendBaseUrl: evil.example.com override REJECTED → default", () => {
   const originalError = console.error;
   console.error = () => {}; // silence the expected stderr warning
@@ -80,6 +81,7 @@ test("getAgent8BackendBaseUrl: malformed URL → default", () => {
   }
 });
 
+// INV-1: Token never hits a shell
 test("parseCloneCommand: short -b flag with oauth URL", () => {
   const parsed = parseCloneCommand(
     "git clone -b develop https://oauth2:glpat-XXX@gitlab.verse8.io/user/proj-1234.git proj-1234",
