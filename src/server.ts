@@ -227,6 +227,7 @@ export function createServer(): Server {
     const tools: Tool[] = [...BASE_TOOLS];
 
     if (token) {
+      // INV-11: Tool discovery is token-gated, not cwd-gated
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
       tools.push(UPLOAD_ASSET_TOOL);

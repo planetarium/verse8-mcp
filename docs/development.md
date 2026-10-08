@@ -48,12 +48,11 @@ npm run audit
 
 ## Invariants
 
+프로덕션 불변 조건 목록은 [security.md › 불변 조건](./security.md#불변-조건-invariants)에 있습니다. 각 조건을 지키는 테스트·소스에는 `// INV-n:` 태그 주석이 달려 있으니(`git grep -n 'INV-3:'`), 태그가 붙은 테스트를 고치거나 옮길 때 태그도 함께 옮기세요.
+
 ```bash
-bash scripts/verify-invariants.sh
 bash scripts/check-subtree-sha.sh
 ```
-
-`.omc/INVARIANTS.md`는 11개 프로덕션 invariant (token shell safety, marker secret-freedom, host allow-list, skill precedence, .env immutability, skill no-touch, overwrite-flag scoping, V8 on-wire contract, narrative location, single-shot session retry, token-gated discovery)를 회귀 테스트에 매핑합니다. 검증기가 참조된 모든 테스트 이름을 grep해 누락 시 빌드 실패시킵니다.
 
 ## Pre-publish guard
 

@@ -1,6 +1,6 @@
 # 아키텍처
 
-자세한 모듈 레이아웃 / 데이터 플로우 / 11 invariants는 [.omc/ARCHITECTURE.md](../.omc/ARCHITECTURE.md) 참조.
+불변 조건 목록은 [security.md › 불변 조건](./security.md#불변-조건-invariants) 참조.
 
 ## 핵심 개념
 

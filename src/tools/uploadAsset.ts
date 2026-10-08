@@ -95,6 +95,7 @@ function resolveInputPath(filePath: string, projectDir: string): string {
     : path.resolve(projectDir, filePath);
 }
 
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 function isSafeFilename(name: string): boolean {
   if (name.length === 0) return false;
   if (name.indexOf(String.fromCharCode(0)) >= 0) return false;

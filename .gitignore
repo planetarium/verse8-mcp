@@ -8,9 +8,7 @@ coverage/
 
 # OMC / Claude Code ephemeral + personal state
 .claude/
-.omc/state/
-.omc/sessions/
-.omc/project-memory.json
+.omc/
 
 # Environment / secrets
 .env

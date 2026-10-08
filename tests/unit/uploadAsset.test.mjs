@@ -162,6 +162,7 @@ test("runUploadAsset: missing_verse_env", async () => {
   }
 });
 
+// MCP-UP-3: `ATTACHMENT_EXTS` is the pre-network extension gate
 test("runUploadAsset: invalid_extension", async () => {
   const dir = makeAttachedProject("v1");
   try {
@@ -203,6 +204,7 @@ test("runUploadAsset: file_not_found", async () => {
   }
 });
 
+// MCP-UP-1: `verse8_upload_asset` hits only the allow-listed backend
 test("runUploadAsset: happy path returns url and resolved cdnPath", async () => {
   const dir = makeAttachedProject("v1");
   try {

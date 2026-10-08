@@ -104,6 +104,7 @@ test("ensureVerse8EnvFile: idempotent when both keys already match", () => {
   }
 });
 
+// INV-5: `.env` ACCOUNT/VERSE is immutable once set
 test("ensureVerse8EnvFile: account mismatch → preserve + hint (no overwrite)", () => {
   const dir = tmpProject();
   try {
@@ -129,6 +130,8 @@ test("ensureVerse8EnvFile: account mismatch → preserve + hint (no overwrite)",
   }
 });
 
+// INV-5: `.env` ACCOUNT/VERSE is immutable once set
+// INV-7: `overwriteAllSkills: true` does not cascade to .env (and vice-versa)
 test("ensureVerse8EnvFile: overwrite: true replaces account AND verse", () => {
   const dir = tmpProject();
   try {
@@ -144,6 +147,7 @@ test("ensureVerse8EnvFile: overwrite: true replaces account AND verse", () => {
   }
 });
 
+// INV-5: `.env` ACCOUNT/VERSE is immutable once set
 test("ensureVerse8EnvFile: VERSE reused verbatim when present", () => {
   const dir = tmpProject();
   try {

@@ -455,6 +455,7 @@ test("confirm: when backend omits BOTH cloneCommand and gitUrl → token_grant_f
   }
 });
 
+// INV-1: Token never hits a shell
 test("confirm rejects traversal slug: hostile backend slug '..' → clone_parse_failed", async () => {
   // The mock derives its slug from projectPath.split('/').pop().
   // Pinning projectPath to 'user/..' makes the slug '..', which the

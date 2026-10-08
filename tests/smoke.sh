@@ -449,6 +449,7 @@ test_ac5_image_proxy_bearer() {
 # Assertion: the second tools/call succeeds and two initialize calls
 # were observed (the lazy one at tools/list + the reinit on retry).
 # ===========================================================================
+# INV-10: MCP proxy session retry is single-shot
 test_session_expire_retry() {
   start_image_mock "--session-expire-once"
   make_tmpdir
