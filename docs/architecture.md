@@ -1,6 +1,6 @@
 # 아키텍처
 
-불변 조건 목록은 [security.md › 불변 조건](./security.md#불변-조건-invariants) 참조.
+Invariants are listed in [security.md › Invariants](./security.md#invariants).
 
 ## 핵심 개념
 
