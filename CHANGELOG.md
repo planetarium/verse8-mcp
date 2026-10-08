@@ -5,6 +5,42 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [Unreleased]
+
+### Changed — vendored skills follow the project's dependencies (#12)
+
+`verse8_attach` (and the last step of `verse8_new_project_confirm`) now
+installs agent8-skills plugins the way the Agent8 container does, instead
+of every vendored skill in every project:
+
+- A plugin whose `plugin.json` declares `requiresPackage` is active only
+  when the project's `package.json` lists one of those packages under
+  `dependencies` or `devDependencies`. No `requiresPackage` (or `[]`) →
+  always active. A malformed `requiresPackage`, a missing or broken
+  `plugin.json`, or a non-empty `tags` → inactive, never "everyone".
+  No `package.json` → only ungated plugins. Top-level skills are always
+  installed. An Incanto project no longer gets the R3F / vibe-starter-3d
+  skills, and vice versa.
+- Only active skills go to `.claude/skills/` and the AGENTS.md / CLAUDE.md
+  catalog. Active plugins' `instructions/AGENTS.md` (e.g. the GameServer
+  SDK 1.x / 2.x selection rules) are composed after the catalog.
+- **Behavior change:** an inactive plugin's skill that verse8-mcp
+  installed earlier and the user has not edited is removed on re-attach
+  (`installed.skills.deactivated`), regardless of `pruneOrphanedSkills`.
+  User-written or edited copies stay.
+- `installed.skillPlugins` reports where the dependency set came from and
+  each plugin's verdict (`active[]` with `matched`, `inactive[]` with the
+  reason). Re-run `verse8_attach` after adding a dependency.
+- The vendor sync now also copies each public plugin's `plugin.json` and
+  `instructions/AGENTS.md`, and refuses a malformed `requiresPackage`.
+  `skills-vendor/` is re-vendored from planetarium/agent8-skills@11a5c97:
+  plugin skills move under `plugins/<p>/skills/` and several were renamed
+  upstream (`gameserver-sdk-v2` is gone — 2.x is now `gameserver-sdk`,
+  1.x `gameserver-sdk-v1`; `how-to-use-3d-tree` → `r3f-tree`, `input-system-guide` →
+  `r3f-input-system`, …). Old copies in already-attached projects are
+  orphans; `pruneOrphanedSkills: true` removes the unedited ones.
+- The MCP `resources/list` still exposes every bundled skill.
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `verse8_deploy`: publish from the MCP (#7, #8)

@@ -18,8 +18,13 @@ import { loadToken } from "../context/token.js";
 import { verifyToken } from "../api/v8MemeApi.js";
 import {
   listSkillResources,
-  type SkillResource,
+  vendorPluginsRoot,
 } from "../resources/skills.js";
+import {
+  selectProjectSkills,
+  type PluginGateReason,
+  type ProjectSkillSelection,
+} from "../resources/pluginGate.js";
 import {
   writeSkillFiles,
   type SkillWriteResult,
@@ -30,7 +35,10 @@ import {
   AGENTS_MD_TEMPLATE_HAS_CATALOG_MARKER,
 } from "../prompts/agentsMdTemplate.js";
 import { resolveHooksDir, writeHook } from "../context/hooks.js";
-import { renderSkillsCatalog } from "../resources/skillCatalog.js";
+import {
+  renderPluginInstructions,
+  renderSkillsCatalog,
+} from "../resources/skillCatalog.js";
 import { RollbackJournal } from "../util/rollback.js";
 
 /**
@@ -97,6 +105,7 @@ export type AttachResult =
         agentsDoc: "created" | "skipped-existing" | "overwritten";
         projectMarker: "created" | "already-present";
         skills: SkillWriteResult;
+        skillPlugins: SkillPluginsReport;
         env: EnsureVerse8EnvResult;
         gitIgnore: EnsureGitIgnoreResult;
         claudeGitIgnore: EnsureGitIgnoreResult;
@@ -202,9 +211,32 @@ export interface ApplyAttachmentArtifactsResult {
   agentsDoc: "created" | "skipped-existing" | "overwritten";
   projectMarker: "created" | "already-present";
   skills: SkillWriteResult;
+  skillPlugins: SkillPluginsReport;
   env: EnsureVerse8EnvResult;
   gitIgnore: EnsureGitIgnoreResult;
   claudeGitIgnore: EnsureGitIgnoreResult;
+}
+
+/**
+ * Which vendored plugins this project gets, and why — read from the
+ * project's `package.json` at attach time (see `pluginGate.ts`).
+ */
+export interface SkillPluginsReport {
+  dependencies: "package.json" | "missing" | "invalid";
+  active: Array<{ name: string; reason: PluginGateReason; matched?: string[] }>;
+  inactive: Array<{ name: string; reason: PluginGateReason; requiresPackage: string[] }>;
+}
+
+function reportSkillPlugins(selection: ProjectSkillSelection): SkillPluginsReport {
+  return {
+    dependencies: selection.dependencies.source,
+    active: selection.plugins
+      .filter((p) => p.active)
+      .map((p) => ({ name: p.name, reason: p.reason, ...(p.matched ? { matched: p.matched } : {}) })),
+    inactive: selection.plugins
+      .filter((p) => !p.active)
+      .map((p) => ({ name: p.name, reason: p.reason, requiresPackage: p.requiresPackage })),
+  };
 }
 
 export function applyAttachmentArtifacts(
@@ -218,7 +250,9 @@ export function applyAttachmentArtifacts(
       `[verse8-attach] writing hooks to custom core.hooksPath: ${hooksDir}`,
     );
   }
-  const skills = listSkillResources();
+  // Only skills that apply to this project: top-level ones plus those of
+  // plugins whose `requiresPackage` the project's package.json satisfies.
+  const selection = selectProjectSkills(listSkillResources(), projectDir, vendorPluginsRoot());
   const journal = new RollbackJournal();
 
   try {
@@ -237,7 +271,7 @@ export function applyAttachmentArtifacts(
 
     // Step 2 — AGENTS.md / CLAUDE.md.
     const agentsSnapshot = snapshotAgentsDocs(projectDir);
-    const agentsDoc = writeAgentsDoc(projectDir, opts.overwrite, skills);
+    const agentsDoc = writeAgentsDoc(projectDir, opts.overwrite, selection);
     if (agentsDoc !== "skipped-existing") {
       journal.record(() => restoreAgentsDocs(projectDir, agentsSnapshot));
     }
@@ -254,13 +288,20 @@ export function applyAttachmentArtifacts(
     // Step 4 — skills.
     const skillsRoot = path.join(projectDir, ".claude", "skills");
     const skillsRootExistedBefore = safeIsDir(skillsRoot);
-    const result = writeSkillFiles(projectDir, skills, {
+    const retired = new Map<string, string>();
+    const result = writeSkillFiles(projectDir, selection.active, {
       overwriteAll: opts.overwriteAllSkills === true,
       pruneOrphaned: opts.pruneOrphanedSkills === true,
+      retire: selection.inactive.map((s) => s.name),
+      onRetire: (name, raw) => retired.set(name, raw),
     });
-    if (result.created.length > 0 || result.updated.length > 0) {
+    if (
+      result.created.length > 0 ||
+      result.updated.length > 0 ||
+      retired.size > 0
+    ) {
       journal.record(() =>
-        reverseSkillWrites(skillsRoot, result, skillsRootExistedBefore),
+        reverseSkillWrites(skillsRoot, result, skillsRootExistedBefore, retired),
       );
     }
     maybeFail(opts.__failAfter, "skills");
@@ -306,6 +347,7 @@ export function applyAttachmentArtifacts(
       agentsDoc,
       projectMarker,
       skills: result,
+      skillPlugins: reportSkillPlugins(selection),
       env,
       gitIgnore,
       claudeGitIgnore,
@@ -412,7 +454,17 @@ function reverseSkillWrites(
   skillsRoot: string,
   result: SkillWriteResult,
   skillsRootExistedBefore: boolean,
+  retired: Map<string, string>,
 ): void {
+  // Deactivated skills were verse8-mcp-authored and unedited; put them back.
+  for (const [name, raw] of retired) {
+    try {
+      fs.mkdirSync(path.join(skillsRoot, name), { recursive: true });
+      fs.writeFileSync(path.join(skillsRoot, name, "SKILL.md"), raw);
+    } catch {
+      /* best-effort */
+    }
+  }
   for (const name of result.created) {
     try {
       fs.rmSync(path.join(skillsRoot, name), { recursive: true, force: true });
@@ -442,7 +494,7 @@ function reverseSkillWrites(
 function writeAgentsDoc(
   projectDir: string,
   overwrite: boolean,
-  skills: SkillResource[],
+  selection: ProjectSkillSelection,
 ): "created" | "skipped-existing" | "overwritten" {
   // Dual-write: AGENTS.md (OMC/OpenAI) + CLAUDE.md (Claude Code native).
   const agentsPath = path.join(projectDir, "AGENTS.md");
@@ -458,9 +510,12 @@ function writeAgentsDoc(
     return false;
   })();
   if (existsAny && !overwrite) return "skipped-existing";
-  const rendered = AGENTS_MD_TEMPLATE.replace(
-    "{{SKILLS_CATALOG}}",
-    renderSkillsCatalog(skills),
+  // Active plugins' instructions follow the catalog, as the container
+  // appends them after its base instructions.
+  const catalog = renderSkillsCatalog(selection.active);
+  const instructions = renderPluginInstructions(selection.plugins);
+  const rendered = AGENTS_MD_TEMPLATE.replace("{{SKILLS_CATALOG}}", () =>
+    instructions ? `${catalog}\n${instructions}` : catalog,
   );
   fs.writeFileSync(agentsPath, rendered);
   fs.writeFileSync(claudePath, rendered);

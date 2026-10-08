@@ -36,11 +36,23 @@ export interface SkillWriteResult {
   skippedUserEdited: string[];
   existingUnchanged: string[];
   pruned: string[];
+  /** Skills of plugins inactive for this project, removed because we wrote them. */
+  deactivated: string[];
 }
 
 export interface SkillWriteOptions {
   overwriteAll: boolean;
   pruneOrphaned: boolean;
+  /**
+   * Skill names that must not be installed in this project (their plugin is
+   * inactive). A `.claude/skills/<name>/SKILL.md` that still carries our
+   * unedited hash marker is removed; a user-written or user-edited one stays.
+   * Unlike `pruneOrphaned` this always runs: a skill the project's
+   * dependencies rule out is not an orphan the user might still want.
+   */
+  retire?: string[];
+  /** Called with the removed SKILL.md bytes so the caller can roll back. */
+  onRetire?: (name: string, raw: string) => void;
 }
 
 /**
@@ -125,6 +137,7 @@ export function writeSkillFiles(
     skippedUserEdited: [],
     existingUnchanged: [],
     pruned: [],
+    deactivated: [],
   };
 
   const skillsRoot = path.join(projectDir, ".claude", "skills");
@@ -211,6 +224,28 @@ export function writeSkillFiles(
     // Source changed; our previous write is still intact; safe to overwrite.
     fs.writeFileSync(destPath, finalBytes);
     result.updated.push(skill.name);
+  }
+
+  for (const name of opts.retire ?? []) {
+    if (bundledNames.has(name) || !isSafeSkillName(name)) continue;
+    const dir = path.join(skillsRoot, name);
+    const file = path.join(dir, "SKILL.md");
+    let raw = "";
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      continue; // never installed
+    }
+    if (!destIsUnedited(raw)) continue; // user-written or user-edited
+    try {
+      // Only our file goes; anything the user added next to it keeps the dir.
+      fs.rmSync(file, { force: true });
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      result.deactivated.push(name);
+      opts.onRetire?.(name, raw);
+    } catch {
+      /* best-effort */
+    }
   }
 
   if (opts.pruneOrphaned) {

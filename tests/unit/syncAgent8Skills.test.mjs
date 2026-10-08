@@ -197,8 +197,11 @@ test("planVendor: only listed skills and listed plugins' skill files, mirrored p
       plan.files.map((f) => f.rel),
       [
         "README.md",
+        "plugins/gameserver/instructions/AGENTS.md",
+        "plugins/gameserver/plugin.json",
         "plugins/gameserver/skills/gameserver-sdk.md",
         "plugins/gameserver/skills/gameserver.md",
+        "plugins/r3f/plugin.json",
         "plugins/r3f/skills/r3f-tree.md",
         "public.json",
         "skills/ads-impl.md",
@@ -343,10 +346,42 @@ test("planVendor: a listed plugin with no skill files vendors nothing and warns"
       files: { "plugins/project-history/plugin.json": '{ "version": 1, "assets": [] }\n' },
     });
     const plan = planVendor(up, readPublicManifest(up));
-    assert.deepEqual(plan.files.map((f) => f.rel), ["README.md", "public.json"]);
+    assert.deepEqual(plan.files.map((f) => f.rel), ["README.md", "plugins/project-history/plugin.json", "public.json"]);
     assert.equal(plan.warnings.length, 1);
-    assert.match(plan.warnings[0], /'project-history' is listed but ships no skills/);
+    assert.match(plan.warnings[0], /'project-history' is listed but ships no skills\/\*\.md and no instructions/);
   });
+});
+
+test("planVendor: an instructions-only plugin is vendored without a warning", () => {
+  withScratch((up) => {
+    seedUpstream(up, {
+      manifest: { skills: [], plugins: ["project-history"] },
+      files: {
+        "plugins/project-history/plugin.json": '{ "version": 1, "assets": [] }\n',
+        "plugins/project-history/instructions/AGENTS.md": "## History\n",
+      },
+    });
+    const plan = planVendor(up, readPublicManifest(up));
+    assert.deepEqual(plan.files.map((f) => f.rel), [
+      "README.md",
+      "plugins/project-history/instructions/AGENTS.md",
+      "plugins/project-history/plugin.json",
+      "public.json",
+    ]);
+    assert.deepEqual(plan.warnings, []);
+  });
+});
+
+test("planVendor: a malformed requiresPackage is refused (the runtime would hide the plugin)", () => {
+  const tooMany = JSON.stringify(Array.from({ length: 17 }, (_, i) => `p${i}`));
+  for (const bad of ['"vibe-starter-3d"', "[1]", '["Not A Package"]', tooMany]) {
+    withScratch((up) => {
+      seedUpstream(up, {
+        files: { "plugins/r3f/plugin.json": `{ "version": 1, "requiresPackage": ${bad}, "assets": [] }\n` },
+      });
+      expectSyncError(() => planVendor(up, readPublicManifest(up)), "plugin_invalid", /requiresPackage/);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -365,8 +400,11 @@ test("sync: rebuilds the vendor tree from scratch and re-pins package.json", () 
     assert.equal(result.changed, true);
     assert.deepEqual(listFiles(path.join(repo, VENDOR_REL)), [
       "README.md",
+      "plugins/gameserver/instructions/AGENTS.md",
+      "plugins/gameserver/plugin.json",
       "plugins/gameserver/skills/gameserver-sdk.md",
       "plugins/gameserver/skills/gameserver.md",
+      "plugins/r3f/plugin.json",
       "plugins/r3f/skills/r3f-tree.md",
       "public.json",
       "skills/ads-impl.md",
@@ -376,8 +414,11 @@ test("sync: rebuilds the vendor tree from scratch and re-pins package.json", () 
     assert.deepEqual(result.removed, ["instructions/AGENTS.md", "skills/gameserver-sdk.md"]);
     assert.deepEqual(result.modified, ["README.md", "skills/ads-impl.md"]);
     assert.deepEqual(result.added, [
+      "plugins/gameserver/instructions/AGENTS.md",
+      "plugins/gameserver/plugin.json",
       "plugins/gameserver/skills/gameserver-sdk.md",
       "plugins/gameserver/skills/gameserver.md",
+      "plugins/r3f/plugin.json",
       "plugins/r3f/skills/r3f-tree.md",
       "public.json",
       "skills/leaderboard-impl.md",
@@ -432,9 +473,16 @@ test("sync: an upstream edit to a vendored file changes the tree and the pin; a 
     const first = sync({ repoRoot: repo, upstreamDir: up, commit: "a".repeat(40) });
 
     fs.writeFileSync(path.join(up, "skills", "secret-impl.md"), "# still not public, edited\n");
-    fs.writeFileSync(path.join(up, "plugins", "gameserver", "instructions", "AGENTS.md"), "edited\n");
+    fs.writeFileSync(path.join(up, "instructions", "AGENTS.md"), "container-only, edited\n");
+    fs.writeFileSync(path.join(up, "plugins", "msu-vibecamp", "skills", "msu-vibecamp.md"), "# unlisted, edited\n");
     const nonPublic = sync({ repoRoot: repo, upstreamDir: up, commit: "b".repeat(40) });
     assert.equal(nonPublic.changed, false);
+
+    // A listed plugin's instructions are vendored, so editing them is a change.
+    fs.writeFileSync(path.join(up, "plugins", "gameserver", "instructions", "AGENTS.md"), "edited\n");
+    const instructions = sync({ repoRoot: repo, upstreamDir: up, commit: "b".repeat(40) });
+    assert.equal(instructions.changed, true);
+    assert.deepEqual(instructions.modified, ["plugins/gameserver/instructions/AGENTS.md"]);
 
     fs.writeFileSync(path.join(up, "plugins", "r3f", "skills", "r3f-tree.md"), "# tree v2\n");
     const edited = sync({ repoRoot: repo, upstreamDir: up, commit: "c".repeat(40) });
@@ -478,7 +526,7 @@ test("applyVendor: works on a repo that has no vendor tree yet", () => {
     fs.rmSync(path.join(repo, VENDOR_REL), { recursive: true, force: true });
     const diff = applyVendor(repo, planVendor(up, readPublicManifest(up)));
     assert.equal(diff.changed, true);
-    assert.equal(diff.added.length, 7);
+    assert.equal(diff.added.length, 10);
     assert.deepEqual([diff.removed, diff.modified], [[], []]);
   });
 });
@@ -605,12 +653,17 @@ test("repo: the MCP discovers skills in the mirrored layout (skills/ and plugins
     write("plugins/gameserver/skills/gameserver-sdk.md", "# sdk\n");
     write("plugins/gameserver/plugin.json", "{}\n");
     const mod = await import(url.pathToFileURL(path.join(tmp, "dist", "resources", "skills.js")).href);
-    const names = mod
+    const vendored = mod
       .listSkillResources()
       .filter((s) => s.fsPath.startsWith(vendor))
-      .map((s) => s.name)
-      .sort();
-    assert.deepEqual(names, ["ads-impl", "gameserver-sdk"]);
+      .sort((a, b) => (a.name < b.name ? -1 : 1));
+    assert.deepEqual(
+      vendored.map((s) => [s.name, s.plugin, s.pluginDir]),
+      [
+        ["ads-impl", undefined, undefined],
+        ["gameserver-sdk", "gameserver", path.join(vendor, "plugins", "gameserver")],
+      ],
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

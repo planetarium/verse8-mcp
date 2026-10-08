@@ -865,7 +865,7 @@ user-authored content, no hash marker'
 # SKILL source file out, running attach twice, then restoring.
 # ===========================================================================
 test_skills_no_cascade_delete() {
-  local victim_src="$REPO_ROOT/skills-vendor/agent8-skills/skills/gameserver-sdk.md"
+  local victim_src="$REPO_ROOT/skills-vendor/agent8-skills/plugins/gameserver/skills/gameserver-sdk.md"
   local victim_backup="/tmp/verse8-smoke-gameserver-sdk.md.bak"
 
   if [ ! -f "$victim_src" ]; then

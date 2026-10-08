@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { type PluginStatus } from "./pluginGate.js";
 import { type SkillResource } from "./skills.js";
 
 /**
@@ -33,16 +34,34 @@ export function renderSkillsCatalog(skills: SkillResource[]): string {
     "## Available Verse8 skills",
     "",
     "The MCP server discovers skills from `skills/` (verse8 core) and",
-    "`skills-vendor/agent8-skills/` (vendored upstream). If you're running",
-    "on Claude Code, the matching `.claude/skills/<name>/SKILL.md` files",
-    "are installed in this project by `verse8_attach` and auto-load.",
-    "On other hosts, fetch the content via MCP `resources/read`.",
+    "`skills-vendor/agent8-skills/` (vendored upstream). Only the skills",
+    "that apply to this project are listed: a plugin that declares",
+    "`requiresPackage` is included only when `package.json` depends on one",
+    "of those packages. After adding such a dependency, re-run",
+    "`verse8_attach` (with `overwriteAgentsDoc: true` to refresh this file).",
+    "If you're running on Claude Code, the matching",
+    "`.claude/skills/<name>/SKILL.md` files are installed in this project by",
+    "`verse8_attach` and auto-load. On other hosts, fetch the content via",
+    "MCP `resources/read`.",
     "",
     "| Skill | Purpose | MCP URI |",
     "|-------|---------|---------|",
     ...rows,
     "",
   ].join("\n");
+}
+
+/**
+ * Compose the active plugins' `instructions/AGENTS.md` (in plugin-name
+ * order), as the container appends them after its base instructions.
+ * Empty string when no active plugin ships instructions.
+ */
+export function renderPluginInstructions(plugins: PluginStatus[]): string {
+  const blocks = plugins
+    .filter((p) => p.active && p.instructions)
+    .map((p) => p.instructions!.replace(/\r\n/g, "\n").trim());
+  if (blocks.length === 0) return "";
+  return `${blocks.join("\n\n")}\n`;
 }
 
 /** Markdown table cells: escape pipes and collapse newlines. */
