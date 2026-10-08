@@ -27,6 +27,8 @@ import {
 } from "../resources/pluginGate.js";
 import {
   writeSkillFiles,
+  removeDirIfEmpty,
+  writeFileAtomic,
   type SkillFileChange,
   type SkillWriteResult,
 } from "./skillWriter.js";
@@ -83,7 +85,7 @@ export const attachInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "When true, remove .claude/skills/<name>/ directories whose skill is no longer bundled by verse8-mcp (and that still carry the verse8-mcp hash marker, proving we wrote them). Default false leaves orphans on disk to preserve user work.",
+        "When true, delete .claude/skills/<name>/SKILL.md for skills no longer bundled by verse8-mcp, but only where the file still carries an unedited verse8-mcp hash marker (proving we wrote it and the user has not changed it). Other files in the folder are kept; the folder goes only if that leaves it empty. Default false leaves orphans on disk to preserve user work.",
       ),
     overwriteEnv: z
       .boolean()
@@ -293,16 +295,17 @@ export function applyAttachmentArtifacts(
       claude: !safeIsDir(path.dirname(skillsRoot)),
       skillsRoot: !safeIsDir(skillsRoot),
     };
+    // Registered before writing: `changes` fills in as files change, so a
+    // throw halfway through (EACCES, ENOSPC, …) still rolls back the skills
+    // already written, overwritten or removed.
     const changes: SkillFileChange[] = [];
+    journal.record(() => reverseSkillWrites(skillsRoot, changes, createdDirs));
     const result = writeSkillFiles(projectDir, selection.active, {
       overwriteAll: opts.overwriteAllSkills === true,
       pruneOrphaned: opts.pruneOrphanedSkills === true,
       retire: selection.inactive.map((s) => s.name),
       onChange: (change) => changes.push(change),
     });
-    if (changes.length > 0 || createdDirs.skillsRoot) {
-      journal.record(() => reverseSkillWrites(skillsRoot, changes, createdDirs));
-    }
     maybeFail(opts.__failAfter, "skills");
 
     // Step 5 — .env.
@@ -470,9 +473,9 @@ function reverseSkillWrites(
         fs.rmSync(file, { force: true });
         if (change.dirCreated) removeDirIfEmpty(dir);
       } else {
-        // overwritten / removed: put the previous bytes back.
+        // overwritten / removed: put the previous bytes and mode back.
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(file, change.previous);
+        writeFileAtomic(file, change.previous.bytes, change.previous.mode);
       }
     } catch {
       /* best-effort */
@@ -480,14 +483,6 @@ function reverseSkillWrites(
   }
   if (createdDirs.skillsRoot) removeDirIfEmpty(skillsRoot);
   if (createdDirs.claude) removeDirIfEmpty(path.dirname(skillsRoot));
-}
-
-function removeDirIfEmpty(dir: string): void {
-  try {
-    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
-  } catch {
-    /* best-effort */
-  }
 }
 
 function writeAgentsDoc(

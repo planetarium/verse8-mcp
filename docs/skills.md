@@ -9,7 +9,7 @@
 
 `verse8_attach` 시 (그리고 `verse8_new_project_confirm`의 마지막 단계로) **이 프로젝트에 해당하는** 스킬이 `<projectDir>/.claude/skills/<name>/SKILL.md`에 복사되어 Claude Code가 자동 로드합니다. 다른 호스트(Codex, Cursor, opencode, …)는 같은 목록을 `AGENTS.md` / `CLAUDE.md`에 splice된 동적 `## Available Verse8 skills` 카탈로그로 보고, `resources/read verse8://skill/<name>/SKILL.md`로 내용을 가져올 수 있습니다. MCP 리소스 목록 자체는 게이트 없이 번들된 스킬 전부를 노출합니다.
 
-각 파일 끝의 `<!-- verse8-skill-hash: <sha256> -->` 마커가 사용자 편집을 감지합니다. 해시가 어긋나면 "사용자가 소유한 파일"로 간주되어 re-attach 시 byte-identical하게 보존됩니다. `overwriteAllSkills: true`는 re-copy를 강제. `pruneOrphanedSkills: true`는 더 이상 번들되지 않으면서 *우리 해시 마커가 편집되지 않은 채 남은* `.claude/skills/<name>/SKILL.md`를 지우고, 그 폴더는 비었을 때만 지웁니다 — 사용자 작성 디렉터리(마커 없음)와 폴더 안의 다른 파일은 절대 건드리지 않습니다. attach가 중간 단계에서 실패하면 그 실행이 바꾼 파일만 되돌립니다: 덮어쓰거나 지운 `SKILL.md`는 이전 내용으로 복원하고, 스킬 폴더는 그 실행이 새로 만든 경우에만 지웁니다.
+각 파일 끝의 `<!-- verse8-skill-hash: <sha256> -->` 마커가 사용자 편집을 감지합니다. 해시가 어긋나면 "사용자가 소유한 파일"로 간주되어 re-attach 시 byte-identical하게 보존됩니다. `overwriteAllSkills: true`는 re-copy를 강제. `pruneOrphanedSkills: true`는 더 이상 번들되지 않으면서 *우리 해시 마커가 편집되지 않은 채 남은* `.claude/skills/<name>/SKILL.md`를 지우고, 그 폴더는 비었을 때만 지웁니다 — 사용자 작성 디렉터리(마커 없음)와 폴더 안의 다른 파일은 절대 건드리지 않습니다. attach가 중간 단계에서 실패하면 그 실행이 바꾼 파일만 되돌립니다: 덮어쓰거나 지운 `SKILL.md`는 이전 바이트와 파일 모드 그대로 복원하고, 스킬 폴더는 그 실행이 새로 만든 경우에만 지웁니다.
 
 ## 플러그인 활성화 (requiresPackage)
 

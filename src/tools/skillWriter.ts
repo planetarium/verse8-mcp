@@ -66,10 +66,16 @@ export interface SkillWriteOptions {
 export type SkillFileChange =
   /** SKILL.md written where none existed; `dirCreated` = the directory too. */
   | { kind: "created"; name: string; dirCreated: boolean }
-  /** SKILL.md replaced; `previous` is what was there. */
-  | { kind: "overwritten"; name: string; previous: string }
+  /** SKILL.md replaced; `previous` is what was there, byte for byte. */
+  | { kind: "overwritten"; name: string; previous: FileSnapshot }
   /** SKILL.md deleted (retired or pruned); `previous` is what was there. */
-  | { kind: "removed"; name: string; previous: string };
+  | { kind: "removed"; name: string; previous: FileSnapshot };
+
+/** A file's exact bytes and permission bits, enough to put it back as it was. */
+export interface FileSnapshot {
+  bytes: Buffer;
+  mode: number;
+}
 
 /**
  * Normalize line endings — hashes must be deterministic regardless of the
@@ -190,31 +196,30 @@ export function writeSkillFiles(
     const sourceHash = computeSkillHash(sourceBody);
     const finalBytes = `${sourceBody.replace(/\s+$/, "")}\n\n${MARKER_PREFIX}${sourceHash}${MARKER_SUFFIX}\n`;
 
-    let destExists = false;
-    let destRaw = "";
-    try {
-      destRaw = fs.readFileSync(destPath, "utf8");
-      destExists = true;
-    } catch {
-      /* missing — will create */
-    }
+    const dest = snapshotFile(destPath);
 
-    if (!destExists) {
+    if (!dest) {
       // The directory may already exist without a SKILL.md — e.g. a retired
       // skill whose folder kept the user's notes. Then it is not ours.
       const dirCreated = !fs.existsSync(destDir);
       fs.mkdirSync(destDir, { recursive: true });
-      fs.writeFileSync(destPath, finalBytes);
+      try {
+        writeFileAtomic(destPath, finalBytes);
+      } catch (e) {
+        if (dirCreated) removeDirIfEmpty(destDir);
+        throw e;
+      }
       result.created.push(skill.name);
       opts.onChange?.({ kind: "created", name: skill.name, dirCreated });
       continue;
     }
+    const destRaw = dest.bytes.toString("utf8");
 
     // Dest exists. Four sub-cases.
     if (opts.overwriteAll) {
-      fs.writeFileSync(destPath, finalBytes);
+      writeFileAtomic(destPath, finalBytes, dest.mode);
       result.updated.push(skill.name);
-      opts.onChange?.({ kind: "overwritten", name: skill.name, previous: destRaw });
+      opts.onChange?.({ kind: "overwritten", name: skill.name, previous: dest });
       continue;
     }
 
@@ -243,26 +248,20 @@ export function writeSkillFiles(
     }
 
     // Source changed; our previous write is still intact; safe to overwrite.
-    fs.writeFileSync(destPath, finalBytes);
+    writeFileAtomic(destPath, finalBytes, dest.mode);
     result.updated.push(skill.name);
-    opts.onChange?.({ kind: "overwritten", name: skill.name, previous: destRaw });
+    opts.onChange?.({ kind: "overwritten", name: skill.name, previous: dest });
   }
 
   // INV-6: Skills outside the bundle are never touched
   for (const name of opts.retire ?? []) {
     if (bundledNames.has(name) || !isSafeSkillName(name)) continue;
-    const dir = path.join(skillsRoot, name);
-    const file = path.join(dir, "SKILL.md");
-    let raw = "";
-    try {
-      raw = fs.readFileSync(file, "utf8");
-    } catch {
-      continue; // never installed
-    }
-    if (!destIsUnedited(raw)) continue; // user-written or user-edited
+    const previous = snapshotFile(path.join(skillsRoot, name, "SKILL.md"));
+    if (!previous) continue; // never installed
+    if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-written or user-edited
     if (removeOwnSkillFile(skillsRoot, name)) {
       result.deactivated.push(name);
-      opts.onChange?.({ kind: "removed", name, previous: raw });
+      opts.onChange?.({ kind: "removed", name, previous });
     }
   }
 
@@ -283,17 +282,12 @@ export function writeSkillFiles(
       // i.e. dirs that contain a SKILL.md with our marker (proving we were
       // the ones who created it). A user-created skill dir has no marker
       // and survives even under pruneOrphaned.
-      const candidatePath = path.join(skillsRoot, entry.name, "SKILL.md");
-      let candidateRaw = "";
-      try {
-        candidateRaw = fs.readFileSync(candidatePath, "utf8");
-      } catch {
-        continue; // no SKILL.md in the dir, leave it alone
-      }
-      if (!destIsUnedited(candidateRaw)) continue; // user-edited or user-owned
+      const previous = snapshotFile(path.join(skillsRoot, entry.name, "SKILL.md"));
+      if (!previous) continue; // no SKILL.md in the dir, leave it alone
+      if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-edited or user-owned
       if (removeOwnSkillFile(skillsRoot, entry.name)) {
         result.pruned.push(entry.name);
-        opts.onChange?.({ kind: "removed", name: entry.name, previous: candidateRaw });
+        opts.onChange?.({ kind: "removed", name: entry.name, previous });
       }
     }
   }
@@ -313,10 +307,45 @@ function removeOwnSkillFile(skillsRoot: string, name: string): boolean {
   } catch {
     return false;
   }
+  removeDirIfEmpty(dir);
+  return true;
+}
+
+/** Bytes + mode of a regular file, or null when it is missing or not a file. */
+export function snapshotFile(p: string): FileSnapshot | null {
+  try {
+    const stat = fs.statSync(p);
+    if (!stat.isFile()) return null;
+    return { bytes: fs.readFileSync(p), mode: stat.mode & 0o7777 };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write via a sibling temp file and rename, so a failure (EACCES, ENOSPC, …)
+ * leaves the destination either untouched or fully written, never partial.
+ * `mode` carries over the permission bits of the file being replaced.
+ */
+export function writeFileAtomic(p: string, data: string | Buffer, mode?: number): void {
+  const tmp = path.join(
+    path.dirname(p),
+    `.${path.basename(p)}.verse8-tmp-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
+  try {
+    fs.writeFileSync(tmp, data, mode === undefined ? undefined : { mode });
+    if (mode !== undefined) fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+export function removeDirIfEmpty(dir: string): void {
   try {
     if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
   } catch {
     /* best-effort */
   }
-  return true;
 }

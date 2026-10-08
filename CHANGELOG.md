@@ -32,10 +32,14 @@ of every vendored skill in every project:
   `pruneOrphanedSkills` now follows the same rule (it used to delete the
   whole folder).
 - A failed attach rolls back only what that run changed: replaced or
-  removed `SKILL.md` files get their previous bytes back (including a
-  user's edit overwritten by `overwriteAllSkills`), and a skill folder is
-  removed only if that run created it. Previously the rollback deleted
-  every "created" skill folder recursively.
+  removed `SKILL.md` files get their exact previous bytes and file mode
+  back (including a user's edit overwritten by `overwriteAllSkills`), and
+  a skill folder is removed only if that run created it. Previously the
+  rollback deleted every "created" skill folder recursively. The rollback
+  is registered before the first skill is written, so a write that throws
+  partway through still undoes the earlier ones, and each `SKILL.md` is
+  written to a temp file and renamed into place so a failed write never
+  leaves a half-written file.
 - `installed.skillPlugins` reports where the dependency set came from and
   each plugin's verdict (`active[]` with `matched`, `inactive[]` with the
   reason). Re-run `verse8_attach` after adding a dependency.

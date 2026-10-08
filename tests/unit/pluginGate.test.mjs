@@ -409,6 +409,84 @@ test("attach: a failed first attach leaves no .claude/ behind; a failed overwrit
   }
 });
 
+/** Every `.SKILL.md.verse8-tmp-*` left anywhere under .claude/skills. */
+function leftoverTempFiles(root) {
+  const skillsDir = path.join(root, ".claude", "skills");
+  const out = [];
+  for (const name of fs.readdirSync(skillsDir)) {
+    const dir = path.join(skillsDir, name);
+    if (!fs.statSync(dir).isDirectory()) continue;
+    for (const f of fs.readdirSync(dir)) if (f.includes(".verse8-tmp-")) out.push(`${name}/${f}`);
+  }
+  return out;
+}
+
+// INV-6: Skills outside the bundle are never touched
+test("attach: a write that throws halfway through the skills still rolls back the ones already overwritten", () => {
+  const root = attachFixture(pkg({ incanto: "^1" }));
+  try {
+    applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    const skills = path.join(root, ".claude", "skills");
+    const edited = path.join(skills, "incanto-hud", "SKILL.md");
+    fs.appendFileSync(edited, "\nmy edit\n");
+    const editedBytes = fs.readFileSync(edited);
+    // A later skill (by URI order) cannot be written: its SKILL.md is a
+    // non-empty directory, so the rename onto it throws mid-loop.
+    const blocked = path.join(skills, "incanto-your-first-game", "SKILL.md");
+    fs.rmSync(blocked);
+    write(root, ".claude/skills/incanto-your-first-game/SKILL.md/keep", "x\n");
+
+    assert.throws(() =>
+      applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null, overwriteAllSkills: true }),
+    );
+
+    assert.deepEqual(fs.readFileSync(edited), editedBytes, "the earlier overwrite is rolled back");
+    assert.ok(fs.statSync(blocked).isDirectory(), "the blocker is untouched");
+    assert.deepEqual(leftoverTempFiles(root), [], "no temp file is left behind");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("attach: rollback restores the exact bytes and mode of overwritten and retired SKILL.md files", () => {
+  const root = attachFixture(pkg({ incanto: "^1", "@react-three/fiber": "^9" }));
+  try {
+    applyAttachmentArtifacts(root, { overwrite: true, walletAddress: null });
+    const skills = path.join(root, ".claude", "skills");
+    // Overwritten: not valid UTF-8, mode changed by the user.
+    const overwritten = path.join(skills, "r3f-tree", "SKILL.md");
+    const notUtf8 = Buffer.concat([Buffer.from("# mine\n"), Buffer.from([0xff, 0xfe, 0x00, 0xc3]), Buffer.from("\n")]);
+    fs.writeFileSync(overwritten, notUtf8);
+    fs.chmodSync(overwritten, 0o640);
+    // Retired: our unedited copy, mode changed by the user.
+    const retired = path.join(skills, "incanto-hud", "SKILL.md");
+    const retiredBytes = fs.readFileSync(retired);
+    fs.chmodSync(retired, 0o600);
+    const modes = { overwritten: fs.statSync(overwritten).mode & 0o777, retired: fs.statSync(retired).mode & 0o777 };
+
+    write(root, "package.json", pkg({ "@react-three/fiber": "^9" }));
+    assert.throws(
+      () =>
+        applyAttachmentArtifacts(root, {
+          overwrite: true,
+          walletAddress: null,
+          overwriteAllSkills: true,
+          __failAfter: "env",
+        }),
+      /__failAfter:env/,
+    );
+
+    assert.deepEqual(fs.readFileSync(overwritten), notUtf8);
+    assert.deepEqual(fs.readFileSync(retired), retiredBytes);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(overwritten).mode & 0o777, modes.overwritten);
+      assert.equal(fs.statSync(retired).mode & 0o777, modes.retired);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // INV-12: The plugin package gate fails closed
 test("attach: a project with no package.json gets no package-scoped plugin", () => {
   const root = attachFixture(undefined);
