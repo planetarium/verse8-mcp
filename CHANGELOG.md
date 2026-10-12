@@ -5,7 +5,7 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
+## [0.8.0] — 2026-10-12
 
 ### Changed — vendored skills follow the project's dependencies (#12)
 
@@ -68,6 +68,19 @@ Existing projects get the rule on their next `overwriteAgentsDoc` attach.
 The server instructions carry only the condition and point at AGENTS.md
 for the steps, so they stay within Claude Code's 2,048-char limit (now
 asserted by `serverInstructions.test.mjs`).
+
+### Fixed — "push to deploy" no longer leaks in from the vendored skills
+
+The vendored `gameserver-sdk` skill says a push builds `server/src/` and
+deploys it. That holds in the Agent8 web editor, which deploys a preview
+after each turn, but nothing deploys on push through this MCP. The
+AGENTS.md / CLAUDE.md template (deploy section, rule 7) and the server
+instructions (rule 7) now say so and that this overrides any skill text:
+`verse8_preview` builds and deploys the game server for testing,
+`verse8_deploy` publishes. agent8-skills itself is unchanged — the web
+editor container uses it too. Existing projects get the rule on their next
+`overwriteAgentsDoc` attach. Rule 7 of the server instructions is shorter
+(no longer names `@agent8/deploy --prod`) to stay within 2,048 chars.
 
 ## [0.7.0] — 2026-10-01
 

@@ -87,6 +87,13 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
 6. The verse id (\`VITE_AGENT8_VERSE\`) is the game's identity — VX Shop
    products and gameserver state are keyed by it. Never edit it to "fix" a
    deploy error.
+7. **A push deploys nothing here.** Some vendored skills (e.g.
+   \`gameserver-sdk\`) say pushing builds and deploys the game server —
+   that describes the Agent8 web editor, which deploys a preview after
+   each turn. Through this MCP, \`verse8_checkpoint\` and a push to
+   gitlab.verse8.io build and deploy nothing: run \`verse8_preview\` to
+   build + deploy the server for testing, \`verse8_deploy\` to publish.
+   This rule overrides any skill text.
 
 ## You are operating inside a Verse8 project
 

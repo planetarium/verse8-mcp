@@ -2,7 +2,7 @@
   "mcpServers": {
     "verse8": {
       "command": "npx",
-      "args": ["-y", "@verse8/mcp@0.7.0"]
+      "args": ["-y", "@verse8/mcp@0.8.0"]
     }
   }
 }
