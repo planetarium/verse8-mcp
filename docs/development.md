@@ -48,12 +48,11 @@ npm run audit
 
 ## Invariants
 
+The production invariants are listed in [security.md › Invariants](./security.md#invariants). Every test or source line that enforces one carries an `INV-n:` / `MCP-UP-n:` tag comment (`//` in TS/JS, `#` in `tests/smoke.sh`); list them with `git grep -nE '(INV|MCP-UP)-[0-9]+:'`. `bash scripts/verify-invariants.sh` (run in CI) fails when a listed invariant has no tag or a tag names an unlisted ID. When you change or move a tagged test, move its tag with it.
+
 ```bash
-bash scripts/verify-invariants.sh
 bash scripts/check-subtree-sha.sh
 ```
-
-`.omc/INVARIANTS.md`는 11개 프로덕션 invariant (token shell safety, marker secret-freedom, host allow-list, skill precedence, .env immutability, skill no-touch, overwrite-flag scoping, V8 on-wire contract, narrative location, single-shot session retry, token-gated discovery)를 회귀 테스트에 매핑합니다. 검증기가 참조된 모든 테스트 이름을 grep해 누락 시 빌드 실패시킵니다.
 
 ## Pre-publish guard
 

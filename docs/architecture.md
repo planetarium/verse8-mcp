@@ -1,6 +1,6 @@
 # 아키텍처
 
-자세한 모듈 레이아웃 / 데이터 플로우 / 11 invariants는 [.omc/ARCHITECTURE.md](../.omc/ARCHITECTURE.md) 참조.
+Invariants are listed in [security.md › Invariants](./security.md#invariants).
 
 ## 핵심 개념
 

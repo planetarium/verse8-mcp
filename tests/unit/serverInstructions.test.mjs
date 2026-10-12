@@ -27,6 +27,8 @@ test("server: InitializeResult.instructions is set with the verse8 mandatory pol
   assert.match(text, /--no-verify/);
   // Asset tooling pointer.
   assert.match(text, /image_asset_generate/);
+  // Claude Code truncates server instructions past 2,048 chars.
+  assert.ok(text.length <= 2048, `instructions are ${text.length} chars; Claude Code keeps 2048`);
 });
 
 test("prompts/list: registers /verse8:bootstrap, /verse8:attach, /verse8:status, /verse8:new-project", async () => {

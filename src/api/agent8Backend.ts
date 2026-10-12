@@ -18,6 +18,7 @@ import { safeHint } from "../util/redact.js";
 
 const DEFAULT_AGENT8_BACKEND_URL = "https://agent8-backend.verse8.io";
 
+// MCP-UP-1: `verse8_upload_asset` hits only the allow-listed backend
 function isAllowedAgent8BackendBase(url: string): boolean {
   const p = parseOverrideHost(url);
   if (!p) return false;
@@ -309,6 +310,7 @@ function classifyUploadStatus(
   return "upload_failed";
 }
 
+// MCP-UP-1: `verse8_upload_asset` hits only the allow-listed backend
 /**
  * POST /api/upload-attachment — multipart file upload to the Verse8 CDN.
  *
@@ -390,6 +392,7 @@ export interface ParsedCloneCommand {
   passthroughFlags: string[];
 }
 
+// INV-1: Token never hits a shell
 export function parseCloneCommand(cmd: string): ParsedCloneCommand {
   if (typeof cmd !== "string") {
     throw new Error(

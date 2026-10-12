@@ -1,0 +1,17 @@
+{
+  "skills": [
+    "ads-impl",
+    "leaderboard-impl",
+    "local-cache-impl",
+    "verse8-auth-impl",
+    "vx-shop-impl"
+  ],
+  "plugins": [
+    "gameserver",
+    "incanto",
+    "localization",
+    "r3f",
+    "vibe-starter-3d",
+    "vibe-starter-3d-environment"
+  ]
+}

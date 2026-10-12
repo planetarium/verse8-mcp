@@ -35,12 +35,14 @@ test("resolveCdnPath: empty string -> cdn_path_required", () => {
   assert.equal(r.error, "cdn_path_required");
 });
 
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 test("resolveCdnPath: leading slash rejected", () => {
   const r = resolveCdnPath({ cdnPath: "/assets/x" });
   assert.equal(r.ok, false);
   assert.equal(r.error, "cdn_path_invalid");
 });
 
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 test("resolveCdnPath: parent traversal rejected", () => {
   const r = resolveCdnPath({ cdnPath: "assets/../secret" });
   assert.equal(r.ok, false);
@@ -53,6 +55,7 @@ test("resolveCdnPath: NUL byte rejected", () => {
   assert.equal(r.error, "cdn_path_invalid");
 });
 
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 test("resolveCdnPath: double-slash (empty segment) rejected", () => {
   const r = resolveCdnPath({ cdnPath: "assets//double" });
   assert.equal(r.ok, false);

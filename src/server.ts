@@ -95,6 +95,8 @@ const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session
 
 7) **Deploy / publish** → use \`verse8_deploy\` (call with \`dryRun: true\` first and confirm with the user — publishing is public). NEVER run \`@agent8/deploy --prod\` or a build+upload via Bash.
 
+8) **3D engine: Incanto by default.** On \`vibe-starter-3d\`, \`vibe-starter-3d-environment\`, \`@react-three/fiber\` or \`incanto\`? Keep it; never add a second 3D engine. A 3D game with none of those (nor \`three\`) uses Incanto — steps in AGENTS.md.
+
 Violating any of 2–5 will either corrupt git state (rejected commit), desynchronize preview from repo (2 and 3), or silently lose the V8 metadata that Verse8 tooling depends on.`;
 
 const BASE_TOOLS: Tool[] = [
@@ -137,7 +139,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_attach",
     description:
-      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (removes only files bearing our hash marker), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (deletes only our unedited SKILL.md of skills no longer bundled; other files in the folder stay), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
     inputSchema: zodToJsonSchema(attachInputSchema),
   },
 ];
@@ -227,6 +229,7 @@ export function createServer(): Server {
     const tools: Tool[] = [...BASE_TOOLS];
 
     if (token) {
+      // INV-11: Tool discovery is token-gated, not cwd-gated
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
       tools.push(UPLOAD_ASSET_TOOL);

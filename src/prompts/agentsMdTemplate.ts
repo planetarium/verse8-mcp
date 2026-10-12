@@ -302,6 +302,25 @@ to \`verse8_new_project_confirm\`. A persistent store is a 0.4.x follow-up.
 - After confirm returns, pass \`projectDir\` on every subsequent tool call
   until the user restarts the MCP host from inside the new directory.
 
+## 3D engine: Incanto by default
+
+A project that depends on \`vibe-starter-3d\`, \`vibe-starter-3d-environment\`,
+\`@react-three/fiber\` or \`incanto\` gets that stack's skills and rules
+below (\`verse8_attach\` installs them from \`package.json\`). Keep using that
+stack — never add a second 3D engine next to it.
+
+When the user wants a **3D** game and \`package.json\` depends on none of
+those packages (nor on \`three\`), use **Incanto**:
+
+1. Before the first edit, read \`verse8://skill/incanto-on-agent8/SKILL.md\`
+   and \`verse8://skill/incanto-your-first-game/SKILL.md\` via MCP
+   \`resources/read\` — they are not installed in this project yet.
+2. Add the engine with \`bun add incanto three\`, then re-run
+   \`verse8_attach\` with \`overwriteAgentsDoc: true\` so the Incanto skills
+   and rules are installed and listed here.
+
+A 2D game stays on the 2D stack (Phaser) unless the user asks for Incanto.
+
 {{SKILLS_CATALOG}}
 
 ## If you are not sure this project is attached

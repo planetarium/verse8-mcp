@@ -182,6 +182,8 @@ test("writeSkillFiles: user edit preserved, others update (AC-8)", () => {
   }
 });
 
+// INV-6: Skill no-touch invariant
+// INV-7: `overwriteAllSkills: true` does not cascade to .env (and vice-versa)
 test("writeSkillFiles: overwriteAll bypasses user-edit protection (AC-9)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();
@@ -203,6 +205,7 @@ test("writeSkillFiles: overwriteAll bypasses user-edit protection (AC-9)", () =>
   }
 });
 
+// INV-6: Skill no-touch invariant
 test("writeSkillFiles: unrelated user skill not touched (AC-15)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();
@@ -227,6 +230,7 @@ test("writeSkillFiles: unrelated user skill not touched (AC-15)", () => {
   }
 });
 
+// INV-6: Skill no-touch invariant
 test("writeSkillFiles: pruneOrphaned removes only marker-bearing orphans (AC-16)", () => {
   const src = tmpSourceDir();
   const proj = tmpProject();
@@ -252,6 +256,92 @@ test("writeSkillFiles: pruneOrphaned removes only marker-bearing orphans (AC-16)
     assert.deepEqual(r2.pruned, ["removed-upstream"]);
     assert.ok(!fs.existsSync(path.join(proj, ".claude/skills/removed-upstream")));
     assert.ok(fs.existsSync(path.join(proj, ".claude/skills/my-custom/SKILL.md")));
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+// INV-6: Skill no-touch invariant
+test("writeSkillFiles: prune and retire delete only our SKILL.md, never the user's files next to it", () => {
+  const src = tmpSourceDir();
+  const proj = tmpProject();
+  try {
+    const skills = [writeSourceSkill(src, "orphan", "# O\n"), writeSourceSkill(src, "inactive", "# I\n")];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false });
+    for (const name of ["orphan", "inactive"]) {
+      fs.writeFileSync(path.join(proj, ".claude/skills", name, "NOTES.md"), "mine\n");
+    }
+    const changes = [];
+    const r = writeSkillFiles(proj, [], {
+      overwriteAll: false,
+      pruneOrphaned: true,
+      retire: ["inactive"],
+      onChange: (c) => changes.push(c),
+    });
+    assert.deepEqual(r.deactivated, ["inactive"]);
+    assert.deepEqual(r.pruned, ["orphan"]);
+    for (const name of ["orphan", "inactive"]) {
+      assert.ok(!fs.existsSync(path.join(proj, ".claude/skills", name, "SKILL.md")));
+      assert.equal(fs.readFileSync(path.join(proj, ".claude/skills", name, "NOTES.md"), "utf8"), "mine\n");
+    }
+    assert.deepEqual(
+      changes.map((c) => [c.kind, c.name, c.previous.bytes.toString("utf8").includes("verse8-skill-hash")]),
+      [
+        ["removed", "inactive", true],
+        ["removed", "orphan", true],
+      ],
+    );
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test("writeSkillFiles: onChange tells a new directory from an existing one", () => {
+  const src = tmpSourceDir();
+  const proj = tmpProject();
+  try {
+    const skills = [writeSourceSkill(src, "fresh", "# F\n"), writeSourceSkill(src, "kept-dir", "# K\n")];
+    fs.mkdirSync(path.join(proj, ".claude/skills/kept-dir"), { recursive: true });
+    fs.writeFileSync(path.join(proj, ".claude/skills/kept-dir/NOTES.md"), "mine\n");
+    const changes = [];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false, onChange: (c) => changes.push(c) });
+    assert.deepEqual(changes, [
+      { kind: "created", name: "fresh", dirCreated: true },
+      { kind: "created", name: "kept-dir", dirCreated: false },
+    ]);
+    // An update reports the bytes it replaced.
+    fs.writeFileSync(path.join(src, "fresh.md"), "# F v2\n");
+    const freshPath = path.join(proj, ".claude/skills/fresh/SKILL.md");
+    const before = fs.readFileSync(freshPath);
+    const updates = [];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false, onChange: (c) => updates.push(c) });
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].kind, "overwritten");
+    assert.equal(updates[0].name, "fresh");
+    assert.deepEqual(updates[0].previous.bytes, before);
+    assert.equal(typeof updates[0].previous.mode, "number");
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test("writeSkillFiles: an update keeps the file's mode and leaves no temp file", { skip: process.platform === "win32" }, () => {
+  const src = tmpSourceDir();
+  const proj = tmpProject();
+  try {
+    const skills = [writeSourceSkill(src, "a", "# A\n")];
+    writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false });
+    const dest = path.join(proj, ".claude/skills/a/SKILL.md");
+    fs.chmodSync(dest, 0o640);
+    fs.writeFileSync(path.join(src, "a.md"), "# A v2\n");
+    const r = writeSkillFiles(proj, skills, { overwriteAll: false, pruneOrphaned: false });
+    assert.deepEqual(r.updated, ["a"]);
+    assert.match(fs.readFileSync(dest, "utf8"), /# A v2/);
+    assert.equal(fs.statSync(dest).mode & 0o777, 0o640);
+    assert.deepEqual(fs.readdirSync(path.dirname(dest)), ["SKILL.md"]);
   } finally {
     fs.rmSync(src, { recursive: true, force: true });
     fs.rmSync(proj, { recursive: true, force: true });

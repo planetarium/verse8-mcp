@@ -7,6 +7,68 @@ breaking changes when clearly documented.
 
 ## [Unreleased]
 
+### Changed — vendored skills follow the project's dependencies (#12)
+
+`verse8_attach` (and the last step of `verse8_new_project_confirm`) now
+installs agent8-skills plugins the way the Agent8 container does, instead
+of every vendored skill in every project:
+
+- A plugin whose `plugin.json` declares `requiresPackage` is active only
+  when the project's `package.json` lists one of those packages under
+  `dependencies` or `devDependencies`. No `requiresPackage` (or `[]`) →
+  always active. A malformed `requiresPackage`, a missing or broken
+  `plugin.json`, or a non-empty `tags` → inactive, never "everyone".
+  No `package.json` → only ungated plugins. Top-level skills are always
+  installed. An Incanto project no longer gets the R3F / vibe-starter-3d
+  skills, and vice versa.
+- Only active skills go to `.claude/skills/` and the AGENTS.md / CLAUDE.md
+  catalog. Active plugins' `instructions/AGENTS.md` (e.g. the GameServer
+  SDK 1.x / 2.x selection rules) are composed after the catalog.
+- **Behavior change:** an inactive plugin's skill that verse8-mcp
+  installed earlier and the user has not edited is removed on re-attach
+  (`installed.skills.deactivated`), regardless of `pruneOrphanedSkills`.
+  User-written or edited copies stay, and so does any other file in the
+  skill folder: only our `SKILL.md` is deleted, the folder only if empty.
+  `pruneOrphanedSkills` now follows the same rule (it used to delete the
+  whole folder).
+- A failed attach rolls back only what that run changed: replaced or
+  removed `SKILL.md` files get their exact previous bytes and file mode
+  back (including a user's edit overwritten by `overwriteAllSkills`), and
+  a skill folder is removed only if that run created it. Previously the
+  rollback deleted every "created" skill folder recursively. The rollback
+  is registered before the first skill is written, so a write that throws
+  partway through still undoes the earlier ones, and each `SKILL.md` is
+  written to a temp file and renamed into place so a failed write never
+  leaves a half-written file.
+- `installed.skillPlugins` reports where the dependency set came from and
+  each plugin's verdict (`active[]` with `matched`, `inactive[]` with the
+  reason). Re-run `verse8_attach` after adding a dependency.
+- The vendor sync now also copies each public plugin's `plugin.json` and
+  `instructions/AGENTS.md`, and refuses a malformed `requiresPackage`.
+  `skills-vendor/` is re-vendored from planetarium/agent8-skills@11a5c97:
+  plugin skills move under `plugins/<p>/skills/` and several were renamed
+  upstream (`gameserver-sdk-v2` is gone — 2.x is now `gameserver-sdk`,
+  1.x `gameserver-sdk-v1`; `how-to-use-3d-tree` → `r3f-tree`, `input-system-guide` →
+  `r3f-input-system`, …). Old copies in already-attached projects are
+  orphans; `pruneOrphanedSkills: true` removes the unedited ones.
+- The MCP `resources/list` still exposes every bundled skill.
+
+### Added — Incanto is the default 3D engine (#12)
+
+The package gate only covers projects that already depend on a 3D stack.
+The server instructions and the AGENTS.md / CLAUDE.md template now say
+what to do when none is there: a 3D game in a project that depends on
+none of `vibe-starter-3d`, `vibe-starter-3d-environment`,
+`@react-three/fiber`, `incanto` (or `three`) uses Incanto — read
+`incanto-on-agent8` and `incanto-your-first-game` through
+`resources/read`, `bun add incanto three`, then re-run `verse8_attach`
+with `overwriteAgentsDoc: true` so the Incanto plugin activates. A
+project already on one of those stacks keeps it; 2D games stay on Phaser.
+Existing projects get the rule on their next `overwriteAgentsDoc` attach.
+The server instructions carry only the condition and point at AGENTS.md
+for the steps, so they stay within Claude Code's 2,048-char limit (now
+asserted by `serverInstructions.test.mjs`).
+
 ### Added — Claude Code mod: gatekeeper + preview reminder (plugin only)
 
 `plugins/verse8/hooks/verse8.mjs` is loaded by Claude Code 2.1.287+ next to

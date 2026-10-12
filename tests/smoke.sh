@@ -449,6 +449,7 @@ test_ac5_image_proxy_bearer() {
 # Assertion: the second tools/call succeeds and two initialize calls
 # were observed (the lazy one at tools/list + the reinit on retry).
 # ===========================================================================
+# INV-10: MCP proxy session retry is single-shot
 test_session_expire_retry() {
   start_image_mock "--session-expire-once"
   make_tmpdir
@@ -865,7 +866,7 @@ user-authored content, no hash marker'
 # SKILL source file out, running attach twice, then restoring.
 # ===========================================================================
 test_skills_no_cascade_delete() {
-  local victim_src="$REPO_ROOT/skills-vendor/agent8-skills/skills/gameserver-sdk.md"
+  local victim_src="$REPO_ROOT/skills-vendor/agent8-skills/plugins/gameserver/skills/gameserver-sdk.md"
   local victim_backup="/tmp/verse8-smoke-gameserver-sdk.md.bak"
 
   if [ ! -f "$victim_src" ]; then
@@ -1368,7 +1369,10 @@ test_upload_happy_path() {
   stop_agent8_mock
   rm -rf "$TEST_TMPDIR"
 
-  if json_contains "$resp" '\\"ok\\":true' && json_contains "$resp" 'agent8-games.verse8.io'; then
+  # The tool text is JSON.stringify(…, null, 2) inside a JSON string: `\"ok\": true`
+  # (one backslash, a space). json_contains is a literal substring match.
+  if { json_contains "$resp" '\"ok\":true' || json_contains "$resp" '\"ok\": true'; } \
+    && json_contains "$resp" 'agent8-games.verse8.io'; then
     pass "upload_happy_path"
   else
     fail "upload_happy_path" "$resp"

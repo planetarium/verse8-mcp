@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "requiresPackage": ["@react-three/fiber"],
+  "assets": []
+}

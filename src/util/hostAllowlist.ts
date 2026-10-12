@@ -15,6 +15,7 @@ export interface ParsedOverrideHost {
   isLoopback: boolean;
 }
 
+// INV-3: URL overrides are host-validated
 export function parseOverrideHost(url: string): ParsedOverrideHost | null {
   if (typeof url !== "string" || url.length === 0) return null;
   let parsed: URL;

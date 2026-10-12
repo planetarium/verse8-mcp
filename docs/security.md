@@ -14,4 +14,31 @@
 
 - **Secret-pattern fuzz tests** — `tests/unit/redact.test.mjs` + `tests/unit/dispatchRedaction.test.mjs`가 8 가지 secret shape에 대해 redactor + dispatch envelope wrapping을 회귀 검증.
 
-자세한 production-hardening 플랜은 [.omc/plans/production-hardening-review.md](../.omc/plans/production-hardening-review.md) 참조.
+## Invariants
+
+Promises that must survive any refactor. Each test case or source line that enforces one carries a tag comment `<ID>: <title>` (`//` in TS/JS, `#` in `tests/smoke.sh`), e.g. `// INV-3: URL overrides are host-validated`. To find them:
+
+```bash
+git grep -nE '(INV|MCP-UP)-[0-9]+:'   # every tag
+git grep -n 'INV-3:'                  # one invariant
+```
+
+When you change or move a tagged test, move its tag with it. A new invariant takes the next free number.
+
+| ID | Invariant |
+|---|---|
+| INV-1 | **The token never hits a shell.** The GitLab PAT is parsed by `parseCloneCommand` and passed only as `execFileSync` argv. A backend-supplied slug containing `..`, `/`, `\`, or NUL is rejected |
+| INV-2 | **`.verse8/project.json` carries no secrets.** The payload is `{version, projectId, attachedAt}` only |
+| INV-3 | **URL overrides are host-validated.** Every env-driven base URL goes through `parseOverrideHost` plus a per-caller `isAllowed*` predicate (`*.verse8.io` + loopback); a rejected value falls back to the default URL |
+| INV-4 | **Skill merge precedence is `core > vendor > cache`.** `listSkillResources` calls `Map.set` in cache → vendor → core order, so the last write wins |
+| INV-5 | **`.env` ACCOUNT/VERSE is immutable once set.** A mismatch returns `mismatch-preserved` with a hint pointing at `verse8_attach({overwriteEnv: true})` |
+| INV-6 | **Skills outside the bundle are never touched.** `writeSkillFiles` writes only to directories named after bundled skills. `pruneOrphanedSkills` and retiring an inactive plugin's skill remove a non-bundled skill only when its `SKILL.md` carries an unedited verse8-mcp hash marker, and then delete only that `SKILL.md` (the directory only if it is left empty), never other files in it. An attach rollback undoes only the file changes that run made: it restores the exact bytes and file mode of each `SKILL.md` it replaced or removed (writes go through a temp file and rename), and removes a skill directory only if that run created it. `overwriteAllSkills` is the one escape hatch: it overwrites bundled-name directories even when the user edited them |
+| INV-7 | **Overwrite flags stay in their lane.** `overwriteAllSkills` affects skills only, `overwriteEnv` affects `.env` only |
+| INV-8 | **The V8 commit format is an on-wire contract.** `buildV8CommitMessage` is deterministic, the parser accepts everything the builder emits, and structurally drifted messages are rejected |
+| INV-9 | **Narrative lives inside `<V8AssistantMessage>`.** `<problemStatement>` / `<workSummary>` are emitted there and duplicated into the `<V8AgentMessage>` JSON. The legacy `## Problem` / `## Work` layout is parsed but never emitted |
+| INV-10 | **Proxy session retry is single-shot.** On session expiry the cache is evicted and the call reinitialized and retried once; two consecutive failures surface as-is |
+| INV-11 | **Tool discovery is token-gated, not cwd-gated.** With a token, `verse8_checkpoint`, `verse8_preview` and proxy tools are listed; the project is re-validated at call time |
+| INV-12 | **The plugin package gate fails closed.** A vendored plugin with a malformed `requiresPackage`, a missing or unparseable `plugin.json`, or non-empty `tags` is inactive, and a missing `package.json` is an empty dependency set. A scope nobody can read never degrades into "every project" |
+| MCP-UP-1 | **`verse8_upload_asset` talks only to the allow-listed backend.** The URL comes from `getAgent8BackendBaseUrl()` gated by `isAllowedAgent8BackendBase` |
+| MCP-UP-2 | **`cdnPath` traversal is rejected before the network.** `..`, a leading `/`, empty segments, NUL, and a `filename` containing path separators |
+| MCP-UP-3 | **`ATTACHMENT_EXTS` is the pre-network extension gate.** Kept in sync by hand with `planetarium/agent8-backend/src/config/constants.ts` |

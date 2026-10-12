@@ -25,10 +25,6 @@ import { CREDIT_RECHARGE_URL } from "../constants.js";
  * to review. `confirm` runs `/api/select-template` → token-check / grant →
  * `git clone` → `applyAttachmentArtifacts`, producing a fully attached verse8
  * project on disk.
- *
- * See `.omc/plans/case2-new-project-flow.md` for the consensus design (the
- * plan was Architect + Critic reviewed over 2 iterations; all 14 ACs are
- * covered by the unit / smoke suites).
  */
 
 export const newProjectStartInputSchema = z
@@ -556,6 +552,7 @@ export async function runNewProjectConfirm(
         "git",
         [
           "clone",
+          // INV-1: Token never hits a shell
           ...parsed.passthroughFlags,
           "-b",
           parsed.branch,

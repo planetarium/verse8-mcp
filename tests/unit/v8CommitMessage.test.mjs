@@ -19,6 +19,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 
+// INV-8: V8 commit format is the on-wire contract
 test("deterministic build: same input produces identical output", () => {
   const input = {
     userPrompt: "add a red sprite",
@@ -36,6 +37,7 @@ test("deterministic build: same input produces identical output", () => {
   assert.ok(a.includes("<V8AssistantMessage>"));
 });
 
+// INV-8: V8 commit format is the on-wire contract
 test("round-trip: build then parse yields valid message", () => {
   const msg = buildV8CommitMessage({
     userPrompt: "fix combo animation",
@@ -57,6 +59,7 @@ test("round-trip: build then parse yields valid message", () => {
   assert.equal(parsed.hasReasoning, true);
 });
 
+// INV-8: V8 commit format is the on-wire contract
 test("parser rejects message missing V8AgentMessage", () => {
   const broken = [
     "subject",
@@ -74,6 +77,7 @@ test("parser rejects message missing V8AgentMessage", () => {
   assert.ok(p.issues.some((i) => /V8AgentMessage/.test(i)));
 });
 
+// INV-8: V8 commit format is the on-wire contract
 test("parser rejects message missing V8UserMessage", () => {
   const broken = [
     "subject",
@@ -89,6 +93,7 @@ test("parser rejects message missing V8UserMessage", () => {
   assert.ok(p.issues.some((i) => /V8UserMessage/.test(i)));
 });
 
+// INV-8: V8 commit format is the on-wire contract
 test("parser rejects message missing V8AssistantMessage", () => {
   const broken = [
     "subject",
@@ -107,6 +112,7 @@ test("parser rejects message missing V8AssistantMessage", () => {
   assert.ok(p.issues.some((i) => /V8AssistantMessage/.test(i)));
 });
 
+// INV-8: V8 commit format is the on-wire contract
 test("parser accepts existing sample commit from sample/match-three-game", () => {
   // Pick the most recent V8-format commit on the sample repo and verify our
   // parser treats it as valid. This protects against drift between the
@@ -152,6 +158,7 @@ test("truncation applies past 4000-char toolCall payloads", () => {
   assert.equal(msg.includes(bigString), false);
 });
 
+// INV-9: Narrative location = inside `<V8AssistantMessage>`
 test("narrative: problemStatement + workSummary nest inside V8AssistantMessage AND duplicate into V8AgentMessage JSON", () => {
   const msg = buildV8CommitMessage({
     userPrompt: "add a start screen",
@@ -174,6 +181,7 @@ test("narrative: problemStatement + workSummary nest inside V8AssistantMessage A
   assert.ok(msg.match(/"workSummary":"[^"]+/));
 });
 
+// INV-9: Narrative location = inside `<V8AssistantMessage>`
 test("narrative: XML order inside V8AssistantMessage — problemStatement, workSummary, reasoning, toolCall", () => {
   const msg = buildV8CommitMessage({
     userPrompt: "refactor X",
@@ -236,6 +244,7 @@ test("narrative: parser extracts XML narrative even when V8AgentMessage JSON lac
   );
 });
 
+// INV-9: Narrative location = inside `<V8AssistantMessage>`
 test("narrative: parser falls back to markdown section scrape when JSON lacks fields", () => {
   // Hand-craft a message where the markdown headers are present but the
   // V8AgentMessage JSON doesn't carry the narrative. Simulates a

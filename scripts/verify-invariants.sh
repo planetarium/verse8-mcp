@@ -1,84 +1,55 @@
 #!/usr/bin/env bash
 # verify-invariants.sh
 #
-# Parse .omc/INVARIANTS.md and confirm every referenced test case / source
-# pattern actually exists in the codebase. Exits 0 when every reference
-# resolves; exits 1 with the missing list when any is absent.
+# The invariants live in docs/security.md › Invariants (a `| INV-n | … |`
+# table); the code and tests that enforce one carry an `INV-n: <title>` /
+# `MCP-UP-n: <title>` tag comment. This gate keeps the two in step:
 #
-# Reference shapes recognized:
-#   - unit:   `tests/unit/<file>.test.mjs` :: `<case-name>`
-#   - smoke:  `tests/smoke.sh` :: `<test-fn-name>`
-#   - source: `src/<path>.ts` :: `<grep-pattern>`
+#   - every ID in the table is tagged at least once outside docs/
+#   - every tag outside docs/ names an ID that is in the table
 #
-# Usage: bash scripts/verify-invariants.sh
-# CI: exits 1 with a diff-friendly missing-references list on failure.
+# Exits 0 when both hold, 1 with the offending IDs otherwise.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-INVARIANTS_FILE="$REPO_ROOT/.omc/INVARIANTS.md"
+cd "$REPO_ROOT"
 
-if [ ! -f "$INVARIANTS_FILE" ]; then
-  echo "ERROR: $INVARIANTS_FILE not found" >&2
+TABLE="docs/security.md"
+ID_RE='(INV|MCP-UP)-[0-9]+'
+
+if [ ! -f "$TABLE" ]; then
+  echo "verify-invariants: $TABLE not found" >&2
   exit 1
 fi
 
-missing=0
-total=0
-
-# Each reference line in INVARIANTS.md looks like:
-#   - unit: `tests/unit/foo.test.mjs` :: `case name`
-#   - smoke: `tests/smoke.sh` :: `test_name`
-#   - source: `src/foo.ts` :: `regex pattern`
-#
-# Pull every ref line and dispatch on the kind.
-while IFS= read -r line; do
-  total=$((total + 1))
-  kind="$(printf '%s' "$line" | sed -E 's/^- ([a-z]+): .*/\1/')"
-  file="$(printf '%s' "$line" | sed -E 's/^- [a-z]+: `([^`]+)`.*/\1/')"
-  ref="$(printf '%s' "$line" | sed -E 's/^- [a-z]+: `[^`]+` :: `(.+)`$/\1/')"
-
-  full_path="$REPO_ROOT/$file"
-  if [ ! -f "$full_path" ]; then
-    printf 'MISSING file: %s\n' "$file" >&2
-    missing=$((missing + 1))
-    continue
-  fi
-
-  case "$kind" in
-    unit)
-      # node:test cases register via test("name", ...) — escape regex specials
-      # in `ref` so colons and dashes don't blow up the grep. Match either
-      # double or single quotes around the case name.
-      pattern="$(printf '%s' "$ref" | sed -E 's/[][\\\.*+?(){}|^$/]/\\&/g')"
-      if ! grep -E "test\([\"']${pattern}[\"']" "$full_path" >/dev/null 2>&1; then
-        printf 'MISSING unit case: %s :: %s\n' "$file" "$ref" >&2
-        missing=$((missing + 1))
-      fi
-      ;;
-    smoke)
-      # smoke harness uses bash function names; just grep the literal name.
-      if ! grep -F "$ref" "$full_path" >/dev/null 2>&1; then
-        printf 'MISSING smoke ref: %s :: %s\n' "$file" "$ref" >&2
-        missing=$((missing + 1))
-      fi
-      ;;
-    source)
-      # ref is a regex pattern; test it via grep -E.
-      if ! grep -E "$ref" "$full_path" >/dev/null 2>&1; then
-        printf 'MISSING source pattern: %s :: %s\n' "$file" "$ref" >&2
-        missing=$((missing + 1))
-      fi
-      ;;
-    *)
-      printf 'WARNING unknown reference kind "%s" in line: %s\n' "$kind" "$line" >&2
-      ;;
-  esac
-done < <(grep -E '^- (unit|smoke|source): `' "$INVARIANTS_FILE")
-
-if [ "$missing" -gt 0 ]; then
-  printf '\nverify-invariants: %d / %d references missing\n' "$missing" "$total" >&2
+defined="$(grep -oE "^\| ${ID_RE} \|" "$TABLE" | grep -oE "$ID_RE" | LC_ALL=C sort -u)"
+if [ -z "$defined" ]; then
+  echo "verify-invariants: no invariant rows found in $TABLE" >&2
   exit 1
 fi
-printf 'verify-invariants: OK — all %d references resolved\n' "$total"
-exit 0
+
+# Tags in tracked files, docs excluded (docs describe the tags, they do not
+# enforce anything).
+tagged="$(git grep -ohE "${ID_RE}:" -- . ':!docs' ':!CHANGELOG.md' | tr -d ':' | LC_ALL=C sort -u || true)"
+
+untagged="$(LC_ALL=C comm -23 <(echo "$defined") <(echo "$tagged"))"
+unknown="$(LC_ALL=C comm -13 <(echo "$defined") <(echo "$tagged"))"
+
+status=0
+if [ -n "$untagged" ]; then
+  echo "verify-invariants: no code or test carries a tag for:" >&2
+  echo "$untagged" | sed 's/^/  /' >&2
+  status=1
+fi
+if [ -n "$unknown" ]; then
+  echo "verify-invariants: tags name IDs missing from $TABLE:" >&2
+  for id in $unknown; do
+    git grep -nE "${id}:" -- . ':!docs' ':!CHANGELOG.md' | sed 's/^/  /' >&2
+  done
+  status=1
+fi
+if [ "$status" -eq 0 ]; then
+  echo "verify-invariants: OK — $(echo "$defined" | wc -l | tr -d ' ') invariants, each tagged"
+fi
+exit "$status"
