@@ -73,7 +73,7 @@ Prompts you give to generation tools and the files you upload are sent to these 
 ## Requirements
 
 - Node.js 18.17 or later (for `npx`), `git`, and [Bun](https://bun.sh) for Verse8 projects.
-- A Verse8 account.
+- A Verse8 account with credits. Installing the plugin is free; creating a project and some asset tools use Verse8 credits. A new account gets no credits at sign-up — verify a phone number and claim the one-time welcome credit. Check the balance and recharge at <https://verse8.io/settings>; an `insufficient_credits` error means the account has run out (see [Troubleshooting](https://github.com/planetarium/verse8-mcp#insufficient_credits)).
 
 ## Support
 
