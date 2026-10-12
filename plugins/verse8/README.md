@@ -25,6 +25,15 @@ Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Cl
 | `verse8_deploy` | Build the game and publish it (first release or update) |
 | `image_*`, `music_generate`, `sfx_generate`, and other generators | Asset generation through Verse8's hosted services |
 
+## Claude Code mod (2.1.287 or later)
+
+On Claude Code 2.1.287+, the plugin also loads a small in-session module (`hooks/verse8.mjs`) that runs only inside a Verse8 project (a directory with `.verse8/project.json`):
+
+- **Gatekeeper** — a Bash command that would bypass the Verse8 workflow is refused before it runs, and Claude is told which tool to use instead: `git commit` → `verse8_checkpoint`; `--no-verify` → not allowed; `bun run dev` / `npm run dev` / a `vite` that starts a server (not `vite build`) → `verse8_preview`. Text inside quotes or a heredoc is not read as a command. The git hooks stay in place as the hard layer; the mod only catches the mistake earlier. If the mod itself fails, the command goes through as before.
+- **Preview reminder** — at the end of every turn the mod asks git what differs from the last preview (or from session start before any): files committed since then plus files the working tree changed. If anything does, a line above the prompt says how many files changed, whatever edited them (Edit, a Bash `sed -i`, a subagent, a checkpoint commit, a rebase). It disappears on the next preview.
+
+Older Claude Code versions ignore the module and keep the MCP server only. The mod keeps its state in Claude Code's plugin state, runs only `git rev-parse`, `git diff --name-only` and `git status --porcelain` in the project, reads nothing but `.verse8/project.json`, and sends nothing anywhere.
+
 ## What it runs, sends and stores
 
 Once you are signed in, the server lists its tools at the start of every session — in any directory — and that lookup contacts Verse8's asset services (`mcp-*-svc.verse8.io`) with your token. Everything else below happens only in a Verse8 project, or when you ask Claude to sign in or create one.

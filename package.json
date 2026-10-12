@@ -45,7 +45,8 @@
     "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
     "sync:agent8-skills": "node scripts/sync-agent8-skills.mjs",
     "audit": "npm audit --audit-level=high",
-    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs"
+    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs",
+    "test:mod": "claude plugin validate plugins/verse8 && claude plugin test plugins/verse8"
   },
   "engines": {
     "node": ">=18.17"

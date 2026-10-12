@@ -10,6 +10,7 @@
   "homepage": "https://github.com/planetarium/verse8-mcp#readme",
   "repository": "https://github.com/planetarium/verse8-mcp",
   "license": "MIT",
+  "types": "./types/index.d.ts",
   "keywords": [
     "verse8",
     "agent8",
