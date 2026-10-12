@@ -82,6 +82,17 @@ editor container uses it too. Existing projects get the rule on their next
 `overwriteAgentsDoc` attach. Rule 7 of the server instructions is shorter
 (no longer names `@agent8/deploy --prod`) to stay within 2,048 chars.
 
+### Security — dependency updates (`npm audit` clean)
+
+`@modelcontextprotocol/sdk` 1.29.0 → 1.32.1, and the dependency range is
+now `^1.32.1` so `npx` installs (which ignore our lockfile) get the fixed
+SDK too. This clears the high / critical advisories in the SDK and its
+transitive deps (`hono` 4.13.13, `@hono/node-server` 2.1.4 — inside the
+SDK's own `^1.19.9 || ^2.0.5` range, unused by our stdio transport —
+`fast-uri` 3.1.8, `ip-address` 10.7.4, `proxy-addr` 2.0.8, `qs` 6.16.0,
+`express-rate-limit` 8.7.1, `body-parser` 2.3.0). Dev only: `tsx` 4.21.0 →
+4.23.15 (esbuild 0.28.2). `npm audit` reports 0 vulnerabilities.
+
 ## [0.7.0] — 2026-10-01
 
 ### Added — `verse8_deploy`: publish from the MCP (#7, #8)
