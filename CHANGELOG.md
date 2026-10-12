@@ -74,11 +74,16 @@ asserted by `serverInstructions.test.mjs`).
 `plugins/verse8/hooks/verse8.mjs` is loaded by Claude Code 2.1.287+ next to
 the MCP server (`hooks/hooks.json` `modules`). Inside a Verse8 project it
 refuses, before they run, Bash calls that bypass the workflow (`git commit`,
-`--no-verify`, `bun run dev` / `vite`) and names the tool to use instead,
-and at the end of each turn it asks git what differs from the last preview
-(HEAD at that preview, or at session start) and draws a line above the prompt
-with the count — Edit, Bash edits, subagents, checkpoint commits and rebases
-all count the same way. State contract in `plugins/verse8/types/index.d.ts`;
+`--no-verify`, `bun run dev`, a `vite` that starts a server — not `vite
+build` / `optimize` / `--help`) and names the tool to use instead. It reads
+the call as shell words, so text inside quotes or a heredoc body is never
+taken for a command. At the end of each turn it asks git what differs from
+the last preview (HEAD at that preview, or at session start) and draws a line
+above the prompt with the count — Edit, Bash edits, subagents, checkpoint
+commits and rebases all count the same way. A failed `verse8_preview` and a
+plugin reload leave that baseline where it was; the git calls take no
+optional locks and time out after 5 s. State contract in
+`plugins/verse8/types/index.d.ts`;
 tests in `plugins/verse8/tests` (`npm run test:mod`). Hooks fail open; the
 git hooks remain the hard layer. No change to the npm package.
 
