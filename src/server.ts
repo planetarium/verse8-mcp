@@ -66,7 +66,7 @@ import {
 
 const SERVER_INFO = {
   name: "@verse8/mcp",
-  version: "0.7.0",
+  version: "0.8.0",
 };
 
 /**
@@ -93,7 +93,7 @@ const SERVER_INSTRUCTIONS = `@verse8/mcp is attached. MANDATORY for this session
 
 6) **Image / music / sfx / 3D asset generation** → use the image_asset_generate / music_generate / sfx_generate / spritesheet_generate / skybox_generate / claythis_3d_generate / etc. tools. Do NOT call external APIs directly.
 
-7) **Deploy / publish** → use \`verse8_deploy\` (call with \`dryRun: true\` first and confirm with the user — publishing is public). NEVER run \`@agent8/deploy --prod\` or a build+upload via Bash.
+7) **Deploy / publish** → \`verse8_deploy\` (\`dryRun: true\` first, then confirm — it is public). NEVER deploy via Bash. A push deploys nothing, whatever a skill says: \`verse8_preview\` deploys the server for testing.
 
 8) **3D engine: Incanto by default.** On \`vibe-starter-3d\`, \`vibe-starter-3d-environment\`, \`@react-three/fiber\` or \`incanto\`? Keep it; never add a second 3D engine. A 3D game with none of those (nor \`three\`) uses Incanto — steps in AGENTS.md.
 

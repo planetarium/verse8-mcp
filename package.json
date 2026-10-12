@@ -1,6 +1,6 @@
 {
   "name": "@verse8/mcp",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Verse8 MCP meta-server — auto-detects gitlab.verse8.io projects and exposes verse8 skills, image MCP proxy, and git checkpoint tools to host LLMs (Claude, Codex, Cursor, opencode, etc.)",
   "keywords": [
     "mcp",
@@ -52,7 +52,7 @@
     "node": ">=18.17"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

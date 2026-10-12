@@ -5,7 +5,7 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
+## [0.8.0] — 2026-10-12
 
 ### Changed — vendored skills follow the project's dependencies (#12)
 
@@ -69,7 +69,7 @@ The server instructions carry only the condition and point at AGENTS.md
 for the steps, so they stay within Claude Code's 2,048-char limit (now
 asserted by `serverInstructions.test.mjs`).
 
-### Added — Claude Code mod: gatekeeper + preview reminder (plugin only)
+### Added — Claude Code mod: gatekeeper + preview reminder (plugin only, #19)
 
 `plugins/verse8/hooks/verse8.mjs` is loaded by Claude Code 2.1.287+ next to
 the MCP server (`hooks/hooks.json` `modules`). Inside a Verse8 project it
@@ -86,6 +86,30 @@ optional locks and time out after 5 s. State contract in
 `plugins/verse8/types/index.d.ts`;
 tests in `plugins/verse8/tests` (`npm run test:mod`). Hooks fail open; the
 git hooks remain the hard layer. No change to the npm package.
+
+### Fixed — "push to deploy" no longer leaks in from the vendored skills
+
+The vendored `gameserver-sdk` skill says a push builds `server/src/` and
+deploys it. That holds in the Agent8 web editor, which deploys a preview
+after each turn, but nothing deploys on push through this MCP. The
+AGENTS.md / CLAUDE.md template (deploy section, rule 7) and the server
+instructions (rule 7) now say so and that this overrides any skill text:
+`verse8_preview` builds and deploys the game server for testing,
+`verse8_deploy` publishes. agent8-skills itself is unchanged — the web
+editor container uses it too. Existing projects get the rule on their next
+`overwriteAgentsDoc` attach. Rule 7 of the server instructions is shorter
+(no longer names `@agent8/deploy --prod`) to stay within 2,048 chars.
+
+### Security — dependency updates (`npm audit` clean)
+
+`@modelcontextprotocol/sdk` 1.29.0 → 1.32.1, and the dependency range is
+now `^1.32.1` so `npx` installs (which ignore our lockfile) get the fixed
+SDK too. This clears the high / critical advisories in the SDK and its
+transitive deps (`hono` 4.13.13, `@hono/node-server` 2.1.4 — inside the
+SDK's own `^1.19.9 || ^2.0.5` range, unused by our stdio transport —
+`fast-uri` 3.1.8, `ip-address` 10.7.4, `proxy-addr` 2.0.8, `qs` 6.16.0,
+`express-rate-limit` 8.7.1, `body-parser` 2.3.0). Dev only: `tsx` 4.21.0 →
+4.23.15 (esbuild 0.28.2). `npm audit` reports 0 vulnerabilities.
 
 ## [0.7.0] — 2026-10-01
 
