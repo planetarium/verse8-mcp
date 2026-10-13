@@ -1,0 +1,88 @@
+<!doctype html>
+<!-- Probe fixture: an engine-free P1 that implements every hooked requirement
+     correctly. evaluate.mjs --dist on this must score each auto probe 1;
+     ?broken=1 breaks jump/coins/lives so the probes must drop. -->
+<html>
+<head>
+<meta charset="utf-8" />
+<title>fixture p1</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); color: #fff; }
+  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; color: #fff; background: rgba(0,0,0,.5); }
+  button { font-size: 20px; padding: 8px 20px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div class="screen" id="title"><h1>Fixture Platformer</h1><button id="start">시작</button></div>
+<div class="screen" id="won"><h2>클리어</h2><p id="wonInfo"></p><button class="retry">다시 하기</button></div>
+<div class="screen" id="lost"><h2>게임 오버</h2><button class="retry">다시 하기</button></div>
+<script>
+const broken = new URLSearchParams(location.search).has("broken");
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+const coinsInit = Array.from({ length: 10 }, (_, i) => ({ x: (i % 2 ? 2 : -2), y: 1, z: 5 + i * 5 }));
+const S = {};
+let audio;
+function beep(f) { audio ??= new AudioContext(); const o = audio.createOscillator(); o.frequency.value = f; o.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.05); }
+function reset(state) {
+  Object.assign(S, { state, coins: 0, lives: 3, t0: performance.now(), p: { x: 0, y: 0, z: 0 }, v: { x: 0, y: 0, z: 0 }, grounded: true,
+    yaw: 0, cam: { x: 0, y: 3, z: -6 }, cp: { x: 0, y: 0, z: 0 }, coinList: coinsInit.map((c) => ({ ...c })), jumped: false });
+  show();
+}
+function show() { for (const id of ["title", "won", "lost"]) document.getElementById(id).style.display = S.state === id ? "flex" : "none"; }
+const keys = new Set();
+addEventListener("keydown", (e) => { keys.add(e.key.toLowerCase()); if (e.code === "Space") jump(); });
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => keys.clear());
+addEventListener("mousemove", (e) => { if (document.pointerLockElement || e.buttons) S.yaw -= e.movementX * 0.005; });
+cv.addEventListener("click", () => cv.requestPointerLock());
+let touchMove = null;
+addEventListener("touchstart", (e) => { const t = e.touches[0]; if (t.clientX < innerWidth / 2) touchMove = { x0: t.clientX, y0: t.clientY, dx: 0, dy: 0 }; }, { passive: true });
+addEventListener("touchmove", (e) => { const t = e.touches[0]; if (touchMove) { touchMove.dx = t.clientX - touchMove.x0; touchMove.dy = t.clientY - touchMove.y0; } }, { passive: true });
+addEventListener("touchend", () => (touchMove = null));
+function jump() { if (S.state !== "playing") return; if (S.grounded || broken) { S.v.y = 6; S.grounded = false; beep(440); } }
+document.getElementById("start").onclick = () => { reset("playing"); };
+for (const b of document.querySelectorAll(".retry")) b.onclick = () => reset("playing");
+const onCourse = (p) => Math.abs(p.x) < 5 && p.z > -3 && p.z < 62;
+let last = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t;
+  if (S.state === "playing") {
+    let ix = 0, iz = 0;
+    if (keys.has("w") || keys.has("arrowup")) iz += 1;
+    if (keys.has("s") || keys.has("arrowdown")) iz -= 1;
+    if (keys.has("a") || keys.has("arrowleft")) ix += 1;
+    if (keys.has("d") || keys.has("arrowright")) ix -= 1;
+    if (touchMove) { ix -= touchMove.dx / 40; iz -= touchMove.dy / 40; }
+    const fx = Math.sin(S.yaw), fz = Math.cos(S.yaw);
+    S.p.x += (fx * iz + fz * ix) * 5 * dt; S.p.z += (fz * iz - fx * ix) * 5 * dt;
+    S.v.y -= 15 * dt; S.p.y += S.v.y * dt;
+    if (S.p.y <= 0 && S.p.y > -1 && onCourse(S.p)) { if (!S.grounded) beep(220); S.p.y = 0; S.v.y = 0; S.grounded = true; }
+    if (S.p.y < -20) { if (!broken) S.lives--; S.p = { ...S.cp }; S.v.y = 0; if (S.lives <= 0) { S.state = "lost"; show(); } }
+    if (S.p.z > 30 && S.cp.z === 0) S.cp = { x: 0, y: 0, z: 30 };
+    for (const c of S.coinList) if (Math.hypot(c.x - S.p.x, c.y - S.p.y, c.z - S.p.z) < 1.2 && !broken) { c.taken = true; S.coins++; beep(880); }
+    S.coinList = S.coinList.filter((c) => !c.taken);
+    if (Math.hypot(S.p.x, S.p.z - 60) < 1.5 && S.state === "playing") { S.state = "won"; document.getElementById("wonInfo").textContent = `시간 ${((t - S.t0) / 1000).toFixed(1)}초 · 코인 ${S.coins}/10`; show(); }
+    const want = { x: S.p.x - Math.sin(S.yaw) * 6, y: S.p.y + 3, z: S.p.z - Math.cos(S.yaw) * 6 };
+    for (const k of ["x", "y", "z"]) S.cam[k] += (want[k] - S.cam[k]) * Math.min(1, dt * 10);
+  }
+  document.getElementById("hud").textContent = `코인 ${S.coins}/10  생명 ${S.lives}`;
+  cv.width = innerWidth; cv.height = innerHeight;
+  const grd = g.createLinearGradient(0, 0, 0, cv.height); grd.addColorStop(0, "#4a7fd0"); grd.addColorStop(1, "#2e5a2e");
+  g.fillStyle = grd; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = "#fc0"; g.beginPath(); g.arc(cv.width / 2 + S.p.x * 10, cv.height / 2 - S.p.z * 3, 12, 0, 7); g.fill();
+  window.__qa = Object.assign(window.__qa || {}, {
+    state: S.state, coins: S.coins, lives: S.lives, elapsedSec: (t - S.t0) / 1000, player: { ...S.p }, grounded: S.grounded, camera: { ...S.cam },
+    checkpoint: { ...S.cp }, goal: { x: 0, y: 0, z: 60 }, coinPositions: S.coinList.map(({ x, y, z }) => ({ x, y, z })),
+    teleport: (x, y, z) => { S.p = { x, y, z }; S.v.y = 0; },
+  });
+  requestAnimationFrame(frame);
+}
+reset("title");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

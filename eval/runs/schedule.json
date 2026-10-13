@@ -1,0 +1,120 @@
+{
+  "createdAt": "2026-10-13T04:36:25.822Z",
+  "repeats": 2,
+  "shuffleSeed": 20261013,
+  "budget": {
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "maxToolCalls": 300,
+    "maxBudgetUsd": 25,
+    "wallClockMin": 60
+  },
+  "runs": [
+    {
+      "order": 1,
+      "id": "incanto-P2-r2",
+      "arm": "incanto",
+      "prompt": "P2",
+      "rep": 2,
+      "seed": "incanto-quarterview"
+    },
+    {
+      "order": 2,
+      "id": "incanto-P2-r1",
+      "arm": "incanto",
+      "prompt": "P2",
+      "rep": 1,
+      "seed": "incanto-quarterview"
+    },
+    {
+      "order": 3,
+      "id": "vibe-P1-r2",
+      "arm": "vibe",
+      "prompt": "P1",
+      "rep": 2,
+      "seed": "vibe-freeview"
+    },
+    {
+      "order": 4,
+      "id": "r3f-P2-r1",
+      "arm": "r3f",
+      "prompt": "P2",
+      "rep": 1,
+      "seed": "r3f-basic"
+    },
+    {
+      "order": 5,
+      "id": "vibe-P2-r2",
+      "arm": "vibe",
+      "prompt": "P2",
+      "rep": 2,
+      "seed": "vibe-quarterview"
+    },
+    {
+      "order": 6,
+      "id": "incanto-P1-r2",
+      "arm": "incanto",
+      "prompt": "P1",
+      "rep": 2,
+      "seed": "incanto-freeview"
+    },
+    {
+      "order": 7,
+      "id": "r3f-P1-r1",
+      "arm": "r3f",
+      "prompt": "P1",
+      "rep": 1,
+      "seed": "r3f-basic"
+    },
+    {
+      "order": 8,
+      "id": "r3f-P2-r2",
+      "arm": "r3f",
+      "prompt": "P2",
+      "rep": 2,
+      "seed": "r3f-basic"
+    },
+    {
+      "order": 9,
+      "id": "vibe-P2-r1",
+      "arm": "vibe",
+      "prompt": "P2",
+      "rep": 1,
+      "seed": "vibe-quarterview"
+    },
+    {
+      "order": 10,
+      "id": "r3f-P1-r2",
+      "arm": "r3f",
+      "prompt": "P1",
+      "rep": 2,
+      "seed": "r3f-basic"
+    },
+    {
+      "order": 11,
+      "id": "vibe-P1-r1",
+      "arm": "vibe",
+      "prompt": "P1",
+      "rep": 1,
+      "seed": "vibe-freeview"
+    },
+    {
+      "order": 12,
+      "id": "incanto-P1-r1",
+      "arm": "incanto",
+      "prompt": "P1",
+      "rep": 1,
+      "seed": "incanto-freeview"
+    },
+    {
+      "order": 13,
+      "id": "incanto-P1-shipped",
+      "arm": "incanto",
+      "prompt": "P1",
+      "rep": 1,
+      "seed": "incanto-freeview-shipped",
+      "followups": false,
+      "diagnostic": true
+    }
+  ]
+}

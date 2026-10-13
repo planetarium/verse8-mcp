@@ -1,0 +1,13 @@
+# Rebuilt by the scripts; only the code, the manifests and the report are kept.
+.cache/
+node_modules/
+# Seed projects are git repos with node_modules (seeds/seeds.json records them).
+seeds/*/
+# Run directories hold a full project clone; runs.csv / summary.md carry the data.
+runs/*/
+# Evaluator output: screenshots and videos stay local, result.json is kept.
+baseline/*/shots/
+baseline/*/video/
+baseline/*/work/
+*.png
+*.webm

@@ -1,0 +1,523 @@
+{
+  "builtAt": "2026-10-13T04:21:57.606Z",
+  "verse8Mcp": "ada1fbffc61bcdb5595ce3396dbdd09fb29a1eeb",
+  "bun": "1.3.14",
+  "node": "v25.9.0",
+  "seeds": {
+    "incanto-freeview": {
+      "id": "incanto-freeview",
+      "arm": "incanto",
+      "template": "basic-3d-freeview",
+      "templateRef": "6f0fff50dfd53e822fcd98bcee5b9e86e201f762",
+      "patch": {
+        "name": "sun-shadow-map-size",
+        "files": [
+          "src/game.scene.json"
+        ]
+      },
+      "dir": "eval/seeds/incanto-freeview",
+      "commit": "a6d74d29491ac2c64fb205d9ed7095c9036fed47",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": true,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "incanto"
+      ],
+      "expectedGatedPlugins": [
+        "incanto"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "r3f",
+        "vibe-starter-3d",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "incanto-3d-character",
+        "incanto-3d-models",
+        "incanto-assets",
+        "incanto-audio",
+        "incanto-behaviors-and-scripts",
+        "incanto-building-2d-games",
+        "incanto-building-3d-games",
+        "incanto-editor",
+        "incanto-environment",
+        "incanto-game-feel",
+        "incanto-gameplay-behaviors",
+        "incanto-hud",
+        "incanto-localization",
+        "incanto-multiplayer",
+        "incanto-node-reference",
+        "incanto-on-agent8",
+        "incanto-performance",
+        "incanto-physics-and-input",
+        "incanto-playtesting",
+        "incanto-save-slots",
+        "incanto-scene-json-authoring",
+        "incanto-verifying-your-game",
+        "incanto-web-integration",
+        "incanto-your-first-game",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "incanto": "0.78.2",
+        "three": "0.184.0",
+        "react": "18.3.1",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "models": [
+          "characters/base"
+        ],
+        "animations": [
+          "anims/idle",
+          "anims/walk",
+          "anims/run",
+          "anims/runFast",
+          "anims/jump"
+        ]
+      },
+      "agentsDoc": "created"
+    },
+    "incanto-quarterview": {
+      "id": "incanto-quarterview",
+      "arm": "incanto",
+      "template": "basic-3d-quarterview",
+      "templateRef": "6f0fff50dfd53e822fcd98bcee5b9e86e201f762",
+      "patch": {
+        "name": "sun-shadow-map-size",
+        "files": [
+          "src/game.scene.json"
+        ]
+      },
+      "dir": "eval/seeds/incanto-quarterview",
+      "commit": "cf2a999e60f9cfacf37be8f27e6812b809c7ffd7",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": true,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "incanto"
+      ],
+      "expectedGatedPlugins": [
+        "incanto"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "r3f",
+        "vibe-starter-3d",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "incanto-3d-character",
+        "incanto-3d-models",
+        "incanto-assets",
+        "incanto-audio",
+        "incanto-behaviors-and-scripts",
+        "incanto-building-2d-games",
+        "incanto-building-3d-games",
+        "incanto-editor",
+        "incanto-environment",
+        "incanto-game-feel",
+        "incanto-gameplay-behaviors",
+        "incanto-hud",
+        "incanto-localization",
+        "incanto-multiplayer",
+        "incanto-node-reference",
+        "incanto-on-agent8",
+        "incanto-performance",
+        "incanto-physics-and-input",
+        "incanto-playtesting",
+        "incanto-save-slots",
+        "incanto-scene-json-authoring",
+        "incanto-verifying-your-game",
+        "incanto-web-integration",
+        "incanto-your-first-game",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "incanto": "0.78.2",
+        "three": "0.184.0",
+        "react": "18.3.1",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "models": [
+          "characters/base"
+        ],
+        "animations": [
+          "anims/idle",
+          "anims/walk",
+          "anims/run",
+          "anims/runFast",
+          "anims/jump"
+        ]
+      },
+      "agentsDoc": "created"
+    },
+    "vibe-freeview": {
+      "id": "vibe-freeview",
+      "arm": "vibe",
+      "template": "basic-3d-freeview",
+      "templateRef": "56b2e9e9f43ba0f08f0cf3a44fb4157f60668cd4",
+      "dir": "eval/seeds/vibe-freeview",
+      "commit": "3cb6b5fb1f51e19dd451eb5ab0d8403f3d96f922",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": false,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "r3f",
+        "vibe-starter-3d"
+      ],
+      "expectedGatedPlugins": [
+        "r3f",
+        "vibe-starter-3d"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "incanto",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "r3f-character-sync",
+        "r3f-input-system",
+        "r3f-projectile-systems",
+        "r3f-rapier-essentials",
+        "r3f-tree",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vibe-starter-3d-character",
+        "vibe-starter-3d-follow-light",
+        "vibe-starter-3d-rigidbody-object",
+        "vibe-starter-3d-rigidbody-player",
+        "vibe-starter-3d-view-controllers",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "three": "0.174.0",
+        "react": "18.3.1",
+        "@react-three/fiber": "8.18.0",
+        "@react-three/drei": "9.122.0",
+        "@react-three/rapier": "1.5.0",
+        "vibe-starter-3d": "0.8.22",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "characters": [
+          "base-model"
+        ],
+        "animations": [
+          "idle",
+          "idle-00",
+          "idle-01",
+          "rifle-idle",
+          "pistol-idle",
+          "walk",
+          "run-medium",
+          "run-fast",
+          "rifle-run",
+          "pistol-run",
+          "jump",
+          "swim",
+          "punch-00",
+          "punch-01",
+          "kick-00",
+          "kick-01",
+          "kick-02",
+          "melee-attack",
+          "cast",
+          "dance-locking",
+          "dance-wave",
+          "death-backward",
+          "death-foward",
+          "hit-to-body"
+        ]
+      },
+      "agentsDoc": "created"
+    },
+    "vibe-quarterview": {
+      "id": "vibe-quarterview",
+      "arm": "vibe",
+      "template": "basic-3d-quarterview",
+      "templateRef": "56b2e9e9f43ba0f08f0cf3a44fb4157f60668cd4",
+      "dir": "eval/seeds/vibe-quarterview",
+      "commit": "873dfd6cd0b8d55e0f4bb10aec35096598441cb1",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": false,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "r3f",
+        "vibe-starter-3d"
+      ],
+      "expectedGatedPlugins": [
+        "r3f",
+        "vibe-starter-3d"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "incanto",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "r3f-character-sync",
+        "r3f-input-system",
+        "r3f-projectile-systems",
+        "r3f-rapier-essentials",
+        "r3f-tree",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vibe-starter-3d-character",
+        "vibe-starter-3d-follow-light",
+        "vibe-starter-3d-rigidbody-object",
+        "vibe-starter-3d-rigidbody-player",
+        "vibe-starter-3d-view-controllers",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "three": "0.174.0",
+        "react": "18.3.1",
+        "@react-three/fiber": "8.18.0",
+        "@react-three/drei": "9.122.0",
+        "@react-three/rapier": "1.5.0",
+        "vibe-starter-3d": "0.8.22",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "characters": [
+          "base-model"
+        ],
+        "animations": [
+          "idle",
+          "idle-00",
+          "idle-01",
+          "rifle-idle",
+          "pistol-idle",
+          "walk",
+          "run-medium",
+          "run-fast",
+          "rifle-run",
+          "pistol-run",
+          "jump",
+          "swim",
+          "punch-00",
+          "punch-01",
+          "kick-00",
+          "kick-01",
+          "kick-02",
+          "melee-attack",
+          "cast",
+          "dance-locking",
+          "dance-wave",
+          "death-backward",
+          "death-foward",
+          "hit-to-body"
+        ]
+      },
+      "agentsDoc": "created"
+    },
+    "r3f-basic": {
+      "id": "r3f-basic",
+      "arm": "r3f",
+      "template": "basic-3d",
+      "templateRef": "56b2e9e9f43ba0f08f0cf3a44fb4157f60668cd4",
+      "dir": "eval/seeds/r3f-basic",
+      "commit": "3f0d49293924a0f739b22d84b3b6ead335cb2bf0",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": false,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "r3f"
+      ],
+      "expectedGatedPlugins": [
+        "r3f"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "incanto",
+        "vibe-starter-3d",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "r3f-character-sync",
+        "r3f-input-system",
+        "r3f-projectile-systems",
+        "r3f-rapier-essentials",
+        "r3f-tree",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "three": "0.174.0",
+        "react": "18.3.1",
+        "@react-three/fiber": "8.18.0",
+        "@react-three/drei": "9.122.0",
+        "@react-three/rapier": "1.5.0",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "images": []
+      },
+      "agentsDoc": "created"
+    },
+    "incanto-freeview-shipped": {
+      "id": "incanto-freeview-shipped",
+      "arm": "incanto",
+      "template": "basic-3d-freeview",
+      "templateRef": "6f0fff50dfd53e822fcd98bcee5b9e86e201f762",
+      "patch": null,
+      "dir": "eval/seeds/incanto-freeview-shipped",
+      "commit": "b72e092593065676c96adfb27279297693e74a4b",
+      "lockfile": "bun.lock",
+      "lockfileIgnoredByTemplate": true,
+      "lockfileTracked": true,
+      "pluginCheck": "pass",
+      "gatedPlugins": [
+        "incanto"
+      ],
+      "expectedGatedPlugins": [
+        "incanto"
+      ],
+      "ungatedPlugins": [
+        "gameserver",
+        "localization"
+      ],
+      "inactivePlugins": [
+        "r3f",
+        "vibe-starter-3d",
+        "vibe-starter-3d-environment"
+      ],
+      "skills": [
+        "ads-impl",
+        "gameserver-sdk",
+        "gameserver-sdk-crossramp",
+        "gameserver-sdk-v1",
+        "incanto-3d-character",
+        "incanto-3d-models",
+        "incanto-assets",
+        "incanto-audio",
+        "incanto-behaviors-and-scripts",
+        "incanto-building-2d-games",
+        "incanto-building-3d-games",
+        "incanto-editor",
+        "incanto-environment",
+        "incanto-game-feel",
+        "incanto-gameplay-behaviors",
+        "incanto-hud",
+        "incanto-localization",
+        "incanto-multiplayer",
+        "incanto-node-reference",
+        "incanto-on-agent8",
+        "incanto-performance",
+        "incanto-physics-and-input",
+        "incanto-playtesting",
+        "incanto-save-slots",
+        "incanto-scene-json-authoring",
+        "incanto-verifying-your-game",
+        "incanto-web-integration",
+        "incanto-your-first-game",
+        "leaderboard-impl",
+        "local-cache-impl",
+        "localization",
+        "localization-proofread",
+        "verse8-auth-impl",
+        "verse8-commit",
+        "verse8-login",
+        "vx-shop-impl"
+      ],
+      "forbiddenDeps": [],
+      "versions": {
+        "incanto": "0.78.2",
+        "three": "0.184.0",
+        "react": "18.3.1",
+        "vite": "8.3.4"
+      },
+      "originalAssetCategories": {
+        "models": [
+          "characters/base"
+        ],
+        "animations": [
+          "anims/idle",
+          "anims/walk",
+          "anims/run",
+          "anims/runFast",
+          "anims/jump"
+        ]
+      },
+      "agentsDoc": "created"
+    }
+  }
+}

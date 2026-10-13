@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Probe fixture: an engine-free P2 that implements the hooked requirements.
+     ?broken=1 removes firing and wave scaling so the probes must drop. -->
+<html>
+<head>
+<meta charset="utf-8" />
+<title>fixture p2</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: fixed; top: 8px; left: 8px; color: #fff; }
+  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; color: #fff; background: rgba(0,0,0,.5); }
+  button { font-size: 20px; padding: 8px 20px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div class="screen" id="title"><h1>Fixture Arena</h1><button id="start">시작</button></div>
+<div class="screen" id="won"><h2>승리</h2><button class="retry">다시 하기</button></div>
+<div class="screen" id="lost"><h2>게임 오버</h2><button class="retry">다시 하기</button></div>
+<script>
+const broken = new URLSearchParams(location.search).has("broken");
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+const S = {};
+let audio;
+function beep(f) { audio ??= new AudioContext(); const o = audio.createOscillator(); o.frequency.value = f; o.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.03); }
+function spawn(n) { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; S.enemies.push({ x: Math.cos(a) * 19, z: Math.sin(a) * 19, hp: 3 }); } }
+function setWave(n) { S.wave = n; S.enemies = []; spawn(broken ? 8 : 8 * n); }
+function reset(state) { Object.assign(S, { state, hp: 100, score: 0, p: { x: 0, y: 0, z: 0 }, shots: [], inv: false, lastShot: 0, hurtUntil: 0 }); setWave(1); show(); }
+function show() { for (const id of ["title", "won", "lost"]) document.getElementById(id).style.display = S.state === id ? "flex" : "none"; }
+const keys = new Set();
+let mouse = { x: 0, y: 0, down: false };
+addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => { keys.clear(); mouse.down = false; });
+addEventListener("mousemove", (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
+addEventListener("mousedown", () => (mouse.down = true));
+addEventListener("mouseup", () => (mouse.down = false));
+let touchMove = null;
+addEventListener("touchstart", (e) => { const t = e.touches[0]; if (t.clientX < innerWidth / 2) touchMove = { x0: t.clientX, y0: t.clientY, dx: 0, dy: 0 }; }, { passive: true });
+addEventListener("touchmove", (e) => { const t = e.touches[0]; if (touchMove) { touchMove.dx = t.clientX - touchMove.x0; touchMove.dy = t.clientY - touchMove.y0; } }, { passive: true });
+addEventListener("touchend", () => (touchMove = null));
+document.getElementById("start").onclick = () => reset("playing");
+for (const b of document.querySelectorAll(".retry")) b.onclick = () => reset("playing");
+let last = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t;
+  if (S.state === "playing") {
+    let ix = 0, iz = 0;
+    if (keys.has("w")) iz -= 1; if (keys.has("s")) iz += 1; if (keys.has("a")) ix -= 1; if (keys.has("d")) ix += 1;
+    if (touchMove) { ix += touchMove.dx / 40; iz += touchMove.dy / 40; }
+    S.p.x = Math.max(-19, Math.min(19, S.p.x + ix * 6 * dt)); S.p.z = Math.max(-19, Math.min(19, S.p.z + iz * 6 * dt));
+    if (mouse.down && !broken && t - S.lastShot > 125) {
+      S.lastShot = t; beep(660);
+      const a = Math.atan2(mouse.y - innerHeight / 2, mouse.x - innerWidth / 2);
+      S.shots.push({ x: S.p.x, z: S.p.z, vx: Math.cos(a) * 25, vz: Math.sin(a) * 25, life: 1 });
+    }
+    for (const s of S.shots) { s.x += s.vx * dt; s.z += s.vz * dt; s.life -= dt; for (const e of S.enemies) if (e.hp > 0 && Math.hypot(e.x - s.x, e.z - s.z) < 0.8) { e.hp--; s.life = 0; if (e.hp <= 0) { S.score += 10; beep(110); } } }
+    S.shots = S.shots.filter((s) => s.life > 0); S.enemies = S.enemies.filter((e) => e.hp > 0);
+    for (const e of S.enemies) { const d = Math.hypot(S.p.x - e.x, S.p.z - e.z) || 1; e.x += ((S.p.x - e.x) / d) * 1.5 * dt; e.z += ((S.p.z - e.z) / d) * 1.5 * dt;
+      if (d < 1 && !S.inv && t > S.hurtUntil) { S.hp = Math.max(0, S.hp - 10); S.hurtUntil = t + 300; } }
+    if (S.hp <= 0) { S.state = "lost"; show(); }
+    else if (S.enemies.length === 0) { if (S.wave >= 5) { S.state = "won"; show(); } else setWave(S.wave + 1); }
+  }
+  document.getElementById("hud").textContent = `HP ${S.hp} · 웨이브 ${S.wave} · 점수 ${S.score} · 남은 적 ${S.enemies.length}`;
+  cv.width = innerWidth; cv.height = innerHeight;
+  g.fillStyle = "#333"; g.fillRect(0, 0, cv.width, cv.height); g.fillStyle = "#575"; g.fillRect(cv.width / 2 - 200, cv.height / 2 - 200, 400, 400);
+  g.fillStyle = "#e33"; for (const e of S.enemies) g.fillRect(cv.width / 2 + e.x * 10 - 4, cv.height / 2 + e.z * 10 - 4, 8, 8);
+  g.fillStyle = "#fc0"; g.fillRect(cv.width / 2 + S.p.x * 10 - 6, cv.height / 2 + S.p.z * 10 - 6, 12, 12);
+  window.__qa = Object.assign(window.__qa || {}, {
+    state: S.state, wave: S.wave, score: S.score, hp: S.hp, enemiesAlive: S.enemies.length, projectilesAlive: S.shots.length, player: { ...S.p },
+    setInvincible: (b) => (S.inv = !!b), skipToWave: (n) => setWave(n),
+  });
+  requestAnimationFrame(frame);
+}
+reset("title");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

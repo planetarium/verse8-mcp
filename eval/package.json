@@ -1,0 +1,9 @@
+{
+  "name": "verse8-eval-incanto-vs-r3f",
+  "private": true,
+  "type": "module",
+  "description": "One-off eval harness; not part of the published package.",
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}
