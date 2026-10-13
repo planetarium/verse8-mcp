@@ -41,6 +41,8 @@ Make a 2D shooter with Verse8
 
 The agent handles login, proposes a template, and (after you approve the template once) creates the GitLab project, clones it, and attaches — all automatic.
 
+Installing is free; creating a project and some asset tools require Verse8 credits. A new account gets no credits at sign-up — verify a phone number and claim the one-time welcome credit first (see [Troubleshooting](#insufficient_credits)).
+
 ### Existing project (cloned from gitlab.verse8.io)
 
 ```
@@ -92,6 +94,18 @@ Resources: `verse8://skill/<name>/SKILL.md`.
 ---
 
 ## Troubleshooting
+
+### `insufficient_credits`
+
+`verse8_new_project_start` / `_confirm` or `verse8_upload_asset` returns `insufficient_credits` (usually HTTP 402) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
+
+- **New account** — credits are not granted at sign-up. Verify a phone number (SMS) on Verse8, then claim the one-time welcome credit.
+- **Existing account** — recharge at <https://verse8.io/settings>. `verse8_status` also returns this link as `creditRechargeUrl`.
+
+Then:
+
+- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call.
+- From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow
 
