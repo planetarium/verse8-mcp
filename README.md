@@ -105,7 +105,7 @@ Resources: `verse8://skill/<name>/SKILL.md`.
 Then:
 
 - From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call.
-- From `verse8_new_project_confirm` — start over from `verse8_new_project_start`. The GitLab project may already have been created before the error, and calling `_confirm` again would create another one.
+- From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow
 
