@@ -1,6 +1,6 @@
 ---
 name: verse8-auth-impl
-description: The implementation details related to Verse8 auth helpers — reading and verifying the signed-in user — should unconditionally refer to this document. The `Verse8` namespace in `@verse8/platform` parses and cryptographically verifies the `?auth=` token the Verse8 host injects into a game iframe, exposing `getUser` and `parseAuthToken`. Covers the three entry points, the `UserCredential` shape, the logged-in vs guest trust model and the `requireTrustedSigner` strict mode that entitlement checks require, the thrown error causes, and the `REQUEST_LOGIN` / `REQUEST_LOGOUT` postMessage flow for opening the platform login modal from inside the game.
+description: The implementation details related to Verse8 auth helpers — reading and verifying the signed-in user — should unconditionally refer to this document. The `Verse8` namespace in `@verse8/platform` parses and cryptographically verifies the `?auth=` token the Verse8 host injects into a game iframe, exposing `getUser` and `parseAuthToken`. Covers the three entry points, the `UserCredential` shape, the logged-in vs guest trust model and the `requireTrustedSigner` strict mode that entitlement checks require, the thrown error causes, the `REQUEST_LOGIN` / `REQUEST_LOGOUT` postMessage flow for opening the platform login modal from inside the game, and `OPEN_ACCOUNT_DIALOG` for opening the Verse8 account dialog (standalone store apps only, gated on `window.verse8.platform`, and recommended there because store policy requires in-app account deletion).
 ---
 
 # Verse8 auth helpers — agent implementation guide
@@ -235,6 +235,34 @@ window.addEventListener("message", (event) => {
 ```ts
 window.parent.postMessage({ type: "REQUEST_LOGOUT" }, window.verse8.parentOrigin);
 ```
+
+## Opening the Verse8 account dialog (standalone apps only)
+
+A Verse8 game can also ship as its own Android / iOS store app — one game, one app. In these **standalone apps**, the game can ask the app to open its Verse8 account dialog, where the user sees their account and can log out or delete it.
+
+**Recommended for any game shipped as a standalone app: put an "Account" button on the game's settings or menu screen.** App Store Review Guideline [5.1.1(v)](https://developer.apple.com/app-store/review/guidelines/#data-collection-and-storage) and Google Play's [account deletion requirement](https://support.google.com/googleplay/android-developer/answer/13327111) require that users can start account deletion inside the app, and Apple asks that the option be [easy to find, typically in account settings](https://developer.apple.com/support/offering-account-deletion-in-your-app/). The app offers log-out and account deletion on its own start and loading screens, but those are gone once the game is running, and a returning logged-in user skips the start screen. An in-game button is the easiest place for players and store reviewers to find account deletion.
+
+Only standalone apps handle this message; the web and the Verse8 mobile app ignore it. So show the button only when `window.verse8.platform` is `"standalone-app"`:
+
+```js
+const accountButton = document.querySelector("#account-button");
+
+// "web" on verse8.io, "app" in the Verse8 mobile app, "standalone-app" in a standalone app.
+accountButton.hidden = window.verse8?.platform !== "standalone-app";
+
+accountButton.addEventListener("click", () => {
+  window.parent.postMessage({ type: "OPEN_ACCOUNT_DIALOG" }, window.verse8.parentOrigin);
+});
+```
+
+- No payload, and **no response message** — don't wait for one.
+- What happens next is up to the app:
+  - Not logged in: it opens its login sheet instead, the same as `REQUEST_LOGIN`, and on success reloads the game with the new auth.
+  - Closed without changes: nothing happens; the game keeps running.
+  - Logged out or account deleted: the app goes back to its first screen, which closes the game.
+- Requests sent while the dialog is already open are ignored.
+- No account data reaches the game. After a login the game reloads and reads the user with `Verse8.getUser()` like on any load; keep game progress on the server as usual.
+- It does nothing on the web and in the Verse8 mobile app, so **never make it part of a required flow** — it is an extra entry point, shown only in standalone apps.
 
 ## Verifying a token that didn't come from the URL
 

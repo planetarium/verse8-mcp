@@ -62,10 +62,10 @@
   },
   "verse8": {
     "skillsVendor": {
-      "sha": "354f8e4d4c84aee1c3c980e5bc23ade7ff479624fda9df83e557e94945def757",
+      "sha": "4bac9f45756db834f86002b0629e021d4d46ebff24a3e379b52a0c98d94008e1",
       "upstream": {
         "repo": "planetarium/agent8-skills",
-        "commit": "11a5c979f6e403129a6fd8d64be7906bcce09c87"
+        "commit": "46642e677c7a50373ea498c1308bf3db9ffd840d"
       }
     },
     "gameserverPin": {
