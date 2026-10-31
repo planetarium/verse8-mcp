@@ -24,10 +24,10 @@ codex  mcp add verse8 -- npx -y @verse8/mcp   # Codex
 
 Use one of the two in Claude Code, not both — each registers a server named `verse8`. What the plugin runs, sends and stores is listed in [plugins/verse8/README.md](./plugins/verse8/README.md).
 
-> **Timeout**: 서버 측은 기본 120초가 적용되지만, 클라이언트 측 타임아웃이
-> 짧으면(기본 60초) 응답을 못 받습니다. Codex/OpenCode 사용자는 반드시
-> [수동 설치 가이드](./docs/manual-install.md#기본-타임아웃-120초)를 따라
-> 클라이언트 타임아웃을 120초 이상으로 조정하세요.
+> **Timeout**: The server defaults to 120 seconds, but a shorter client-side timeout
+> can end a tool call before the response arrives. Codex/OpenCode users should follow
+> the [manual installation guide](./docs/manual-install.md#%EA%B8%B0%EB%B3%B8-%ED%83%80%EC%9E%84%EC%95%84%EC%9B%83-120%EC%B4%88)
+> to set the client timeout to at least 120 seconds.
 
 **2. Use it:**
 
