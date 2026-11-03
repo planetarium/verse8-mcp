@@ -19,8 +19,10 @@ import * as path from "node:path";
  * needles and get `__9C` + `__review_required`. MSU wins when both match; see
  * resolveJamProject.
  *
- * Nothing is shared with the agent8 container: a change to the needles or the
- * scan rules here has to be made in maple-system-helpers.ts as well.
+ * Nothing is shared with the agent8 container, so a change to the needles or
+ * the scan rules here has to be made in its apps/container-agent/src/utils too:
+ * jam-project.ts (9C needles, MSU-first resolution), workspace-reference-scan.ts
+ * (the scanner) and maple-system-helpers.ts (MSU needles and hosts).
  */
 
 const MAPLE_HELPERS_SUBPATH = path.join("src", "__system__", "maple");
@@ -143,11 +145,15 @@ export function hasMapleSystemHelpers(projectDir: string): boolean {
   }
 }
 
+/** Throws on fs errors, so a failed scan can be told apart from "not MSU". */
+function detectMsu(projectDir: string): boolean {
+  return hasMapleSystemHelpers(projectDir) || scanForReference(projectDir, MSU_SIGNALS);
+}
+
 /** Best-effort: fs errors are treated as "no reference". */
 export function isMsuProject(projectDir: string): boolean {
-  if (hasMapleSystemHelpers(projectDir)) return true;
   try {
-    return scanForReference(projectDir, MSU_SIGNALS);
+    return detectMsu(projectDir);
   } catch {
     return false;
   }
@@ -169,10 +175,14 @@ export type JamProject = "MSU" | "9C" | null;
 
 /**
  * MSU first: 9C is not even looked at for an MSU project, so a stray 9C mention
- * cannot change how an MSU project is tagged.
+ * cannot change how an MSU project is tagged. An MSU scan that failed leaves the
+ * question open, so it yields null rather than falling through to 9C.
  */
 export function resolveJamProject(projectDir: string): JamProject {
-  if (isMsuProject(projectDir)) return "MSU";
-  if (isNineChroniclesProject(projectDir)) return "9C";
-  return null;
+  try {
+    if (detectMsu(projectDir)) return "MSU";
+  } catch {
+    return null;
+  }
+  return isNineChroniclesProject(projectDir) ? "9C" : null;
 }

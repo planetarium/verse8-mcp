@@ -58,6 +58,8 @@ const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
   MSU: ["__MSU", "__review_required"],
   "9C": ["__9C", "__review_required"],
 };
+const NINE_CHRONICLES_REVIEW_WARNING =
+  "This update adds `__review_required`, which sends the game to review and may hide it until it is approved. Confirm with the user before deploying.";
 const RELEASE_NOTE_TYPES = [
   "New",
   "Improvements",
@@ -768,7 +770,7 @@ export async function runDeploy(
     return fail(
       "validate",
       "invalid_input",
-      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user for them — draft every missing value from the project: title/tags/description from the game itself, release note from suggestedReleaseNote, cover via image_asset_generate from the game's theme (pass the result as imageUrl, or download it and pass thumbnailPath). Values the user already gave are used as-is. Then re-run dryRun. ${mode === "first" ? "First deploy: show the user that one dryRun result and deploy after they approve (they may swap the cover or title there); skip the confirmation only if they said to deploy without asking." : "Update: deploy right away without a confirmation step and report playUrl + the release note; confirm first only if the user asked to see it before publishing."}`,
+      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user for them — draft every missing value from the project: title/tags/description from the game itself, release note from suggestedReleaseNote, cover via image_asset_generate from the game's theme (pass the result as imageUrl, or download it and pass thumbnailPath). Values the user already gave are used as-is. Then re-run dryRun. ${mode === "first" ? "First deploy: show the user that one dryRun result and deploy after they approve (they may swap the cover or title there); skip the confirmation only if they said to deploy without asking." : "Update: deploy right away without a confirmation step and report playUrl + the release note; confirm first only if the user asked to see it before publishing or the dryRun returns warnings."}`,
       { mode, missing, suggestedReleaseNote },
     );
   }
@@ -776,6 +778,9 @@ export async function runDeploy(
   const msu = jam === "MSU";
   const nineChronicles = jam === "9C";
   const tags = buildPublishTags(input.tags, existing?.tag, jam);
+  if (mode === "update" && nineChronicles && !existing?.tag?.includes("__review_required")) {
+    warnings.push(NINE_CHRONICLES_REVIEW_WARNING);
+  }
   const parentVerseId = mode === "first" ? readParentVerseId(cwd) : null;
   const projectPath = deriveProjectPathFromOrigin(cwd);
   const gameserver = isGameserverProject(cwd);

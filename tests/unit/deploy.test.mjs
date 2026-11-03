@@ -27,6 +27,7 @@ import {
   unsafeInstallCommandTokens,
 } from "../../dist/tools/deploy.js";
 import { buildV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
+import { DEPLOY_TOOL } from "../../dist/server.js";
 import { isMsuProject, isNineChroniclesProject, resolveJamProject, stripComments } from "../../dist/context/msuProject.js";
 import { sanitizeChildEnv } from "../../dist/util/childEnv.js";
 
@@ -349,6 +350,49 @@ test("resolveJamProject: MSU wins over 9C; neither → null", () => {
   assert.equal(resolveJamProject(projectWith("src/App.tsx", `export const b = 1;\n`)), null);
 });
 
+// chmod has no effect for root, which can read everything.
+const runsAsRoot = process.getuid?.() === 0;
+
+/** MSU's host scan reads *.json and 9C's keyword scan does not, so only the MSU scan hits this file. */
+function projectFailingOnlyMsuScan() {
+  const dir = projectWith("src/App.tsx", `export const b = "Nine Chronicles";\n`);
+  const unreadable = path.join(dir, "assets.json");
+  fs.writeFileSync(unreadable, `{"a":"https://resource-static.msu.io/x.png"}`);
+  fs.chmodSync(unreadable, 0o000);
+  return dir;
+}
+
+test("resolveJamProject: a failed MSU scan → null, not 9C; isMsuProject stays false", { skip: runsAsRoot }, () => {
+  const dir = projectFailingOnlyMsuScan();
+  assert.equal(isMsuProject(dir), false);
+  assert.equal(isNineChroniclesProject(dir), true);
+  assert.equal(resolveJamProject(dir), null);
+});
+
+test("resolveJamProject: the helper bundle decides MSU before any scan can fail", { skip: runsAsRoot }, () => {
+  const dir = projectFailingOnlyMsuScan();
+  fs.mkdirSync(path.join(dir, "src", "__system__", "maple"), { recursive: true });
+  assert.equal(resolveJamProject(dir), "MSU");
+});
+
+test("resolveJamProject: a missing directory → null", () => {
+  assert.equal(resolveJamProject(path.join(os.tmpdir(), "verse8-no-such-dir")), null);
+});
+
+test("runDeploy dryRun: failed MSU scan on a 9C-looking project adds no jam tags", { skip: runsAsRoot }, async () => {
+  const dir = projectFailingOnlyMsuScan();
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.msu, false);
+  assert.equal(res.nineChronicles, false);
+  assert.deepEqual(res.publishBody.tag, ["rpg"]);
+  assert.deepEqual(res.warnings, []);
+});
+
 test("stripComments: keeps URLs and string literals, drops comments", () => {
   const out = stripComments(`const u = "https://x.io/a"; // note\n/* block */ const s = '//not';`);
   assert.match(out, /https:\/\/x\.io\/a/);
@@ -595,6 +639,21 @@ test("runDeploy dryRun: 9C project → __9C + __review_required, nineChronicles 
   assert.equal(res.nineChronicles, true);
   assert.equal(res.msu, false);
   assert.deepEqual(res.publishBody.tag, ["rpg", "__9C", "__review_required"]);
+  assert.equal(res.warnings.length, 1);
+  assert.match(res.warnings[0], /`__review_required`.*review.*hide.*Confirm with the user/);
+});
+
+test("runDeploy dryRun: 9C update already under __review_required → no warning", async () => {
+  const dir = makeProject();
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), `export const t = "Nine Chronicles";\n`);
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg", "__9C", "__review_required"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.deepEqual(res.warnings, []);
 });
 
 test("runDeploy dryRun: first deploy of a 9C project carries the tags in the create body", async () => {
@@ -610,6 +669,7 @@ test("runDeploy dryRun: first deploy of a 9C project carries the tags in the cre
   assert.equal(res.mode, "first");
   assert.equal(res.nineChronicles, true);
   assert.deepEqual(res.publishBody.tag, ["rpg", "__9C", "__review_required"]);
+  assert.deepEqual(res.warnings, []);
 });
 
 test("runDeploy dryRun: project matching both MSU and 9C → MSU tags only, nineChronicles false", async () => {
@@ -625,6 +685,7 @@ test("runDeploy dryRun: project matching both MSU and 9C → MSU tags only, nine
   assert.equal(res.msu, true);
   assert.equal(res.nineChronicles, false);
   assert.deepEqual(res.publishBody.tag, ["rpg", "__MSU", "__review_required"]);
+  assert.deepEqual(res.warnings, []);
 });
 
 test("runDeploy dryRun: no jam reference → both flags false, no tags added", async () => {
@@ -638,6 +699,13 @@ test("runDeploy dryRun: no jam reference → both flags false, no tags added", a
   assert.equal(res.msu, false);
   assert.equal(res.nineChronicles, false);
   assert.deepEqual(res.publishBody.tag, ["rpg"]);
+  assert.deepEqual(res.warnings, []);
+});
+
+test("verse8_deploy description: within 2048 characters and tells the caller to confirm warnings", () => {
+  // Hosts may cut off longer tool descriptions, silently dropping whatever comes last.
+  assert.ok(DEPLOY_TOOL.description.length <= 2048, `description is ${DEPLOY_TOOL.description.length} chars`);
+  assert.match(DEPLOY_TOOL.description, /`warnings`, show them to the user and confirm before deploying/);
 });
 
 test("runDeploy: verse owned by another account → verse_owned_by_other (id is never re-minted)", async () => {

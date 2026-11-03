@@ -80,7 +80,8 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    **Update**: deploy right away — the live title / cover / tags /
    visibility are kept and only the release note is new — then report
    the playUrl and the release note you published. Confirm first only
-   if the user asked to see it before publishing.
+   if the user asked to see it before publishing or the dryRun returns
+   \`warnings\`.
 5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
    command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
    + push to gitlab.verse8.io; they do not publish.
