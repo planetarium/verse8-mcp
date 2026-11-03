@@ -14,12 +14,33 @@ import * as path from "node:path";
  *   - keyword mentions in *.ts / *.tsx / *.html, ignoring comments;
  *   - MSU resource hosts in those files plus *.json / *.css (raw source).
  * *.md is never scanned — a mention in docs is not usage.
+ *
+ * Nine Chronicles (9C) projects use the same keyword scan with their own
+ * needles and get `__9C` + `__review_required`. MSU wins when both match; see
+ * resolveJamProject.
+ *
+ * Nothing is shared with the agent8 container: a change to the needles or the
+ * scan rules here has to be made in maple-system-helpers.ts as well.
  */
 
 const MAPLE_HELPERS_SUBPATH = path.join("src", "__system__", "maple");
 
-const KEYWORD_NEEDLES = ["메이플스토리", "메이플 스토리", "maple story", "maplestory"] as const;
-const RESOURCE_HOSTS = ["d1zf9cjayl5rrg.cloudfront.net", "resource-static.msu.io"] as const;
+interface ReferenceSignals {
+  /** Lower-case; matched in *.ts / *.tsx / *.html with comments removed. */
+  keywords: readonly string[];
+  /** Lower-case; matched in raw source, so a host in a comment still counts. */
+  hosts: readonly string[];
+}
+
+const MSU_SIGNALS: ReferenceSignals = {
+  keywords: ["메이플스토리", "메이플 스토리", "maple story", "maplestory"],
+  hosts: ["d1zf9cjayl5rrg.cloudfront.net", "resource-static.msu.io"],
+};
+// "9c" is left out on purpose: it matches too much unrelated code (hex colors, hashes).
+const NINE_CHRONICLES_SIGNALS: ReferenceSignals = {
+  keywords: ["나인크로니클", "나인 크로니클", "nine chronicles", "ninechronicles", "nine-chronicles"],
+  hosts: [],
+};
 const KEYWORD_SCAN_EXTENSIONS = new Set([".ts", ".tsx", ".html"]);
 const HOST_SCAN_EXTENSIONS = new Set([".json", ".ts", ".tsx", ".html", ".css"]);
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
@@ -34,7 +55,7 @@ function opensUrl(source: string, i: number): boolean {
 /**
  * Blank out comment bodies so keyword matching only sees what ships to the
  * player. String/template literals are preserved and an unterminated comment
- * stays code — misreads keep the MSU signal, never drop it.
+ * stays code — misreads keep the keyword signal, never drop it.
  */
 export function stripComments(source: string): string {
   let out = "";
@@ -86,27 +107,27 @@ export function stripComments(source: string): string {
   return out;
 }
 
-function hasKeywordNeedle(lowerContent: string): boolean {
-  return KEYWORD_NEEDLES.some((needle) => lowerContent.includes(needle));
+function hasKeyword(lowerContent: string, keywords: readonly string[]): boolean {
+  return keywords.some((needle) => lowerContent.includes(needle));
 }
 
-function scanForMapleStoryReference(dir: string): boolean {
+function scanForReference(dir: string, signals: ReferenceSignals): boolean {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (IGNORED_DIRS.has(entry.name)) continue;
-      if (scanForMapleStoryReference(full)) return true;
+      if (scanForReference(full, signals)) return true;
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name);
       const scanKeywords = KEYWORD_SCAN_EXTENSIONS.has(ext);
-      const scanHosts = HOST_SCAN_EXTENSIONS.has(ext);
+      const scanHosts = signals.hosts.length > 0 && HOST_SCAN_EXTENSIONS.has(ext);
       if (!scanKeywords && !scanHosts) continue;
       const content = fs.readFileSync(full, "utf8").toLowerCase();
-      if (scanKeywords && hasKeywordNeedle(content) && hasKeywordNeedle(stripComments(content))) {
+      if (scanKeywords && hasKeyword(content, signals.keywords) && hasKeyword(stripComments(content), signals.keywords)) {
         return true;
       }
-      if (scanHosts && RESOURCE_HOSTS.some((host) => content.includes(host))) {
+      if (scanHosts && signals.hosts.some((host) => content.includes(host))) {
         return true;
       }
     }
@@ -126,8 +147,32 @@ export function hasMapleSystemHelpers(projectDir: string): boolean {
 export function isMsuProject(projectDir: string): boolean {
   if (hasMapleSystemHelpers(projectDir)) return true;
   try {
-    return scanForMapleStoryReference(projectDir);
+    return scanForReference(projectDir, MSU_SIGNALS);
   } catch {
     return false;
   }
+}
+
+/**
+ * Keywords only for now; later signals (hosts, a helper bundle) belong in here
+ * so callers keep going through this function. Best-effort like isMsuProject.
+ */
+export function isNineChroniclesProject(projectDir: string): boolean {
+  try {
+    return scanForReference(projectDir, NINE_CHRONICLES_SIGNALS);
+  } catch {
+    return false;
+  }
+}
+
+export type JamProject = "MSU" | "9C" | null;
+
+/**
+ * MSU first: 9C is not even looked at for an MSU project, so a stray 9C mention
+ * cannot change how an MSU project is tagged.
+ */
+export function resolveJamProject(projectDir: string): JamProject {
+  if (isMsuProject(projectDir)) return "MSU";
+  if (isNineChroniclesProject(projectDir)) return "9C";
+  return null;
 }
