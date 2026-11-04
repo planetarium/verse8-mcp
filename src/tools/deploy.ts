@@ -11,7 +11,7 @@ import {
 } from "../api/v8MemeApi.js";
 import { detectAttachment } from "../context/attachment.js";
 import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
-import { isMsuProject } from "../context/msuProject.js";
+import { resolveJamProject, type JamProject } from "../context/msuProject.js";
 import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
@@ -53,8 +53,13 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  */
 
 const GAMES_BASE_URL = "https://agent8-games.verse8.io";
-const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__review_required"]);
-const MSU_TAGS = ["__MSU", "__review_required"];
+const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__9C", "__review_required"]);
+const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
+  MSU: ["__MSU", "__review_required"],
+  "9C": ["__9C", "__review_required"],
+};
+const NINE_CHRONICLES_REVIEW_WARNING =
+  "This update adds `__review_required`, which sends the game to review and may hide it until it is approved. Confirm with the user before deploying.";
 const RELEASE_NOTE_TYPES = [
   "New",
   "Improvements",
@@ -219,6 +224,7 @@ export type DeployResult =
       steps?: DeployStepResult[];
       verse?: VerseInfo;
       msu: boolean;
+      nineChronicles: boolean;
       warnings: string[];
     }
   | {
@@ -249,19 +255,19 @@ function dropUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 /**
  * Final `tag` array for the publish body. Server rules (g2-sync
  * verseTag.service): ≤5 user tags, and the only `__` tags a user may send
- * are `__MSU` / `__review_required` — any other system tag on the existing
+ * are `__MSU` / `__9C` / `__review_required` — any other system tag on the existing
  * verse (admin-owned) must be left out or the update is rejected; the
  * server keeps those itself.
  */
 export function buildPublishTags(
   inputTags: string[] | undefined,
   existingTags: string[] | undefined,
-  msu: boolean,
+  jam: JamProject,
 ): string[] {
   const existing = existingTags ?? [];
   const userTags = inputTags ?? existing.filter((t) => !t.startsWith("__"));
   const systemTags = existing.filter((t) => PUBLISH_ALLOWED_SYSTEM_TAGS.has(t));
-  if (msu) systemTags.push(...MSU_TAGS);
+  if (jam) systemTags.push(...JAM_SYSTEM_TAGS[jam]);
   return [...new Set([...userTags, ...systemTags])];
 }
 
@@ -764,12 +770,17 @@ export async function runDeploy(
     return fail(
       "validate",
       "invalid_input",
-      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user for them — draft every missing value from the project: title/tags/description from the game itself, release note from suggestedReleaseNote, cover via image_asset_generate from the game's theme (pass the result as imageUrl, or download it and pass thumbnailPath). Values the user already gave are used as-is. Then re-run dryRun. ${mode === "first" ? "First deploy: show the user that one dryRun result and deploy after they approve (they may swap the cover or title there); skip the confirmation only if they said to deploy without asking." : "Update: deploy right away without a confirmation step and report playUrl + the release note; confirm first only if the user asked to see it before publishing."}`,
+      `${mode === "first" ? "First deploy" : "Update"} of ${verseId} requires: ${missing.join(", ")} (same fields as the web publish dialog). Do not ask the user for them — draft every missing value from the project: title/tags/description from the game itself, release note from suggestedReleaseNote, cover via image_asset_generate from the game's theme (pass the result as imageUrl, or download it and pass thumbnailPath). Values the user already gave are used as-is. Then re-run dryRun. ${mode === "first" ? "First deploy: show the user that one dryRun result and deploy after they approve (they may swap the cover or title there); skip the confirmation only if they said to deploy without asking." : "Update: deploy right away without a confirmation step and report playUrl + the release note; confirm first only if the user asked to see it before publishing or the dryRun returns warnings."}`,
       { mode, missing, suggestedReleaseNote },
     );
   }
-  const msu = isMsuProject(cwd);
-  const tags = buildPublishTags(input.tags, existing?.tag, msu);
+  const jam = resolveJamProject(cwd);
+  const msu = jam === "MSU";
+  const nineChronicles = jam === "9C";
+  const tags = buildPublishTags(input.tags, existing?.tag, jam);
+  if (mode === "update" && nineChronicles && !existing?.tag?.includes("__review_required")) {
+    warnings.push(NINE_CHRONICLES_REVIEW_WARNING);
+  }
   const parentVerseId = mode === "first" ? readParentVerseId(cwd) : null;
   const projectPath = deriveProjectPathFromOrigin(cwd);
   const gameserver = isGameserverProject(cwd);
@@ -820,6 +831,7 @@ export async function runDeploy(
         mode === "first" ? "POST /v1/verse/create" : `POST /v1/verse/update/${verseId}`,
       ],
       msu,
+      nineChronicles,
       warnings,
     };
   }
@@ -932,6 +944,7 @@ export async function runDeploy(
     steps: completed,
     verse: published.data,
     msu,
+    nineChronicles,
     warnings,
   };
 }

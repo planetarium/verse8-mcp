@@ -27,7 +27,8 @@ import {
   unsafeInstallCommandTokens,
 } from "../../dist/tools/deploy.js";
 import { buildV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
-import { isMsuProject, stripComments } from "../../dist/context/msuProject.js";
+import { DEPLOY_TOOL } from "../../dist/server.js";
+import { isMsuProject, isNineChroniclesProject, resolveJamProject, stripComments } from "../../dist/context/msuProject.js";
 import { sanitizeChildEnv } from "../../dist/util/childEnv.js";
 
 const VERSE = "0xabc-1700000000000";
@@ -136,13 +137,28 @@ function dryRunInput(dir, extra = {}) {
 // ── pure helpers ─────────────────────────────────────────────────────────
 
 test("buildPublishTags: update keeps user tags, drops admin system tags, keeps allowed ones", () => {
-  const tags = buildPublishTags(undefined, ["rpg", "__featured_x", "__review_required", "fun"], false);
+  const tags = buildPublishTags(undefined, ["rpg", "__featured_x", "__review_required", "fun"], null);
   assert.deepEqual(tags, ["rpg", "fun", "__review_required"]);
 });
 
 test("buildPublishTags: explicit input tags replace user tags; MSU adds __MSU + __review_required once", () => {
-  const tags = buildPublishTags(["action"], ["old", "__review_required"], true);
+  const tags = buildPublishTags(["action"], ["old", "__review_required"], "MSU");
   assert.deepEqual(tags, ["action", "__review_required", "__MSU"]);
+});
+
+test("buildPublishTags: 9C adds __9C + __review_required once, without __MSU", () => {
+  assert.deepEqual(buildPublishTags(["action"], undefined, "9C"), ["action", "__9C", "__review_required"]);
+  assert.deepEqual(buildPublishTags(["action"], ["__review_required", "__9C"], "9C"), ["action", "__review_required", "__9C"]);
+});
+
+test("buildPublishTags: an update keeps __9C when the code no longer matches, still drops admin tags", () => {
+  const tags = buildPublishTags(undefined, ["rpg", "__9C", "__review_required", "__featured_x"], null);
+  assert.deepEqual(tags, ["rpg", "__9C", "__review_required"]);
+});
+
+test("buildPublishTags: system tags on an existing verse are kept when the project resolves to the other jam", () => {
+  assert.deepEqual(buildPublishTags(["rpg"], ["__9C", "__review_required"], "MSU"), ["rpg", "__9C", "__review_required", "__MSU"]);
+  assert.deepEqual(buildPublishTags(["rpg"], ["__MSU", "__review_required"], "9C"), ["rpg", "__MSU", "__review_required", "__9C"]);
 });
 
 test("buildPlayUrl: agent8-games host, chatId/sha/buildAt query like the web editor", () => {
@@ -273,6 +289,108 @@ test("isMsuProject: helper bundle, code keyword, resource host → true; comment
   fs.writeFileSync(path.join(commentOnly, "src", "App.tsx"), `// MapleStory-style panel\nexport const t = 1;\n`);
   fs.writeFileSync(path.join(commentOnly, "README.md"), "Inspired by MapleStory");
   assert.equal(isMsuProject(commentOnly), false);
+});
+
+// ── 9C detection ─────────────────────────────────────────────────────────
+
+/** A project whose only code is `relPath` with `content`. */
+function projectWith(relPath, content) {
+  const dir = makeProject();
+  fs.mkdirSync(path.dirname(path.join(dir, relPath)), { recursive: true });
+  fs.writeFileSync(path.join(dir, relPath), content);
+  return dir;
+}
+
+test("isNineChroniclesProject: every needle matches in code, in any case", () => {
+  for (const needle of ["나인크로니클", "나인 크로니클", "Nine Chronicles", "NineChronicles", "NINE-CHRONICLES"]) {
+    assert.equal(isNineChroniclesProject(projectWith("src/App.tsx", `export const t = "${needle} Run";\n`)), true, needle);
+  }
+  assert.equal(isNineChroniclesProject(projectWith("src/game.ts", `export const t = "ninechronicles";\n`)), true);
+  assert.equal(isNineChroniclesProject(projectWith("index.html", `<title>Nine Chronicles</title>`)), true);
+});
+
+test("isNineChroniclesProject: comments, unscanned files and '9c' alone → false", () => {
+  const cases = [
+    ["src/App.tsx", `// Nine Chronicles-style panel\nexport const t = 1;\n`],
+    ["src/App.tsx", `/* 나인크로니클 */\nexport const t = 1;\n`],
+    ["index.html", `<!-- nine-chronicles --><title>Game</title>`],
+    ["README.md", "Inspired by Nine Chronicles"],
+    ["assets.json", `{"name":"nine chronicles"}`],
+    ["theme.css", `/* */ .nine-chronicles { color: red; }`],
+    ["node_modules/x/index.ts", `export const t = "nine chronicles";\n`],
+    ["src/App.tsx", `export const c = "#9c9c9c", t = "9C", s = "nine chronic";\n`],
+  ];
+  for (const [relPath, content] of cases) {
+    assert.equal(isNineChroniclesProject(projectWith(relPath, content)), false, `${relPath}: ${content}`);
+  }
+});
+
+test("isNineChroniclesProject: a missing directory is treated as no reference", () => {
+  assert.equal(isNineChroniclesProject(path.join(os.tmpdir(), "verse8-no-such-dir")), false);
+});
+
+test("isMsuProject: 9C needles do not make a project MSU", () => {
+  assert.equal(isMsuProject(projectWith("src/App.tsx", `export const t = "Nine Chronicles";\n`)), false);
+});
+
+test("resolveJamProject: MSU wins over 9C; neither → null", () => {
+  const both = projectWith("src/App.tsx", `export const a = "MapleStory", b = "Nine Chronicles";\n`);
+  assert.equal(isNineChroniclesProject(both), true);
+  assert.equal(resolveJamProject(both), "MSU");
+
+  const helpersAnd9c = projectWith("src/App.tsx", `export const b = "나인크로니클";\n`);
+  fs.mkdirSync(path.join(helpersAnd9c, "src", "__system__", "maple"), { recursive: true });
+  assert.equal(resolveJamProject(helpersAnd9c), "MSU");
+
+  const hostAnd9c = projectWith("src/App.tsx", `export const b = "nine-chronicles";\n`);
+  fs.writeFileSync(path.join(hostAnd9c, "assets.json"), `{"a":"https://resource-static.msu.io/x.png"}`);
+  assert.equal(resolveJamProject(hostAnd9c), "MSU");
+
+  assert.equal(resolveJamProject(projectWith("src/App.tsx", `export const b = "Nine Chronicles";\n`)), "9C");
+  assert.equal(resolveJamProject(projectWith("src/App.tsx", `export const b = 1;\n`)), null);
+});
+
+// chmod has no effect for root, which can read everything.
+const runsAsRoot = process.getuid?.() === 0;
+
+/** MSU's host scan reads *.json and 9C's keyword scan does not, so only the MSU scan hits this file. */
+function projectFailingOnlyMsuScan() {
+  const dir = projectWith("src/App.tsx", `export const b = "Nine Chronicles";\n`);
+  const unreadable = path.join(dir, "assets.json");
+  fs.writeFileSync(unreadable, `{"a":"https://resource-static.msu.io/x.png"}`);
+  fs.chmodSync(unreadable, 0o000);
+  return dir;
+}
+
+test("resolveJamProject: a failed MSU scan → null, not 9C; isMsuProject stays false", { skip: runsAsRoot }, () => {
+  const dir = projectFailingOnlyMsuScan();
+  assert.equal(isMsuProject(dir), false);
+  assert.equal(isNineChroniclesProject(dir), true);
+  assert.equal(resolveJamProject(dir), null);
+});
+
+test("resolveJamProject: the helper bundle decides MSU before any scan can fail", { skip: runsAsRoot }, () => {
+  const dir = projectFailingOnlyMsuScan();
+  fs.mkdirSync(path.join(dir, "src", "__system__", "maple"), { recursive: true });
+  assert.equal(resolveJamProject(dir), "MSU");
+});
+
+test("resolveJamProject: a missing directory → null", () => {
+  assert.equal(resolveJamProject(path.join(os.tmpdir(), "verse8-no-such-dir")), null);
+});
+
+test("runDeploy dryRun: failed MSU scan on a 9C-looking project adds no jam tags", { skip: runsAsRoot }, async () => {
+  const dir = projectFailingOnlyMsuScan();
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.msu, false);
+  assert.equal(res.nineChronicles, false);
+  assert.deepEqual(res.publishBody.tag, ["rpg"]);
+  assert.deepEqual(res.warnings, []);
 });
 
 test("stripComments: keeps URLs and string literals, drops comments", () => {
@@ -508,6 +626,88 @@ test("runDeploy dryRun: existing owned verse → update plan keeping current met
   assert.ok(res.plannedSteps.includes(`POST /v1/verse/update/${VERSE}`));
 });
 
+test("runDeploy dryRun: 9C project → __9C + __review_required, nineChronicles true, msu false", async () => {
+  const dir = makeProject();
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), `export const t = "Nine Chronicles";\n`);
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg", "__cross"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.nineChronicles, true);
+  assert.equal(res.msu, false);
+  assert.deepEqual(res.publishBody.tag, ["rpg", "__9C", "__review_required"]);
+  assert.equal(res.warnings.length, 1);
+  assert.match(res.warnings[0], /`__review_required`.*review.*hide.*Confirm with the user/);
+});
+
+test("runDeploy dryRun: 9C update already under __review_required → no warning", async () => {
+  const dir = makeProject();
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), `export const t = "Nine Chronicles";\n`);
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg", "__9C", "__review_required"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.deepEqual(res.warnings, []);
+});
+
+test("runDeploy dryRun: first deploy of a 9C project carries the tags in the create body", async () => {
+  const dir = makeProject();
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), `export const t = "나인크로니클";\n`);
+  const { handler } = router({
+    "GET /v1/verse/verseId": () => json(404, {}),
+    "GET /v1/verse/id-available": () => json(200, { verseId: VERSE, available: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, FULL_FIRST), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.mode, "first");
+  assert.equal(res.nineChronicles, true);
+  assert.deepEqual(res.publishBody.tag, ["rpg", "__9C", "__review_required"]);
+  assert.deepEqual(res.warnings, []);
+});
+
+test("runDeploy dryRun: project matching both MSU and 9C → MSU tags only, nineChronicles false", async () => {
+  const dir = makeProject();
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), `export const a = "MapleStory", b = "Nine Chronicles";\n`);
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.msu, true);
+  assert.equal(res.nineChronicles, false);
+  assert.deepEqual(res.publishBody.tag, ["rpg", "__MSU", "__review_required"]);
+  assert.deepEqual(res.warnings, []);
+});
+
+test("runDeploy dryRun: no jam reference → both flags false, no tags added", async () => {
+  const dir = makeProject();
+  const { handler } = router({
+    "GET /v1/verse/verseId": () =>
+      json(200, { verseId: VERSE, title: "Live Game", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], isOwner: true }),
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, NOTES), dir)));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.msu, false);
+  assert.equal(res.nineChronicles, false);
+  assert.deepEqual(res.publishBody.tag, ["rpg"]);
+  assert.deepEqual(res.warnings, []);
+});
+
+test("verse8_deploy description: within 2048 characters and tells the caller to confirm warnings", () => {
+  // Hosts may cut off longer tool descriptions, silently dropping whatever comes last.
+  assert.ok(DEPLOY_TOOL.description.length <= 2048, `description is ${DEPLOY_TOOL.description.length} chars`);
+  assert.match(DEPLOY_TOOL.description, /`warnings`, show them to the user and confirm before deploying/);
+});
+
 test("runDeploy: verse owned by another account → verse_owned_by_other (id is never re-minted)", async () => {
   const dir = makeProject();
   const { handler } = router({
@@ -568,8 +768,10 @@ test("runDeploy: installCommand with shell syntax → invalid_input before any n
 
 test("runDeploy: reserved __ tags from the caller are rejected", async () => {
   const dir = makeProject();
-  const res = await withEnvToken(() => runDeploy(dryRunInput(dir, { tags: ["__MSU"] }), dir));
-  assert.equal(res.error, "invalid_input");
+  for (const reserved of ["__MSU", "__9C"]) {
+    const res = await withEnvToken(() => runDeploy(dryRunInput(dir, { tags: [reserved] }), dir));
+    assert.equal(res.error, "invalid_input", reserved);
+  }
 });
 
 test("runDeploy: missing VITE_AGENT8_ACCOUNT → missing_account_env", async () => {
