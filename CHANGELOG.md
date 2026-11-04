@@ -5,6 +5,35 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [0.9.0] — 2026-11-04
+
+### Added — Nine Chronicles project tags (#24)
+
+`verse8_deploy` tags a project that references Nine Chronicles in its code
+with `__9C` + `__review_required`, using the same keyword scan as MSU. A
+project that matches both counts as MSU. Results and dry runs gain a
+`nineChronicles` field next to `msu`. Publishing these tags needs a g2-sync
+that accepts `__9C`.
+
+### Changed — confirm before a 9C update goes to review (#24)
+
+An update that adds `__review_required` to a 9C game now returns a warning:
+the game goes to review and may be hidden until it is approved. The tool
+description, the `invalid_input` hint and the AGENTS.md template tell the
+caller to confirm `warnings` with the user before deploying. Existing
+projects get the template text on their next `overwriteAgentsDoc` attach.
+The `verse8_deploy` description is now capped at 2,048 characters by a test.
+
+### Fixed — a failed MSU scan no longer reads as 9C (#24)
+
+If a file error stops the MSU scan, no jam tag is added, rather than an
+MSU project being tagged 9C. `isMsuProject` still returns false in that case.
+
+### Other
+
+Vendored agent8-skills synced to 46642e6 (`verse8-auth-impl`, #22). README
+explains Verse8 credits and the one-time welcome credit (#21).
+
 ## [0.8.0] — 2026-10-12
 
 ### Changed — vendored skills follow the project's dependencies (#12)
