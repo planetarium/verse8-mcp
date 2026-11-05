@@ -16,8 +16,10 @@ import * as path from "node:path";
  * *.md is never scanned — a mention in docs is not usage.
  *
  * Nine Chronicles (9C) projects use the same keyword scan with their own
- * needles and get `__9C` + `__review_required`. MSU wins when both match; see
- * resolveJamProject.
+ * needles and get `__9C` + `__review_required`. Two signals are 9C-only: the
+ * marker file PROJECT/NineChronicles.md, and those needles in *.json under src/
+ * (raw source), where a game's asset manifest lives. *.json elsewhere is not
+ * scanned for 9C. MSU wins when both match; see resolveJamProject.
  *
  * Nothing is shared with the agent8 container, so a change to the needles or
  * the scan rules here has to be made in its apps/container-agent/src/utils too:
@@ -40,9 +42,19 @@ const MSU_SIGNALS: ReferenceSignals = {
 };
 // "9c" is left out on purpose: it matches too much unrelated code (hex colors, hashes).
 const NINE_CHRONICLES_SIGNALS: ReferenceSignals = {
-  keywords: ["나인크로니클", "나인 크로니클", "nine chronicles", "ninechronicles", "nine-chronicles"],
+  keywords: [
+    "나인크로니클",
+    "나인 크로니클",
+    "nine chronicles",
+    "ninechronicles",
+    "nine-chronicles",
+    "nine-chronicles-assets",
+    "jujeongmin.github.io",
+    "jujeongmin/nine-chronicles",
+  ],
   hosts: [],
 };
+const NINE_CHRONICLES_MARKER_SUBPATH = path.join("PROJECT", "NineChronicles.md");
 const KEYWORD_SCAN_EXTENSIONS = new Set([".ts", ".tsx", ".html"]);
 const HOST_SCAN_EXTENSIONS = new Set([".json", ".ts", ".tsx", ".html", ".css"]);
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
@@ -113,28 +125,42 @@ function hasKeyword(lowerContent: string, keywords: readonly string[]): boolean 
   return keywords.some((needle) => lowerContent.includes(needle));
 }
 
-function scanForReference(dir: string, signals: ReferenceSignals): boolean {
+/** True as soon as `matches` accepts a file under `dir`. */
+function someFile(dir: string, matches: (file: string) => boolean): boolean {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (IGNORED_DIRS.has(entry.name)) continue;
-      if (scanForReference(full, signals)) return true;
-    } else if (entry.isFile()) {
-      const ext = path.extname(entry.name);
-      const scanKeywords = KEYWORD_SCAN_EXTENSIONS.has(ext);
-      const scanHosts = signals.hosts.length > 0 && HOST_SCAN_EXTENSIONS.has(ext);
-      if (!scanKeywords && !scanHosts) continue;
-      const content = fs.readFileSync(full, "utf8").toLowerCase();
-      if (scanKeywords && hasKeyword(content, signals.keywords) && hasKeyword(stripComments(content), signals.keywords)) {
-        return true;
-      }
-      if (scanHosts && signals.hosts.some((host) => content.includes(host))) {
-        return true;
-      }
+      if (someFile(full, matches)) return true;
+    } else if (entry.isFile() && matches(full)) {
+      return true;
     }
   }
   return false;
+}
+
+function scanForReference(dir: string, signals: ReferenceSignals): boolean {
+  return someFile(dir, (full) => {
+    const ext = path.extname(full);
+    const scanKeywords = KEYWORD_SCAN_EXTENSIONS.has(ext);
+    const scanHosts = signals.hosts.length > 0 && HOST_SCAN_EXTENSIONS.has(ext);
+    if (!scanKeywords && !scanHosts) return false;
+    const content = fs.readFileSync(full, "utf8").toLowerCase();
+    if (scanKeywords && hasKeyword(content, signals.keywords) && hasKeyword(stripComments(content), signals.keywords)) {
+      return true;
+    }
+    return scanHosts && signals.hosts.some((host) => content.includes(host));
+  });
+}
+
+function jsonUnderSrcMentions(projectDir: string, keywords: readonly string[]): boolean {
+  const srcDir = path.join(projectDir, "src");
+  if (!fs.existsSync(srcDir)) return false;
+  return someFile(
+    srcDir,
+    (full) => path.extname(full) === ".json" && hasKeyword(fs.readFileSync(full, "utf8").toLowerCase(), keywords),
+  );
 }
 
 export function hasMapleSystemHelpers(projectDir: string): boolean {
@@ -160,12 +186,16 @@ export function isMsuProject(projectDir: string): boolean {
 }
 
 /**
- * Keywords only for now; later signals (hosts, a helper bundle) belong in here
- * so callers keep going through this function. Best-effort like isMsuProject.
+ * Later signals (hosts, a helper bundle) belong in here so callers keep going
+ * through this function. Best-effort like isMsuProject.
  */
 export function isNineChroniclesProject(projectDir: string): boolean {
   try {
-    return scanForReference(projectDir, NINE_CHRONICLES_SIGNALS);
+    return (
+      fs.existsSync(path.join(projectDir, NINE_CHRONICLES_MARKER_SUBPATH)) ||
+      scanForReference(projectDir, NINE_CHRONICLES_SIGNALS) ||
+      jsonUnderSrcMentions(projectDir, NINE_CHRONICLES_SIGNALS.keywords)
+    );
   } catch {
     return false;
   }

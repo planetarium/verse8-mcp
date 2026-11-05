@@ -325,12 +325,78 @@ test("isNineChroniclesProject: comments, unscanned files and '9c' alone → fals
   }
 });
 
+test("isNineChroniclesProject: a mention only in a *.json under src/ → true, comments are not stripped", () => {
+  for (const [relPath, content] of [
+    ["src/assets.json", `{"name":"Nine Chronicles"}`],
+    ["src/data/deep/items.json", `{"name":"나인크로니클"}`],
+    ["src/assets.json", `{"url":"https://jujeongmin.github.io/x/hero.png"}`],
+    ["src/assets.json", `{"url":"https://cdn.example/nine-chronicles-assets/hero.png"}`],
+    ["src/assets.json", `{"repo":"JuJeongMin/nine-chronicles"}`],
+    ["src/assets.json", `// nine chronicles\n{}`],
+  ]) {
+    assert.equal(isNineChroniclesProject(projectWith(relPath, content)), true, `${relPath}: ${content}`);
+  }
+});
+
+test("isNineChroniclesProject: the asset host counts in code too", () => {
+  assert.equal(isNineChroniclesProject(projectWith("src/game.ts", `export const u = "https://jujeongmin.github.io/a.png";\n`)), true);
+});
+
+test("isNineChroniclesProject: the marker file PROJECT/NineChronicles.md → true, even when empty", () => {
+  assert.equal(isNineChroniclesProject(projectWith("PROJECT/NineChronicles.md", "")), true);
+});
+
+test("isNineChroniclesProject: other *.json and *.md, and a marker elsewhere → false", () => {
+  const cases = [
+    ["package.json", `{"name":"nine-chronicles-game"}`],
+    ["public/skeleton.json", `{"skeleton":"nine chronicles"}`],
+    ["public/assets/hero/skeleton.json", `{"images":"https://jujeongmin.github.io/a.png"}`],
+    ["config/assets.json", `{"name":"nine chronicles"}`],
+    ["src/node_modules/x/package.json", `{"name":"nine-chronicles"}`],
+    ["src/notes.md", "Nine Chronicles"],
+    ["PROJECT/Context.md", "Nine Chronicles"],
+    ["public/PROJECT/NineChronicles.md", ""],
+    ["src/PROJECT/NineChronicles.md", ""],
+    ["src/assets.json", `{"name":"chronicles of nine"}`],
+  ];
+  for (const [relPath, content] of cases) {
+    assert.equal(isNineChroniclesProject(projectWith(relPath, content)), false, `${relPath}: ${content}`);
+  }
+});
+
+test("isMsuProject: the 9C-only signals do not make a project MSU; MapleStory in src json stays unscanned", () => {
+  assert.equal(isMsuProject(projectWith("PROJECT/NineChronicles.md", "")), false);
+  assert.equal(isMsuProject(projectWith("src/assets.json", `{"name":"Nine Chronicles"}`)), false);
+  assert.equal(isMsuProject(projectWith("src/assets.json", `{"name":"MapleStory"}`)), false);
+});
+
 test("isNineChroniclesProject: a missing directory is treated as no reference", () => {
   assert.equal(isNineChroniclesProject(path.join(os.tmpdir(), "verse8-no-such-dir")), false);
 });
 
 test("isMsuProject: 9C needles do not make a project MSU", () => {
   assert.equal(isMsuProject(projectWith("src/App.tsx", `export const t = "Nine Chronicles";\n`)), false);
+});
+
+test("resolveJamProject: MSU wins over the marker and over a src json mention; both alone → 9C", () => {
+  const marker = projectWith("PROJECT/NineChronicles.md", "");
+  assert.equal(resolveJamProject(marker), "9C");
+  fs.mkdirSync(path.join(marker, "src"));
+  fs.writeFileSync(path.join(marker, "src", "App.tsx"), `export const a = "MapleStory";\n`);
+  assert.equal(resolveJamProject(marker), "MSU");
+
+  const json = projectWith("src/assets.json", `{"name":"Nine Chronicles"}`);
+  assert.equal(resolveJamProject(json), "9C");
+  fs.writeFileSync(path.join(json, "src", "hosts.json"), `{"a":"https://resource-static.msu.io/x.png"}`);
+  assert.equal(resolveJamProject(json), "MSU");
+});
+
+test("resolveJamProject: a failed MSU scan → null even with the 9C marker", { skip: process.getuid?.() === 0 }, () => {
+  const dir = projectWith("PROJECT/NineChronicles.md", "");
+  const unreadable = path.join(dir, "assets.json");
+  fs.writeFileSync(unreadable, "{}");
+  fs.chmodSync(unreadable, 0o000);
+  assert.equal(resolveJamProject(dir), null);
 });
 
 test("resolveJamProject: MSU wins over 9C; neither → null", () => {
@@ -353,7 +419,7 @@ test("resolveJamProject: MSU wins over 9C; neither → null", () => {
 // chmod has no effect for root, which can read everything.
 const runsAsRoot = process.getuid?.() === 0;
 
-/** MSU's host scan reads *.json and 9C's keyword scan does not, so only the MSU scan hits this file. */
+/** MSU's host scan reads *.json everywhere and 9C reads it only under src/, so only the MSU scan hits this file. */
 function projectFailingOnlyMsuScan() {
   const dir = projectWith("src/App.tsx", `export const b = "Nine Chronicles";\n`);
   const unreadable = path.join(dir, "assets.json");
