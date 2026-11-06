@@ -21,7 +21,9 @@ preflight with a hint to call `verse8_login_start`.
 
 The 0.9.0 tarball already shipped #26, which the 0.9.0 entry does not list:
 Nine Chronicles is also detected from a `PROJECT/NineChronicles.md` marker
-and from the keywords in `*.json` under `src/`.
+and from the keywords in `*.json` under `src/`, and the keyword list gained
+the Nine Chronicles asset host `jujeongmin.github.io`, matched in every
+scanned file.
 
 ## [0.9.0] — 2026-11-04
 
