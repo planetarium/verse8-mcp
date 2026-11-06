@@ -137,6 +137,37 @@ test("buildPreflightSteps: gameserver project → install + build + deploy (3 st
   assert.equal(steps[2].args[2], "--preview");
 });
 
+test("buildPreflightSteps: only the preview deploy step gets V8_ACCESS_TOKEN", () => {
+  const baseEnv = { PATH: "/usr/bin", KEEP: "1" };
+  const steps = buildPreflightSteps("bun update", true, { baseEnv, token: "dummy-token" });
+  assert.equal(steps.length, 3);
+  assert.equal(steps[0].env.V8_ACCESS_TOKEN, undefined, "install must not see the token");
+  assert.equal(steps[1].env.V8_ACCESS_TOKEN, undefined, "gameserver build must not see the token");
+  assert.equal(steps[2].env.V8_ACCESS_TOKEN, "dummy-token");
+  assert.equal(steps[2].env.KEEP, "1");
+  assert.equal(baseEnv.V8_ACCESS_TOKEN, undefined, "baseEnv is not mutated");
+});
+
+test("buildPreflightSteps: default base env strips verse8 secrets from every step", () => {
+  const saved = { a: process.env.VERSE8_ACCESS_TOKEN, b: process.env.V8_ACCESS_TOKEN };
+  process.env.VERSE8_ACCESS_TOKEN = "dummy-env-token";
+  process.env.V8_ACCESS_TOKEN = "dummy-shell-token";
+  try {
+    const steps = buildPreflightSteps("bun update", true, { token: "dummy-token" });
+    for (const step of steps) {
+      assert.equal(step.env.VERSE8_ACCESS_TOKEN, undefined, `${step.command} saw VERSE8_ACCESS_TOKEN`);
+    }
+    assert.equal(steps[0].env.V8_ACCESS_TOKEN, undefined);
+    assert.equal(steps[1].env.V8_ACCESS_TOKEN, undefined);
+    assert.equal(steps[2].env.V8_ACCESS_TOKEN, "dummy-token");
+  } finally {
+    if (saved.a === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.a;
+    if (saved.b === undefined) delete process.env.V8_ACCESS_TOKEN;
+    else process.env.V8_ACCESS_TOKEN = saved.b;
+  }
+});
+
 test("buildPreflightSteps: custom installCommand with extra flags is split correctly", () => {
   const steps = buildPreflightSteps("bun install --frozen-lockfile", false);
   assert.equal(steps.length, 1);
@@ -279,3 +310,160 @@ test("runPreview: skipPreflight: true bypasses preflight entirely", async () => 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ------------------------------------------------------------------
+// runPreview integration — the preview deploy gets the stored login
+// ------------------------------------------------------------------
+
+// A fake `npx` first on PATH records, per step, only whether the token
+// variables are set — never their values.
+function withFakeNpx(dir) {
+  const binDir = path.join(dir, "_bin");
+  fs.mkdirSync(binDir);
+  const record = path.join(dir, "_record.txt");
+  fs.writeFileSync(
+    path.join(binDir, "npx"),
+    [
+      "#!/bin/sh",
+      'case "$2" in @agent8/deploy*) name=deploy ;; *) name=build ;; esac',
+      'if [ "$V8_ACCESS_TOKEN" = "dummy-preview-token" ]; then v8=match; elif [ -n "$V8_ACCESS_TOKEN" ]; then v8=other; else v8=absent; fi',
+      'if [ -n "$VERSE8_ACCESS_TOKEN" ]; then verse8=present; else verse8=absent; fi',
+      'echo "$name v8=$v8 verse8=$verse8" >> "$PREVIEW_PF_RECORD"',
+      // PREVIEW_PF_ECHO=ok|fail makes the deploy step echo the token, like a
+      // server.js that logs its env would.
+      'if [ "$name" = deploy ] && [ -n "$PREVIEW_PF_ECHO" ]; then echo "leak $V8_ACCESS_TOKEN"; echo "leak $V8_ACCESS_TOKEN" >&2; if [ "$PREVIEW_PF_ECHO" = fail ]; then exit 1; fi; fi',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return { binDir, record };
+}
+
+function envSnapshot(keys) {
+  const saved = {};
+  for (const k of keys) saved[k] = process.env[k];
+  return () => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  };
+}
+
+function previewInput(dir, port, installCmd, previewCmd) {
+  return {
+    projectDir: dir,
+    previewCommand: previewCmd,
+    previewPort: port,
+    logPath: "preview.log",
+    startOnly: true,
+    readinessTimeoutMs: 5000,
+    useAutoToolLog: true,
+    skipAttachCheck: false,
+    installCommand: installCmd,
+    skipPreflight: false,
+    preflightTimeoutMs: 30000,
+  };
+}
+
+test("runPreview: gameserver preflight hands the login to `deploy --preview` only", { skip: process.platform === "win32" }, async () => {
+  const dir = tmp();
+  const port = await reservePort();
+  const restore = envSnapshot(["PATH", "VERSE8_ACCESS_TOKEN", "V8_ACCESS_TOKEN", "PREVIEW_PF_RECORD"]);
+  try {
+    fs.mkdirSync(path.join(dir, "server"));
+    const { binDir, record } = withFakeNpx(dir);
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+    process.env.VERSE8_ACCESS_TOKEN = "dummy-preview-token";
+    delete process.env.V8_ACCESS_TOKEN;
+    process.env.PREVIEW_PF_RECORD = record;
+    const installCmd = writeNodeScript(
+      dir,
+      `require('fs').appendFileSync(process.env.PREVIEW_PF_RECORD, 'install v8=' + (process.env.V8_ACCESS_TOKEN ? 'set' : 'absent') + ' verse8=' + (process.env.VERSE8_ACCESS_TOKEN ? 'present' : 'absent') + '\\n');\n`,
+    );
+    const previewCmd = writeNodeScript(
+      dir,
+      `require('net').createServer(c => c.end()).listen(${port}, '127.0.0.1');\n`,
+    );
+    const result = await runPreview(previewInput(dir, port, installCmd, previewCmd), dir);
+    if (result.ok && typeof result.preview === "object" && "pid" in result.preview && typeof result.preview.pid === "number") {
+      spawnedPids.push(result.preview.pid);
+    }
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    assert.equal(result.preflight.gameserver, true);
+    assert.equal(result.preflight.steps.length, 3);
+    assert.deepEqual(fs.readFileSync(record, "utf8").trim().split("\n"), [
+      "install v8=absent verse8=absent",
+      "build v8=absent verse8=absent",
+      "deploy v8=match verse8=absent",
+    ]);
+    assert.doesNotMatch(JSON.stringify(result), /dummy-preview-token/);
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreview: gameserver preflight without a login stops before any step", { skip: process.platform === "win32" }, async () => {
+  const dir = tmp();
+  const port = await reservePort();
+  const restore = envSnapshot(["PATH", "VERSE8_ACCESS_TOKEN", "XDG_CONFIG_HOME", "PREVIEW_PF_RECORD"]);
+  try {
+    fs.mkdirSync(path.join(dir, "server"));
+    const { binDir, record } = withFakeNpx(dir);
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+    delete process.env.VERSE8_ACCESS_TOKEN;
+    process.env.XDG_CONFIG_HOME = path.join(dir, "_empty_config");
+    process.env.PREVIEW_PF_RECORD = record;
+    const installCmd = writeNodeScript(
+      dir,
+      "require('fs').appendFileSync(process.env.PREVIEW_PF_RECORD, 'install\\n');\n",
+    );
+    const previewCmd = writeNodeScript(
+      dir,
+      `require('net').createServer(c => c.end()).listen(${port}, '127.0.0.1');\n`,
+    );
+    const result = await runPreview(previewInput(dir, port, installCmd, previewCmd), dir);
+    assert.equal(result.ok, false);
+    assert.equal(result.stage, "preflight_failed");
+    assert.match(result.hint, /verse8_login_start/);
+    assert.match(result.failedStep.command, /@agent8\/deploy(@.+)? --preview$/);
+    assert.deepEqual(result.stepsCompleted, []);
+    assert.equal(fs.existsSync(record), false, "no preflight step may run without a login");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const mode of ["ok", "fail"]) {
+  test(`runPreview: a deploy step that echoes the token is masked (${mode})`, { skip: process.platform === "win32" }, async () => {
+    const dir = tmp();
+    const port = await reservePort();
+    const restore = envSnapshot(["PATH", "VERSE8_ACCESS_TOKEN", "PREVIEW_PF_RECORD", "PREVIEW_PF_ECHO"]);
+    try {
+      fs.mkdirSync(path.join(dir, "server"));
+      const { binDir, record } = withFakeNpx(dir);
+      process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+      process.env.VERSE8_ACCESS_TOKEN = "dummy-preview-token";
+      process.env.PREVIEW_PF_RECORD = record;
+      process.env.PREVIEW_PF_ECHO = mode;
+      const installCmd = writeNodeScript(dir, "process.exit(0);\n");
+      const previewCmd = writeNodeScript(
+        dir,
+        `require('net').createServer(c => c.end()).listen(${port}, '127.0.0.1');\n`,
+      );
+      const result = await runPreview(previewInput(dir, port, installCmd, previewCmd), dir);
+      if (result.ok && typeof result.preview === "object" && "pid" in result.preview && typeof result.preview.pid === "number") {
+        spawnedPids.push(result.preview.pid);
+      }
+      assert.equal(result.ok, mode === "ok", JSON.stringify(result));
+      const text = JSON.stringify(result);
+      assert.doesNotMatch(text, /dummy-preview-token/);
+      assert.match(text, /leak \[REDACTED\]/);
+    } finally {
+      restore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
