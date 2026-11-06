@@ -5,9 +5,9 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
+## [0.9.1] — 2026-11-06
 
-### Fixed — `verse8_preview` hands the login to the preview deploy
+### Fixed — `verse8_preview` hands the login to the preview deploy (#27)
 
 On a gameserver project, the preflight's `npx @agent8/deploy --preview` step
 failed with `V8_ACCESS_TOKEN environment variable is required`, because the
@@ -16,6 +16,12 @@ from the same login `verse8_deploy` uses, and only that step does: install
 and `gameserver-node build` run with the sanitized child env, as in
 `verse8_deploy`. Without a login, a gameserver preview stops before the
 preflight with a hint to call `verse8_login_start`.
+
+### Other
+
+The 0.9.0 tarball already shipped #26, which the 0.9.0 entry does not list:
+Nine Chronicles is also detected from a `PROJECT/NineChronicles.md` marker
+and from the keywords in `*.json` under `src/`.
 
 ## [0.9.0] — 2026-11-04
 
