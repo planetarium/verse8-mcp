@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { parseOverrideHost } from "../util/hostAllowlist.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
+import { loadToken } from "../context/token.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
 import {
   checkpointInputSchema,
@@ -375,12 +376,15 @@ interface PreflightSpec {
   command: string;
   cmd: string;
   args: string[];
+  env: NodeJS.ProcessEnv;
 }
 
 export function buildPreflightSteps(
   installCommand: string,
   gameserver: boolean,
+  opts: { baseEnv?: NodeJS.ProcessEnv; token?: string | null } = {},
 ): PreflightSpec[] {
+  const baseEnv = opts.baseEnv ?? sanitizeChildEnv();
   const steps: PreflightSpec[] = [];
   const [installBin, ...installArgs] = installCommand.trim().split(/\s+/);
   if (!installBin) {
@@ -392,31 +396,45 @@ export function buildPreflightSteps(
     command: installCommand.trim(),
     cmd: installBin,
     args: installArgs,
+    env: baseEnv,
   });
   if (gameserver) {
     const gsPin = resolveAgent8Pin("gameserver-node");
-    const deployPin = resolveAgent8Pin("deploy");
     steps.push({
       command: `npx -y ${gsPin.nameArg} build`,
       cmd: "npx",
       args: ["-y", gsPin.nameArg, "build"],
+      env: baseEnv,
     });
     steps.push({
-      command: `npx -y ${deployPin.nameArg} --preview`,
+      command: previewDeployCommand(),
       cmd: "npx",
-      args: ["-y", deployPin.nameArg, "--preview"],
+      args: ["-y", resolveAgent8Pin("deploy").nameArg, "--preview"],
+      // The deploy CLI authenticates preview uploads with V8_ACCESS_TOKEN;
+      // only this step sees it (install/build run third-party code), as in
+      // verse8_deploy.
+      env: opts.token ? { ...baseEnv, V8_ACCESS_TOKEN: opts.token } : baseEnv,
     });
   }
   return steps;
+}
+
+function previewDeployCommand(): string {
+  return `npx -y ${resolveAgent8Pin("deploy").nameArg} --preview`;
 }
 
 function runPreflightSteps(
   cwd: string,
   steps: PreflightSpec[],
   timeoutMs: number,
+  token: string | null,
 ):
   | { ok: true; results: PreflightStepResult[] }
   | { ok: false; failedStep: PreflightStepResult; completed: PreflightStepResult[] } {
+  // The deploy CLI evaluates the project's server.js in the process that
+  // holds V8_ACCESS_TOKEN, so its output may echo it. Mask the exact value
+  // before any of it reaches a result or hint.
+  const maskedTail = (s: string) => tail(token ? s.split(token).join("[REDACTED]") : s);
   const completed: PreflightStepResult[] = [];
   for (const step of steps) {
     const start = Date.now();
@@ -426,6 +444,7 @@ function runPreflightSteps(
     try {
       const out = execFileSync(step.cmd, step.args, {
         cwd,
+        env: step.env,
         encoding: "utf8",
         timeout: timeoutMs,
         maxBuffer: 50 * 1024 * 1024,
@@ -453,8 +472,8 @@ function runPreflightSteps(
         command: step.command,
         durationMs: Date.now() - start,
         exitCode,
-        stdoutTail: tail(stdout),
-        stderrTail: tail(stderr),
+        stdoutTail: maskedTail(stdout),
+        stderrTail: maskedTail(stderr),
       };
       return { ok: false, failedStep: result, completed };
     }
@@ -462,8 +481,8 @@ function runPreflightSteps(
       command: step.command,
       durationMs: Date.now() - start,
       exitCode,
-      stdoutTail: tail(stdout),
-      stderrTail: tail(stderr),
+      stdoutTail: maskedTail(stdout),
+      stderrTail: maskedTail(stderr),
     });
   }
   return { ok: true, results: completed };
@@ -531,8 +550,29 @@ export async function runPreview(
     };
   } else {
     const gameserver = detectGameserver(cwd);
-    const steps = buildPreflightSteps(input.installCommand, gameserver);
-    const result = runPreflightSteps(cwd, steps, input.preflightTimeoutMs);
+    // `@agent8/deploy --preview` needs the login. The checkpoint already
+    // gates on it, but startOnly skips the checkpoint — fail here rather
+    // than after a full install + gameserver build.
+    const token = gameserver ? loadToken(cwd) : null;
+    if (gameserver && !token) {
+      return {
+        ok: false,
+        stage: "preflight_failed",
+        hint:
+          "Not logged in to Verse8, and the gameserver preview deploy needs the login. " +
+          "Call verse8_login_start (then verse8_login_complete) and re-run verse8_preview.",
+        failedStep: {
+          command: previewDeployCommand(),
+          durationMs: 0,
+          exitCode: -1,
+          stderrTail: "not logged in to Verse8",
+        },
+        stepsCompleted: [],
+        gameserver,
+      };
+    }
+    const steps = buildPreflightSteps(input.installCommand, gameserver, { token });
+    const result = runPreflightSteps(cwd, steps, input.preflightTimeoutMs, token);
     if (!result.ok) {
       return {
         ok: false,
