@@ -19,10 +19,9 @@ import { createConnection, createServer } from "node:net";
 import {
   detectGameserver,
   buildPreflightSteps,
-  preflightUsesShell,
-  unsafePreflightTokens,
   runPreview,
 } from "../../dist/tools/preview.js";
+import { unsafeShellTokens } from "../../dist/util/shellArgv.js";
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "verse8-preflight-"));
@@ -472,26 +471,11 @@ for (const mode of ["ok", "fail"]) {
 
 // ------------------------------------------------------------------
 // Windows: npx is a .cmd shim, so preflight steps run through the shell
+// (stepsUseShell / unsafeShellTokens are covered in shellArgv.test.mjs)
 // ------------------------------------------------------------------
-test("preflight steps use the shell on Windows only", () => {
-  assert.equal(preflightUsesShell("win32"), true);
-  assert.equal(preflightUsesShell("linux"), false);
-  assert.equal(preflightUsesShell("darwin"), false);
-});
-
 test("the steps verse8_preview builds itself are plain argv under a shell", () => {
   for (const step of buildPreflightSteps("bun update", true, { baseEnv: {}, token: "tok" })) {
-    assert.deepEqual(unsafePreflightTokens([step.cmd, ...step.args]), [], step.command);
-  }
-});
-
-test("unsafePreflightTokens accepts paths and flags, refuses shell syntax", () => {
-  assert.deepEqual(
-    unsafePreflightTokens(["npm", "ci", "--no-audit", "@agent8/deploy@1.5.5", "C:\\Users\\RUNNER~1\\x.cjs", "/tmp/x.cjs", "--registry=https://r.example/"]),
-    [],
-  );
-  for (const bad of ["&&", "a|b", "x;y", ">out", "%PATH%", "^", "(x)", '"q"', "'q'", "$(id)", "`id`", "a&b", "*"]) {
-    assert.deepEqual(unsafePreflightTokens(["bun", bad]), [bad], bad);
+    assert.deepEqual(unsafeShellTokens([step.cmd, ...step.args]), [], step.command);
   }
 });
 

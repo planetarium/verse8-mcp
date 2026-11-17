@@ -18,6 +18,7 @@ import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
 import { safeErrorHint, safeHint } from "../util/redact.js";
+import { stepsUseShell, unsafeShellTokens } from "../util/shellArgv.js";
 import {
   checkpointInputSchema,
   runCheckpoint,
@@ -90,19 +91,13 @@ export const WEB_PUBLISH_FORM = {
 /** Values interpolated into argv under a Windows shell — keep them inert. */
 const SAFE_ARG = /^[A-Za-z0-9_.-]+$/;
 /**
- * `installCommand` is split on whitespace and run with `shell: true` on
- * Windows (npx / bun are .cmd shims), so a token carrying shell syntax
- * (`&&`, `|`, `;`, `$(…)`, backticks, redirects, quotes, globs) would be
- * interpreted by cmd.exe. Only plain package-manager argv is accepted.
+ * Tokens of `installCommand` that could be interpreted by a shell. The
+ * command is split on whitespace and runs through the shell on Windows
+ * (`stepsUseShell`), so it is checked with the same charset as
+ * verse8_preview's preflight — here up front, before any network call.
  */
-const INSTALL_TOKEN_RE = /^[A-Za-z0-9_.@/:=+-]+$/;
-
-/** Tokens of `installCommand` that could be interpreted by a shell. */
 export function unsafeInstallCommandTokens(installCommand: string): string[] {
-  return installCommand
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length > 0 && !INSTALL_TOKEN_RE.test(t));
+  return unsafeShellTokens(installCommand.trim().split(/\s+/));
 }
 
 export const deployInputSchema = checkpointInputSchema
@@ -593,8 +588,9 @@ function runStep(cwd: string, step: StepSpec, timeoutMs: number): DeployStepResu
       timeout: timeoutMs,
       maxBuffer: 50 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
-      // npx / bun are .cmd shims on Windows; argv is SAFE_ARG-validated.
-      shell: process.platform === "win32",
+      // npx is a .cmd shim on Windows; installCommand was checked with
+      // unsafeInstallCommandTokens and verseId / account with SAFE_ARG.
+      shell: stepsUseShell(),
     });
     return { command: step.command, durationMs: Date.now() - start, exitCode: 0, stdoutTail: safeHint(tail(String(out))) };
   } catch (e) {

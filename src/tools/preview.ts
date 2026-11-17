@@ -7,6 +7,7 @@ import { parseOverrideHost } from "../util/hostAllowlist.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
 import { loadToken } from "../context/token.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
+import { stepsUseShell, unsafeShellTokens } from "../util/shellArgv.js";
 import {
   checkpointInputSchema,
   runCheckpoint,
@@ -423,30 +424,6 @@ function previewDeployCommand(): string {
   return `npx -y ${resolveAgent8Pin("deploy").nameArg} --preview`;
 }
 
-/**
- * `npx` (and `bunx`, `npm`, `pnpm`, …) is a `.cmd` shim on Windows, which
- * `execFileSync` cannot start without a shell: the gameserver build step
- * failed there with `spawnSync npx ENOENT` before anything ran. Preflight
- * steps therefore go through the shell on Windows, as `verse8_deploy` does.
- */
-export function preflightUsesShell(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "win32";
-}
-
-/**
- * Under a shell every argv token is re-read by cmd.exe, so a token carrying
- * shell syntax (`&`, `|`, `;`, redirects, quotes, `%VAR%`, `^`, parentheses)
- * would be interpreted instead of passed on. Only inert tokens are accepted:
- * the package-manager charset `verse8_deploy` allows, plus `\` and `~` so a
- * Windows path (`C:\Users\RUNNER~1\…`) still counts as plain argv.
- */
-const PREFLIGHT_SHELL_TOKEN_RE = /^[A-Za-z0-9_.@/:=+\\~-]+$/;
-
-/** Tokens of a preflight step that a shell could interpret. */
-export function unsafePreflightTokens(tokens: string[]): string[] {
-  return tokens.filter((t) => !PREFLIGHT_SHELL_TOKEN_RE.test(t));
-}
-
 function runPreflightSteps(
   cwd: string,
   steps: PreflightSpec[],
@@ -460,7 +437,9 @@ function runPreflightSteps(
   // before any of it reaches a result or hint.
   const maskedTail = (s: string) => tail(token ? s.split(token).join("[REDACTED]") : s);
   const completed: PreflightStepResult[] = [];
-  const shell = preflightUsesShell();
+  // npx is a .cmd shim on Windows, so the steps run through the shell there
+  // (the gameserver build failed with `spawnSync npx ENOENT` without it).
+  const shell = stepsUseShell();
   for (const step of steps) {
     const start = Date.now();
     let stdout = "";
@@ -469,7 +448,7 @@ function runPreflightSteps(
     if (shell) {
       // Refuse rather than let cmd.exe interpret the token. The token is
       // reported as-is: it is the caller's own installCommand, never a secret.
-      const unsafe = unsafePreflightTokens([step.cmd, ...step.args]);
+      const unsafe = unsafeShellTokens([step.cmd, ...step.args]);
       if (unsafe.length > 0) {
         return {
           ok: false,
