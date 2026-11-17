@@ -164,3 +164,25 @@ test('base64 validator rejects invalid alphabet and malformed padding', async ()
   assert.equal(result.ok,true,JSON.stringify(bytes));assert.deepEqual(await fs.readFile(result.files[0].path),Buffer.from(bytes,'base64'));
  }
 });
+test('provider artifact IDs cannot collide with status messages in either stream order', async () => {
+ const artifact={...task.artifacts[0],artifactId:'message-0'};
+ const fileEvent={kind:'artifact-update',taskId:'t',contextId:'ctx',artifact,lastChunk:true};
+ const statusEvent={kind:'status-update',taskId:'t',contextId:'ctx',final:true,status:{state:'completed',message:{kind:'message',role:'agent',parts:[{kind:'text',text:'Done'}]}}};
+ for(const events of [[fileEvent,statusEvent],[statusEvent,fileEvent]]) {
+  globalThis.fetch=async(url,init)=> {
+   if(url.endsWith('/token'))return token(new URLSearchParams(init.body).get('scope'));
+   const id=JSON.parse(init.body).id;
+   return new Response(events.map(result=>`data: ${JSON.stringify({jsonrpc:'2.0',id,result})}\n\n`).join(''),{headers:{'content-type':'text/event-stream'}});
+  };
+  const result=await runIpAssets({pool:'maple',method:'tasks/resubscribe',taskId:'t',projectDir:dir});
+  assert.equal(result.ok,true);assert.equal(result.files.length,1);assert.equal(result.files[0].artifactId,'message-0');
+  assert.equal(await fs.readFile(result.files[0].path,'utf8'),'actual asset bytes');assert.deepEqual(result.messages,['Done']);
+ }
+});
+test('repeated full task snapshots preserve colliding artifact IDs and status text', async () => {
+ mock({...task,artifacts:[{...task.artifacts[0],artifactId:'message-0'}],status:{state:'completed',message:{kind:'message',role:'agent',parts:[{kind:'text',text:'Done'}]}}});
+ const input={pool:'maple',method:'tasks/get',taskId:'task-a',projectDir:dir};
+ const first=await runIpAssets(input);const second=await runIpAssets(input);
+ for(const result of [first,second]) {assert.equal(result.ok,true);assert.equal(result.files.length,1);assert.equal(result.files[0].artifactId,'message-0');assert.deepEqual(result.messages,['Done']);}
+ assert.equal(first.files[0].path,second.files[0].path);assert.equal(await fs.readFile(second.files[0].path,'utf8'),'actual asset bytes');
+});

@@ -46,13 +46,16 @@ async function privateOutputDirectory(projectDir: string, namespace: string): Pr
 
 /** Only inline bytes are supported. Provider URLs are never fetched or exposed. */
 async function saveResults(results: Record<string, unknown>[], projectDir: string, namespace: string) {
-  const artifacts = new Map<string, { parts: unknown[]; complete: boolean; hasBase: boolean }>();
+  type ArtifactParts = { parts: unknown[]; complete: boolean; hasBase: boolean };
+  const artifacts = new Map<string, ArtifactParts>();
+  // Provider IDs are arbitrary strings; synthetic message IDs must never share their map.
+  const messageParts: Array<[string, ArtifactParts]> = [];
   const messages: string[] = [];
   let messageBytes = 0;
   let messageIndex = 0;
   const addMessage = (message: Record<string, unknown>) => {
     if (Array.isArray(message.parts)) {
-      artifacts.set(`message-${messageIndex++}`, { parts: message.parts, complete: true, hasBase: true });
+      messageParts.push([`message-${messageIndex++}`, { parts: message.parts, complete: true, hasBase: true }]);
     }
   };
   for (const result of results) {
@@ -75,7 +78,7 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
     }
   }
   const pending: Array<{ artifactId: string; name: string; bytes: Buffer; mimeType?: string }> = [];
-  for (const [artifactId, artifact] of artifacts) {
+  for (const [artifactId, artifact] of [...artifacts, ...messageParts]) {
     for (const part of artifact.parts) {
       if (!object(part)) throw new RouterError("router_artifact_invalid", true);
       if (part.kind === "text" && typeof part.text === "string" && messageBytes < 64 * 1024) {
