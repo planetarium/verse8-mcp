@@ -13,6 +13,7 @@ import { recordToolCall } from "./util/v8CallLog.js";
 import { safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
 import { loadToken } from "./context/token.js";
+import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
 import { bootstrapInputSchema, runBootstrap } from "./tools/bootstrap.js";
 import {
@@ -230,6 +231,11 @@ export function createServer(): Server {
 
     if (token) {
       // INV-11: Tool discovery is token-gated, not cwd-gated
+      tools.push({
+        name: "verse8_ip_assets",
+        description: "Invoke an authorized native A2A IP asset pool using your Verse8 login. Requires operator-configured VERSE8_ROUTER_URL. Methods: message/send or message/stream with text; tasks/get, tasks/cancel or tasks/resubscribe with taskId. Preserve returned taskId/contextId for continuation and messageId for correlation. Inline files are saved under projectDir/.verse8/ip-assets; provider URLs are never fetched. On interruption query the existing task; never automatically resend a message.",
+        inputSchema: zodToJsonSchema(ipAssetsInputSchema),
+      });
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
       tools.push(UPLOAD_ASSET_TOOL);
@@ -368,6 +374,12 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runDeploy(parsed, cwd), {
           projectDir: pd,
         });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_ip_assets") {
+        const parsed = ipAssetsInputSchema.parse(args ?? {});
+        const result = await dispatchTool(name, () => runIpAssets(parsed, cwd), { projectDir: parsed.projectDir ?? cwd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

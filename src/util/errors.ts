@@ -15,6 +15,16 @@ export const ERROR_CODES = [
   "authorization_pending",
   "token_invalid",
   "token_expires_soon",
+  // Native Router federation
+  "router_not_configured",
+  "router_invalid_response",
+  "router_response_too_large",
+  "router_access_denied",
+  "router_unavailable",
+  "router_request_failed",
+  "router_interrupted",
+  "router_artifact_invalid",
+  "router_artifact_write_failed",
   // Project lifecycle / new-project
   "rate_limited",
   "startcall_failed",
