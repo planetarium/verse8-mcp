@@ -19,6 +19,8 @@ import { createConnection, createServer } from "node:net";
 import {
   detectGameserver,
   buildPreflightSteps,
+  preflightUsesShell,
+  unsafePreflightTokens,
   runPreview,
 } from "../../dist/tools/preview.js";
 
@@ -467,3 +469,57 @@ for (const mode of ["ok", "fail"]) {
     }
   });
 }
+
+// ------------------------------------------------------------------
+// Windows: npx is a .cmd shim, so preflight steps run through the shell
+// ------------------------------------------------------------------
+test("preflight steps use the shell on Windows only", () => {
+  assert.equal(preflightUsesShell("win32"), true);
+  assert.equal(preflightUsesShell("linux"), false);
+  assert.equal(preflightUsesShell("darwin"), false);
+});
+
+test("the steps verse8_preview builds itself are plain argv under a shell", () => {
+  for (const step of buildPreflightSteps("bun update", true, { baseEnv: {}, token: "tok" })) {
+    assert.deepEqual(unsafePreflightTokens([step.cmd, ...step.args]), [], step.command);
+  }
+});
+
+test("unsafePreflightTokens accepts paths and flags, refuses shell syntax", () => {
+  assert.deepEqual(
+    unsafePreflightTokens(["npm", "ci", "--no-audit", "@agent8/deploy@1.5.5", "C:\\Users\\RUNNER~1\\x.cjs", "/tmp/x.cjs", "--registry=https://r.example/"]),
+    [],
+  );
+  for (const bad of ["&&", "a|b", "x;y", ">out", "%PATH%", "^", "(x)", '"q"', "'q'", "$(id)", "`id`", "a&b", "*"]) {
+    assert.deepEqual(unsafePreflightTokens(["bun", bad]), [bad], bad);
+  }
+});
+
+test(
+  "on Windows a step with shell syntax is refused before anything runs",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const dir = tmp();
+    const marker = path.join(dir, "ran.txt");
+    const res = await runPreview(
+      {
+        projectDir: dir,
+        installCommand: `node -e require('fs').writeFileSync('ran.txt','x') & echo`,
+        startOnly: true,
+        skipPreflight: false,
+        previewCommand: "node -v",
+        previewPort: await reservePort(),
+        readinessTimeoutMs: 1000,
+        preflightTimeoutMs: 20000,
+        logPath: "preview.log",
+        useAutoToolLog: true,
+        skipAttachCheck: false,
+      },
+      dir,
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.stage, "preflight_failed");
+    assert.match(res.failedStep.stderrTail, /shell syntax/);
+    assert.equal(fs.existsSync(marker), false);
+  },
+);
