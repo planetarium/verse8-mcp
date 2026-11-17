@@ -18,6 +18,20 @@ export const ipAssetsInputSchema = z.object({
 type Input = z.infer<typeof ipAssetsInputSchema>;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
+/** Linear scan: repeated-group regexes can exhaust V8's stack on multi-MiB assets. */
+function isBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  let dataEnd = value.length;
+  if (value.endsWith("==")) dataEnd -= 2;
+  else if (value.endsWith("=")) dataEnd--;
+  for (let index = 0; index < dataEnd; index++) {
+    const code = value.charCodeAt(index);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) || code === 43 || code === 47)) return false;
+  }
+  return dataEnd === value.length || dataEnd >= 2;
+}
+
 async function privateOutputDirectory(projectDir: string, namespace: string): Promise<string> {
   const root = await fs.realpath(projectDir);
   let current = root;
@@ -71,7 +85,7 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
       if (part.kind !== "file") continue;
       const file = part.file;
       if (!object(file) || file.uri !== undefined || typeof file.bytes !== "string" ||
-          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.bytes)) throw new RouterError("router_artifact_invalid", true);
+          !isBase64(file.bytes)) throw new RouterError("router_artifact_invalid", true);
       if (!artifact.complete) continue;
       const bytes = Buffer.from(file.bytes, "base64");
       const name = typeof file.name === "string" ? path.basename(file.name).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) : "asset.bin";

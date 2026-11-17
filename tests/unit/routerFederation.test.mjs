@@ -145,3 +145,22 @@ test('resubscribe tail without base artifact is not saved as complete', async ()
  };
  const result=await runIpAssets({pool:'maple',method:'tasks/resubscribe',taskId:'t',projectDir:dir});assert.equal(result.ok,true);assert.deepEqual(result.files,[]);assert.deepEqual(result.incompleteArtifacts,['asset']);
 });
+test('multi-MiB inline base64 saves actual bytes without regex stack exhaustion', async () => {
+ const bytes = Buffer.alloc(6 * 1024 * 1024, 1);
+ mock({...task, artifacts:[{artifactId:'large',parts:[{kind:'file',file:{name:'large.bin',bytes:bytes.toString('base64')}}]}]});
+ const result=await runIpAssets({pool:'maple',method:'tasks/get',taskId:'task-a',projectDir:dir});
+ assert.equal(result.ok,true);assert.equal(result.files[0].sizeBytes,bytes.length);
+ assert.deepEqual(await fs.readFile(result.files[0].path),bytes);
+});
+test('base64 validator rejects invalid alphabet and malformed padding', async () => {
+ for(const bytes of ['A===','====','YQ=','YQ===','Y=Q=','=YQ=','YQ==YQ==','YQ==\n','YQ_=', 'YQ-=', 'éQ==']) {
+  mock({...task, artifacts:[{artifactId:'invalid',parts:[{kind:'file',file:{bytes}}]}]});
+  const result=await runIpAssets({pool:'maple',method:'tasks/get',taskId:'task-a',projectDir:dir});
+  assert.equal(result.error,'router_artifact_invalid',JSON.stringify(bytes));
+ }
+ for(const bytes of ['','YQ==','YWI=','YWJj']) {
+  mock({...task, artifacts:[{artifactId:'valid',parts:[{kind:'file',file:{bytes}}]}]});
+  const result=await runIpAssets({pool:'maple',method:'tasks/get',taskId:'task-a',projectDir:dir});
+  assert.equal(result.ok,true,JSON.stringify(bytes));assert.deepEqual(await fs.readFile(result.files[0].path),Buffer.from(bytes,'base64'));
+ }
+});
