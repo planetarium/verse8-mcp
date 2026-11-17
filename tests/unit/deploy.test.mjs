@@ -30,6 +30,7 @@ import { buildV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
 import { DEPLOY_TOOL } from "../../dist/server.js";
 import { isMsuProject, isNineChroniclesProject, resolveJamProject, stripComments } from "../../dist/context/msuProject.js";
 import { sanitizeChildEnv } from "../../dist/util/childEnv.js";
+import { unsafeShellTokens } from "../../dist/util/shellArgv.js";
 
 const VERSE = "0xabc-1700000000000";
 const PLAY_URL = (sha) => `https://agent8-games.verse8.io/${VERSE}/index.html?chatId=u%2Fdemo&sha=${sha}&buildAt=1`;
@@ -819,6 +820,22 @@ test("unsafeInstallCommandTokens: plain package-manager argv passes, shell synta
   assert.deepEqual(unsafeInstallCommandTokens("bun update; rm -rf ."), ["update;"]);
   assert.deepEqual(unsafeInstallCommandTokens("bun $(cat .secret)"), ["$(cat", ".secret)"]);
   assert.deepEqual(unsafeInstallCommandTokens("bun update > out.txt"), [">"]);
+  // Same charset as verse8_preview's preflight: a Windows path is plain argv.
+  assert.deepEqual(unsafeInstallCommandTokens("node C:\\Users\\RUNNER~1\\install.cjs"), []);
+});
+
+test("buildDeploySteps: every step is plain argv under a shell", () => {
+  const steps = buildDeploySteps({
+    installCommand: "bun update",
+    gameserver: true,
+    verseId: VERSE,
+    account: "0xabc",
+    baseEnv: {},
+    token: "t",
+  });
+  for (const step of steps) {
+    assert.deepEqual(unsafeShellTokens([step.cmd, ...step.args]), [], step.command);
+  }
 });
 
 test("runDeploy: installCommand with shell syntax → invalid_input before any network call", async () => {

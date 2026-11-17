@@ -21,6 +21,7 @@ import {
   buildPreflightSteps,
   runPreview,
 } from "../../dist/tools/preview.js";
+import { unsafeShellTokens } from "../../dist/util/shellArgv.js";
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "verse8-preflight-"));
@@ -467,3 +468,42 @@ for (const mode of ["ok", "fail"]) {
     }
   });
 }
+
+// ------------------------------------------------------------------
+// Windows: npx is a .cmd shim, so preflight steps run through the shell
+// (stepsUseShell / unsafeShellTokens are covered in shellArgv.test.mjs)
+// ------------------------------------------------------------------
+test("the steps verse8_preview builds itself are plain argv under a shell", () => {
+  for (const step of buildPreflightSteps("bun update", true, { baseEnv: {}, token: "tok" })) {
+    assert.deepEqual(unsafeShellTokens([step.cmd, ...step.args]), [], step.command);
+  }
+});
+
+test(
+  "on Windows a step with shell syntax is refused before anything runs",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const dir = tmp();
+    const marker = path.join(dir, "ran.txt");
+    const res = await runPreview(
+      {
+        projectDir: dir,
+        installCommand: `node -e require('fs').writeFileSync('ran.txt','x') & echo`,
+        startOnly: true,
+        skipPreflight: false,
+        previewCommand: "node -v",
+        previewPort: await reservePort(),
+        readinessTimeoutMs: 1000,
+        preflightTimeoutMs: 20000,
+        logPath: "preview.log",
+        useAutoToolLog: true,
+        skipAttachCheck: false,
+      },
+      dir,
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.stage, "preflight_failed");
+    assert.match(res.failedStep.stderrTail, /shell syntax/);
+    assert.equal(fs.existsSync(marker), false);
+  },
+);

@@ -7,6 +7,7 @@ import { parseOverrideHost } from "../util/hostAllowlist.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
 import { loadToken } from "../context/token.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
+import { stepsUseShell, unsafeShellTokens } from "../util/shellArgv.js";
 import {
   checkpointInputSchema,
   runCheckpoint,
@@ -436,11 +437,35 @@ function runPreflightSteps(
   // before any of it reaches a result or hint.
   const maskedTail = (s: string) => tail(token ? s.split(token).join("[REDACTED]") : s);
   const completed: PreflightStepResult[] = [];
+  // npx is a .cmd shim on Windows, so the steps run through the shell there
+  // (the gameserver build failed with `spawnSync npx ENOENT` without it).
+  const shell = stepsUseShell();
   for (const step of steps) {
     const start = Date.now();
     let stdout = "";
     let stderr = "";
     let exitCode = 0;
+    if (shell) {
+      // Refuse rather than let cmd.exe interpret the token. The token is
+      // reported as-is: it is the caller's own installCommand, never a secret.
+      const unsafe = unsafeShellTokens([step.cmd, ...step.args]);
+      if (unsafe.length > 0) {
+        return {
+          ok: false,
+          failedStep: {
+            command: step.command,
+            durationMs: 0,
+            exitCode: -1,
+            stdoutTail: "",
+            stderrTail: maskedTail(
+              `command contains shell syntax (${unsafe.join(" ")}); on Windows preflight steps run through the shell, ` +
+                `so pass a plain package-manager command such as "bun update" or "npm ci".`,
+            ),
+          },
+          completed,
+        };
+      }
+    }
     try {
       const out = execFileSync(step.cmd, step.args, {
         cwd,
@@ -449,6 +474,8 @@ function runPreflightSteps(
         timeout: timeoutMs,
         maxBuffer: 50 * 1024 * 1024,
         stdio: ["ignore", "pipe", "pipe"],
+        // npx is a .cmd shim on Windows; every token was checked above.
+        shell,
       });
       stdout = String(out);
     } catch (e) {
