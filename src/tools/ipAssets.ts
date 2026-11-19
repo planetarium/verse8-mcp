@@ -2,7 +2,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { invokeRouter, routerOrigin, RouterError, type RouterMethod } from "../a2a/router.js";
+import { invokeA2A } from "../a2a/client.js";
+import { IpAssetError } from "../util/ipAssetHttp.js";
 import { loadToken } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 
@@ -39,7 +40,7 @@ async function privateOutputDirectory(projectDir: string, namespace: string): Pr
     current = path.join(current, segment);
     await fs.mkdir(current, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => { if (e.code !== "EEXIST") throw e; });
     const stat = await fs.lstat(current);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new RouterError("router_artifact_invalid");
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new IpAssetError("artifact_invalid");
   }
   return current;
 }
@@ -63,14 +64,14 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
     if (result.kind === "task") {
       if (Array.isArray(result.history)) for (const m of result.history) if (object(m) && m.role === "agent") addMessage(m);
       if (Array.isArray(result.artifacts)) for (const artifact of result.artifacts) {
-        if (!object(artifact) || typeof artifact.artifactId !== "string" || !Array.isArray(artifact.parts)) throw new RouterError("router_artifact_invalid", true);
+        if (!object(artifact) || typeof artifact.artifactId !== "string" || !Array.isArray(artifact.parts)) throw new IpAssetError("artifact_invalid", true);
         artifacts.set(artifact.artifactId, { parts: artifact.parts, complete: true, hasBase: true });
       }
     }
     if (object(result.status) && object(result.status.message)) addMessage(result.status.message);
     if (result.kind === "artifact-update") {
       const a = result.artifact;
-      if (!object(a) || typeof a.artifactId !== "string" || !Array.isArray(a.parts)) throw new RouterError("router_artifact_invalid", true);
+      if (!object(a) || typeof a.artifactId !== "string" || !Array.isArray(a.parts)) throw new IpAssetError("artifact_invalid", true);
       const previous = artifacts.get(a.artifactId);
       artifacts.set(a.artifactId, { parts: result.append === true ? [...(previous?.parts ?? []), ...a.parts] : a.parts,
         complete: result.lastChunk === true && (result.append !== true || previous?.hasBase === true),
@@ -80,7 +81,7 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
   const pending: Array<{ artifactId: string; name: string; bytes: Buffer; mimeType?: string }> = [];
   for (const [artifactId, artifact] of [...artifacts, ...messageParts]) {
     for (const part of artifact.parts) {
-      if (!object(part)) throw new RouterError("router_artifact_invalid", true);
+      if (!object(part)) throw new IpAssetError("artifact_invalid", true);
       if (part.kind === "text" && typeof part.text === "string" && messageBytes < 64 * 1024) {
         const text = part.text.slice(0, 64 * 1024 - messageBytes);
         messages.push(text); messageBytes += text.length;
@@ -88,11 +89,11 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
       if (part.kind !== "file") continue;
       const file = part.file;
       if (!object(file) || file.uri !== undefined || typeof file.bytes !== "string" ||
-          !isBase64(file.bytes)) throw new RouterError("router_artifact_invalid", true);
+          !isBase64(file.bytes)) throw new IpAssetError("artifact_invalid", true);
       if (!artifact.complete) continue;
       const bytes = Buffer.from(file.bytes, "base64");
       const name = typeof file.name === "string" ? path.basename(file.name).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) : "asset.bin";
-      if (pending.length >= 128) throw new RouterError("router_artifact_invalid", true);
+      if (pending.length >= 128) throw new IpAssetError("artifact_invalid", true);
       pending.push({ artifactId, name: name || "asset.bin", bytes, ...(typeof file.mimeType === "string" ? { mimeType: file.mimeType } : {}) });
     }
   }
@@ -110,9 +111,9 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
           const stat = await fs.lstat(target);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes.length) throw new RouterError("router_artifact_invalid", true);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes.length) throw new IpAssetError("artifact_invalid", true);
           const existing = await fs.readFile(target);
-          if (!existing.equals(file.bytes)) throw new RouterError("router_artifact_invalid", true);
+          if (!existing.equals(file.bytes)) throw new IpAssetError("artifact_invalid", true);
         }
         files.push({ artifactId: file.artifactId, path: target, name: file.name, sizeBytes: file.bytes.length,
           ...(file.mimeType ? { mimeType: file.mimeType } : {}) });
@@ -145,14 +146,18 @@ export async function runIpAssets(input: Input, cwd = process.cwd()) {
       ...(taskId ? { taskId } : {}), ...(contextId ? { contextId } : {}) },
   } : { id: taskId };
   try {
-    const reply = await invokeRouter(input.pool, input.method as RouterMethod, params, source, observe);
-    const namespace = createHash("sha256").update(JSON.stringify([routerOrigin(), input.pool, taskId ?? contextId ?? reply.requestId])).digest("hex");
+    const reply = await invokeA2A(input.pool, input.method, params, source, observe);
+    const namespace = createHash("sha256").update(JSON.stringify([reply.resource, taskId ?? contextId ?? reply.requestId])).digest("hex");
     const assets = await saveResults(reply.results, projectDir, namespace);
     return { ok: true, pool: input.pool, messageId, taskId, contextId, state, ...assets };
   } catch (e) {
-    const error = e instanceof RouterError ? e.code : "router_artifact_write_failed";
-    return { ok: false, error, messageId, taskId, contextId,
-      hint: e instanceof RouterError && !e.dispatched ? "Check Router configuration, login and pool eligibility."
-        : "The request may have executed. Use tasks/get or tasks/resubscribe with the returned taskId; do not automatically resend the message." };
+    const error = e instanceof IpAssetError ? e.code : "artifact_write_failed";
+    let hint = "The request may have executed. Use tasks/get or tasks/resubscribe with the returned taskId; do not automatically resend the message.";
+    if (error === "artifact_write_failed" || error === "artifact_invalid") {
+      hint = "Check the artifact data and local output directory before retrieving the task again.";
+    } else if (e instanceof IpAssetError && !e.dispatched) {
+      hint = "Check the token exchange and A2A endpoints, login and pool eligibility.";
+    }
+    return { ok: false, error, messageId, taskId, contextId, hint };
   }
 }

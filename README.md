@@ -128,10 +128,9 @@ Then:
 
 MIT
 
-### Native IP asset pools through Router
+### IP asset pools
 
-With `VERSE8_ROUTER_URL` set to a trusted Router HTTPS origin, the
-`verse8_ip_assets` tool exchanges your existing Verse8 login for pool-scoped
-native A2A access and saves inline file artifacts locally. No separate Router
-API key is needed. See [Router IP asset integration](docs/router-ip-assets.md)
-for trust configuration, task continuation, limits and deployment dependencies.
+The `verse8_ip_assets` tool uses your Verse8 login to request pool-scoped
+A2A access and saves inline files locally. Configure the token endpoint with
+`VERSE8_TOKEN_EXCHANGE_URL` and the pool base URL with `VERSE8_A2A_BASE_URL`.
+See [IP asset integration](docs/ip-assets.md) for configuration and task continuation.

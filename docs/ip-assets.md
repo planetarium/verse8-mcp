@@ -1,31 +1,29 @@
-# Native Router IP assets
+# IP asset access
 
-`verse8_ip_assets` uses the existing Verse8 login to invoke native A2A pools
-that explicitly authorize the user's verified agreements. It needs the Router
-integration in planetarium/vicoop-router#174 and delegated federation from
-planetarium/vicoop-bridge#607. This client does not create Router accounts,
-provision Bridge grants, or bypass pool policy.
+`verse8_ip_assets` uses the existing Verse8 login to invoke authorized A2A pools.
 
-## Trust configuration
+## Endpoint configuration
 
-Set `VERSE8_ROUTER_URL` in the MCP server's process environment to an explicitly
-trusted HTTPS origin, for example `https://router.example`. A path, credentials,
-query or fragment is rejected. Tool arguments and provider discovery cannot
-change this trust anchor. Restart the MCP server after configuration changes.
-Do not configure an origin unless it is authorized to receive your Verse8 token.
+Set two HTTPS URLs in the MCP server environment and restart the server.
+Both URLs may include a path. Credentials, queries and fragments are rejected.
 
-The source token is loaded by the existing login mechanism and sent only to
-`POST <origin>/api/verse8/token`. The client requests RFC 8693 access-token
-exchange for the exact `<origin>/api/a2a/<pool>` resource and the scope of the
-requested operation. It does not send the source token to A2A members, artifact
-URLs, prompts or logs. The normal Verse8 API host allowlist is unchanged.
+- `VERSE8_TOKEN_EXCHANGE_URL` is the full RFC 8693 token endpoint. Configure
+  a service trusted to receive the original Verse8 token.
+- `VERSE8_A2A_BASE_URL` is the base URL for the pools. The client appends
+  the pool name and uses that exact URL as the exchange request's `resource`.
+  Only the exchanged bearer token is sent to the pool.
 
-Opaque Router credentials remain only in bounded process memory. The cache key
-includes source-token hash, origin, resource and scope; credentials expire after
-the server lifetime (at most five minutes), with a five-second renewal margin.
-Renewal exchanges the current Verse8 token again. A resource authentication
-failure clears the cache but does not automatically resend the operation.
-Router checks current pool policy and owns agreement/identity authorization.
+The endpoints may use different hosts. The pool must accept tokens from the
+configured authorization server. For the vicoop-router deployment, set the
+token endpoint to `https://<host>/api/verse8/token` and the pool base to
+`https://<host>/api/a2a` (planetarium/vicoop-router#174 and
+planetarium/vicoop-bridge#607).
+
+The client requests the scope for the selected operation and requires the
+response to confirm it. It accepts bearer tokens with a lifetime of up to
+five minutes. The in-memory cache is keyed by token endpoint, resource,
+scope and source credential hash. Entries are renewed within five seconds
+of expiry. An A2A authentication failure clears the cache.
 
 ## Operations
 
@@ -73,8 +71,8 @@ provider credential fallback exists.
 
 ## Validation
 
-`tests/unit/routerFederation.test.mjs` tests origin restrictions, source-token
+`tests/unit/ipAssets.test.mjs` tests independent endpoint configuration, source-token
 separation, scopes/resources, cache identity and renewal, actual file bytes,
 symlink/URI rejection, malformed responses and interrupted/chunked SSE. These
 use mocked HTTP responses; they do not claim live Verse8 acceptance or actual
-Router/Bridge deployment validation.
+production deployment validation.

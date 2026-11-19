@@ -233,7 +233,7 @@ export function createServer(): Server {
       // INV-11: Tool discovery is token-gated, not cwd-gated
       tools.push({
         name: "verse8_ip_assets",
-        description: "Invoke an authorized native A2A IP asset pool using your Verse8 login. Requires operator-configured VERSE8_ROUTER_URL. Methods: message/send or message/stream with text; tasks/get, tasks/cancel or tasks/resubscribe with taskId. Preserve returned taskId/contextId for continuation and messageId for correlation. Inline files are saved under projectDir/.verse8/ip-assets; provider URLs are never fetched. On interruption query the existing task; never automatically resend a message.",
+        description: "Invoke an authorized native A2A IP asset pool using your Verse8 login. Requires operator-configured VERSE8_TOKEN_EXCHANGE_URL and VERSE8_A2A_BASE_URL. Methods: message/send or message/stream with text; tasks/get, tasks/cancel or tasks/resubscribe with taskId. Preserve returned taskId/contextId for continuation and messageId for correlation. Inline files are saved under projectDir/.verse8/ip-assets; provider URLs are never fetched. On interruption query the existing task; never automatically resend a message.",
         inputSchema: zodToJsonSchema(ipAssetsInputSchema),
       });
       tools.push(CHECKPOINT_TOOL);
