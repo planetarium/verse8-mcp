@@ -173,7 +173,7 @@ export async function runIpAssets(input: Input, cwd = process.cwd()) {
     const error = e instanceof IpAssetError ? e.code : "artifact_write_failed";
     if (e instanceof DuplicateMessageError) {
       taskId = e.taskId;
-      // The router identifies the original dispatch but does not return its context.
+      // The caller may have reused the message ID in a different context.
       contextId = undefined;
     }
     let hint = taskId

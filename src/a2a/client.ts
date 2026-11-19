@@ -40,7 +40,7 @@ export async function invokeA2A(pool: string, method: A2AMethod, params: Record<
       if (method.startsWith("message/") && isRecord(error) && error.code === -32050 && isRecord(error.data)) {
         const { outcome, taskId } = error.data;
         if (typeof outcome === "string" && dispatchOutcomes.has(outcome)) {
-          // Router public task bindings use UUIDs. Never echo arbitrary error data.
+          // Limit IDs copied from error data to UUID-shaped strings.
           const publicId = typeof taskId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(taskId)
             ? taskId : undefined;
           throw new DuplicateMessageError(outcome, publicId);
@@ -66,7 +66,7 @@ export async function invokeA2A(pool: string, method: A2AMethod, params: Record<
     const stream = method === "message/stream" || method === "tasks/resubscribe";
     const contentType = response.headers.get("content-type");
     if (stream && contentType?.split(";")[0].trim() === "application/json") {
-      // Router can reject the request before opening an event stream.
+      // A server can return a JSON-RPC error before opening an event stream.
       accept(await readBody(response, MAX_BYTES, "a2a"), true);
     } else if (!stream) accept(await readBody(response, MAX_BYTES, "a2a"));
     else {
