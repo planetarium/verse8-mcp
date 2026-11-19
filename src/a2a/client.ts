@@ -10,6 +10,14 @@ export const A2A_SCOPES = {
   "tasks/resubscribe": "a2a:task.resubscribe",
 } as const;
 export type A2AMethod = keyof typeof A2A_SCOPES;
+const dispatchOutcomes = new Set(["dispatching", "accepted", "responded", "rejected", "unknown"]);
+
+export class DuplicateMessageError extends IpAssetError {
+  constructor(readonly outcome: string, readonly taskId?: string) {
+    super("a2a_message_already_submitted", true);
+  }
+}
+
 const MAX_BYTES = 32 * 1024 * 1024;
 
 export interface A2AReply { resource: string; results: Record<string, unknown>[]; requestId: string; }
@@ -22,13 +30,25 @@ export async function invokeA2A(pool: string, method: A2AMethod, params: Record<
   const token = await exchangeToken(resource, A2A_SCOPES[method], source);
   const requestId = randomUUID();
   const results: Record<string, unknown>[] = [];
-  const accept = (raw: string): void => {
-    if (raw === "[DONE]") return;
+  const accept = (raw: string, errorOnly = false): void => {
+    if (!errorOnly && raw === "[DONE]") return;
     let envelope: unknown;
     try { envelope = JSON.parse(raw); } catch { throw new IpAssetError("a2a_invalid_response", true); }
     if (!isRecord(envelope) || envelope.jsonrpc !== "2.0" || envelope.id !== requestId) throw new IpAssetError("a2a_invalid_response", true);
-    if (envelope.error !== undefined) throw new IpAssetError("a2a_request_failed", true);
-    if (!isRecord(envelope.result) || !["task", "message", "status-update", "artifact-update"].includes(String(envelope.result.kind))) throw new IpAssetError("a2a_invalid_response", true);
+    if (envelope.error !== undefined) {
+      const error = envelope.error;
+      if (method.startsWith("message/") && isRecord(error) && error.code === -32050 && isRecord(error.data)) {
+        const { outcome, taskId } = error.data;
+        if (typeof outcome === "string" && dispatchOutcomes.has(outcome)) {
+          // Router public task bindings use UUIDs. Never echo arbitrary error data.
+          const publicId = typeof taskId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(taskId)
+            ? taskId : undefined;
+          throw new DuplicateMessageError(outcome, publicId);
+        }
+      }
+      throw new IpAssetError("a2a_request_failed", true);
+    }
+    if (errorOnly || !isRecord(envelope.result) || !["task", "message", "status-update", "artifact-update"].includes(String(envelope.result.kind))) throw new IpAssetError("a2a_invalid_response", true);
     results.push(envelope.result);
     onResult?.(envelope.result);
   };
@@ -44,9 +64,13 @@ export async function invokeA2A(pool: string, method: A2AMethod, params: Record<
       throw new IpAssetError(response.status === 401 || response.status === 403 ? "a2a_access_denied" : "a2a_request_failed", true);
     }
     const stream = method === "message/stream" || method === "tasks/resubscribe";
-    if (!stream) accept(await readBody(response, MAX_BYTES, "a2a"));
+    const contentType = response.headers.get("content-type");
+    if (stream && contentType?.split(";")[0].trim() === "application/json") {
+      // Router can reject the request before opening an event stream.
+      accept(await readBody(response, MAX_BYTES, "a2a"), true);
+    } else if (!stream) accept(await readBody(response, MAX_BYTES, "a2a"));
     else {
-      if (!response.headers.get("content-type")?.startsWith("text/event-stream")) throw new IpAssetError("a2a_invalid_response", true);
+      if (!contentType?.startsWith("text/event-stream")) throw new IpAssetError("a2a_invalid_response", true);
       const reader = response.body?.getReader();
       if (!reader) throw new IpAssetError("a2a_invalid_response", true);
       const decoder = new TextDecoder();
@@ -77,6 +101,7 @@ export async function invokeA2A(pool: string, method: A2AMethod, params: Record<
     if (!results.length) throw new IpAssetError("a2a_interrupted", true);
     return { results, requestId, resource };
   } catch (e) {
+    if (e instanceof IpAssetError && e.dispatched) throw e;
     if (e instanceof IpAssetError) throw new IpAssetError(e.code, true);
     throw new IpAssetError("a2a_interrupted", true);
   }
