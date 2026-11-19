@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { invokeA2A } from "../a2a/client.js";
+import { DuplicateMessageError, invokeA2A } from "../a2a/client.js";
 import { IpAssetError } from "../util/ipAssetHttp.js";
 import { loadToken } from "../context/token.js";
 import { atomicWriteFileSync } from "../util/atomicWrite.js";
@@ -160,6 +160,7 @@ export async function runIpAssets(input: Input, cwd = process.cwd()) {
     if (object(result.status) && typeof result.status.state === "string") state = result.status.state;
   };
   const params: Record<string, unknown> = isMessage ? {
+    ...(input.method === "message/send" ? { configuration: { blocking: false } } : {}),
     message: { kind: "message", role: "user", messageId, parts: [{ kind: "text", text: input.text }],
       ...(taskId ? { taskId } : {}), ...(contextId ? { contextId } : {}) },
   } : { id: taskId };
@@ -170,12 +171,19 @@ export async function runIpAssets(input: Input, cwd = process.cwd()) {
     return { ok: true, pool: input.pool, messageId, taskId, contextId, state, ...assets };
   } catch (e) {
     const error = e instanceof IpAssetError ? e.code : "artifact_write_failed";
-    let hint = "The request may have executed. Use tasks/get or tasks/resubscribe with the returned taskId; do not automatically resend the message.";
+    if (e instanceof DuplicateMessageError) {
+      taskId = e.taskId;
+      // The caller may have reused the message ID in a different context.
+      contextId = undefined;
+    }
+    let hint = taskId
+      ? "Use tasks/get or tasks/resubscribe with the returned taskId. Do not automatically resend the message."
+      : "Keep the messageId and pool for operator dispatch lookup. The message may have executed. Do not automatically resend it.";
     if (error === "artifact_write_failed" || error === "artifact_invalid") {
       hint = "Check the artifact data and local output directory before retrieving the task again.";
     } else if (e instanceof IpAssetError && !e.dispatched) {
       hint = "Check the token exchange and A2A endpoints, login and pool eligibility.";
     }
-    return { ok: false, error, messageId, taskId, contextId, hint };
+    return { ok: false, error, messageId, taskId, contextId, ...(e instanceof DuplicateMessageError ? { outcome: e.outcome } : {}), hint };
   }
 }

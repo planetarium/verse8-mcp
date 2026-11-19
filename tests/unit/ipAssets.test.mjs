@@ -241,3 +241,68 @@ test('repeated full task snapshots preserve colliding artifact IDs and status te
  for(const result of [first,second]) {assert.equal(result.ok,true);assert.equal(result.files.length,1);assert.equal(result.files[0].artifactId,'message-0');assert.deepEqual(result.messages,['Done']);}
  assert.equal(first.files[0].path,second.files[0].path);assert.equal(await fs.readFile(second.files[0].path,'utf8'),'actual asset bytes');
 });
+
+test('unary send requests early receipt and retrieves completed bytes by public task ID', async () => {
+ const calls = mock({kind: 'task', id: task.id, contextId: task.contextId, status: {state: 'working'}});
+ const receipt = await runIpAssets({pool: 'maple', method: 'message/send', text: 'asset', projectDir: dir});
+ assert.deepEqual(JSON.parse(calls[1].init.body).params.configuration, {blocking: false});
+ assert.equal(receipt.state, 'working');
+ assert.equal(receipt.contextId, task.contextId);
+ assert.equal(receipt.taskId, task.id);
+ assert.deepEqual(receipt.files, []);
+ const reads = mock(task);
+ const result = await runIpAssets({pool: 'maple', method: 'tasks/get', taskId: receipt.taskId, projectDir: dir});
+ assert.deepEqual(JSON.parse(reads[1].init.body).params, {id: receipt.taskId});
+ assert.equal(await fs.readFile(result.files[0].path, 'utf8'), 'actual asset bytes');
+});
+
+test('lost unary receipt retains correlation and avoids task lookup advice or redispatch', async () => {
+ let sends = 0;
+ globalThis.fetch = async (url, init) => {
+  if (url === exchangeUrl) return token(new URLSearchParams(init.body).get('scope'));
+  sends++;
+  throw new Error('connection lost');
+ };
+ const result = await runIpAssets({pool: 'maple', method: 'message/send', text: 'asset', messageId: 'original'});
+ assert.equal(result.error, 'a2a_interrupted');
+ assert.equal(result.messageId, 'original');
+ assert.equal(result.taskId, undefined);
+ assert.match(result.hint, /operator dispatch lookup/);
+ assert.doesNotMatch(result.hint, /tasks\/get/);
+ assert.equal(sends, 1);
+});
+
+test('duplicate router errors expose only the dispatch outcome and known public ID', async () => {
+ const taskId = 'ef663b77-6d58-4a60-b145-6bd3620fe7a1';
+ for (const data of [{outcome: 'accepted', taskId}, {outcome: 'unknown'}, {outcome: 'unknown', taskId: 'source-secret'}]) {
+  globalThis.fetch = async (url, init) => url === exchangeUrl ? token(new URLSearchParams(init.body).get('scope')) :
+   Response.json({jsonrpc: '2.0', id: JSON.parse(init.body).id, error: {code: -32050, message: 'source-secret', data}});
+  for (const method of ['message/send', 'message/stream']) {
+   const result = await runIpAssets({pool: 'maple', method, text: 'asset', messageId: 'original', contextId: 'different-context'});
+   assert.equal(result.error, 'a2a_message_already_submitted');
+   assert.equal(result.outcome, data.outcome);
+   assert.equal(result.contextId, undefined);
+   assert.equal(result.taskId, data.outcome === 'accepted' ? taskId : undefined);
+   assert.equal(result.hint.includes('tasks/get'), data.outcome === 'accepted');
+   assert.ok(!JSON.stringify(result).includes('source-secret'));
+  }
+ }
+});
+
+for (const [method, outcome] of [['message/send', 'unrecognized'], ['tasks/get', 'accepted']]) {
+ test(`duplicate error with ${outcome} outcome on ${method} returns a generic failure`, async () => {
+  const errorTaskId = 'ae2c1bde-bd50-4130-ae9e-9130038775fc';
+  globalThis.fetch = async (url, init) => url === exchangeUrl ? token(new URLSearchParams(init.body).get('scope')) :
+   Response.json({jsonrpc: '2.0', id: JSON.parse(init.body).id, error: {
+    code: -32050, message: 'private error text', data: {outcome, taskId: errorTaskId, detail: 'private error data'}
+   }});
+  const input = method === 'tasks/get' ? {taskId: 'requested-task'} : {text: 'asset'};
+  const result = await runIpAssets({pool: 'maple', method, ...input});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'a2a_request_failed');
+  assert.equal(result.taskId, input.taskId);
+  assert.equal(result.outcome, undefined);
+  assert.ok(!JSON.stringify(result).includes(errorTaskId));
+  assert.doesNotMatch(JSON.stringify(result), /private error/);
+ });
+}

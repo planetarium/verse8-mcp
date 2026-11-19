@@ -40,7 +40,10 @@ After `verse8_login_start` and `verse8_login_complete`, invoke:
 }
 ```
 
-`message/send` also accepts `text`. Preserve the returned `messageId`, `taskId`
+`message/send` accepts `text` and requests early acknowledgement with
+`configuration.blocking: false`. A working task can return with an empty file
+list. Use `tasks/get` with the same login, pool and public task ID to retrieve
+the completed files. Preserve the returned `messageId`, `taskId`
 and `contextId`. To send a follow-up, supply the existing `taskId`/`contextId`
 with new text. A new message gets a new message ID unless one was explicitly
 supplied. For `tasks/get`, `tasks/cancel` or `tasks/resubscribe`, supply `pool`
@@ -50,8 +53,10 @@ Streaming is consumed within the MCP call (up to 120 seconds), not relayed as
 MCP notifications. On interruption, the result preserves any observed task ID
 and the original message ID. Query or resubscribe to that task. **Never resend
 an ambiguous message automatically**: it may already have executed. If no task
-ID was received, report the ambiguity rather than minting a fresh message ID
-and silently duplicating work.
+ID was received, keep the pool and message ID for operator dispatch lookup.
+If the router reports a duplicate submission, the tool returns
+`a2a_message_already_submitted` with the recorded `outcome` and any known
+public task ID. An unknown outcome can lack a task ID.
 
 ## Files
 
