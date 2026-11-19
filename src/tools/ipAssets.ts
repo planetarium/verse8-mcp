@@ -5,6 +5,7 @@ import { z } from "zod";
 import { invokeA2A } from "../a2a/client.js";
 import { IpAssetError } from "../util/ipAssetHttp.js";
 import { loadToken } from "../context/token.js";
+import { atomicWriteFileSync } from "../util/atomicWrite.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 
 export const ipAssetsInputSchema = z.object({
@@ -33,6 +34,22 @@ function isBase64(value: string): boolean {
   return dataEnd === value.length || dataEnd >= 2;
 }
 
+// Older attached projects may lack the ip-assets/ entry in .verse8/.gitignore.
+async function ensureAssetIgnore(directory: string): Promise<void> {
+  const ignore = path.join(directory, ".gitignore");
+  let stat;
+  try {
+    stat = await fs.lstat(ignore);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    atomicWriteFileSync(ignore, "*\n", { mode: 0o600 });
+    return;
+  }
+  if (!stat.isFile() || !["*", "*\n", "*\r\n"].includes(await fs.readFile(ignore, "utf8"))) {
+    throw new IpAssetError("artifact_invalid");
+  }
+}
+
 async function privateOutputDirectory(projectDir: string, namespace: string): Promise<string> {
   const root = await fs.realpath(projectDir);
   let current = root;
@@ -41,6 +58,7 @@ async function privateOutputDirectory(projectDir: string, namespace: string): Pr
     await fs.mkdir(current, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => { if (e.code !== "EEXIST") throw e; });
     const stat = await fs.lstat(current);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new IpAssetError("artifact_invalid");
+    if (segment === "ip-assets") await ensureAssetIgnore(current);
   }
   return current;
 }

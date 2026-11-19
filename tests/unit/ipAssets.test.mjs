@@ -1,5 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,8 +8,8 @@ import { invokeA2A } from '../../dist/a2a/client.js';
 import { clearExchangeTokenCache } from '../../dist/auth/tokenExchange.js';
 import { runIpAssets } from '../../dist/tools/ipAssets.js';
 const originalFetch = globalThis.fetch;
-const exchangeUrl = 'https://auth.example/oauth/token';
-const poolBase = 'https://assets.example/services/pools';
+const exchangeUrl = 'https://vicoop-router.fly.dev/oauth/token';
+const poolBase = 'https://assets.verse8.io/services/pools';
 const settings = ['VERSE8_TOKEN_EXCHANGE_URL', 'VERSE8_A2A_BASE_URL', 'VERSE8_ACCESS_TOKEN'];
 const previous = new Map(settings.map(key => [key, process.env[key]]));
 let dir;
@@ -39,12 +40,13 @@ function mock(taskResult, options = {}) {
  return calls;
 }
 const task = { kind: 'task', id: 'task-a', contextId: 'context-a', status: {state: 'completed'}, artifacts: [{ artifactId: 'asset', parts: [{kind: 'file', file: {name: '../private.txt', bytes: Buffer.from('actual asset bytes').toString('base64')}}]}] };
+// INV-3: Reject untrusted hosts before either endpoint receives a credential.
 test('each endpoint requires explicit trusted HTTPS configuration before dispatch', async () => {
  let calls = 0;
  globalThis.fetch = async () => { calls++; throw new Error(); };
  for (const [setting, error] of [[settings[0], /token_exchange_not_configured/], [settings[1], /a2a_not_configured/]]) {
   const valid = process.env[setting];
-  for (const invalid of ['', 'http://example.org', 'https://user@example.org', 'https://example.org?x', 'https://example.org#x']) {
+  for (const invalid of ['', 'http://localhost', 'https://other.fly.dev', 'https://verse8.io.example.org', 'https://vicoop-router.fly.dev.example.org', 'https://user@verse8.io', 'https://verse8.io?x', 'https://verse8.io#x']) {
    process.env[setting] = invalid;
    await assert.rejects(invokeA2A('maple', 'tasks/get', {id:'t'}, 'source-secret'), error);
   }
@@ -63,6 +65,29 @@ test('exchange sends source only to fixed endpoint, least scope and saves actual
  assert.equal(new URLSearchParams(calls[0].init.body).get('resource'), poolBase + '/maple');
  assert.ok(!JSON.stringify(result).includes('source-secret')); assert.ok(!JSON.stringify(result).includes('opaque.Token~123'));
 });
+test('checkpoint staging excludes newly received assets in existing projects', async () => {
+ const git = (...args) => execFileSync('git', args, {cwd: dir, encoding: 'utf8'});
+ git('init', '--quiet');
+ await fs.mkdir(path.join(dir, '.verse8'));
+ await fs.writeFile(path.join(dir, '.verse8', '.gitignore'), 'preview.log\n');
+ await fs.writeFile(path.join(dir, 'scene.txt'), 'tracked by checkpoint');
+ mock(task);
+ const result = await runIpAssets({pool:'maple', method:'tasks/get', taskId:'task-a', projectDir:dir});
+ assert.equal(result.ok, true);
+ assert.equal(await fs.readFile(result.files[0].path, 'utf8'), 'actual asset bytes');
+ git('add', '-A', '--', '.');
+ assert.equal(git('ls-files', '--', '.verse8/ip-assets'), '');
+ assert.equal(git('ls-files', '--', 'scene.txt').trim(), 'scene.txt');
+});
+test('an ineffective existing ignore file stops artifact writes', async () => {
+ const output = path.join(dir, '.verse8', 'ip-assets');
+ await fs.mkdir(output, {recursive:true});
+ await fs.writeFile(path.join(output, '.gitignore'), ' *\n');
+ mock(task);
+ const result = await runIpAssets({pool:'maple', method:'tasks/get', taskId:'task-a', projectDir:dir});
+ assert.equal(result.error, 'artifact_invalid');
+ assert.deepEqual(await fs.readdir(output), ['.gitignore']);
+});
 test('cache is separated by source identity, pool and operation and renews near expiry', async () => {
  let exchanges = 0;
  globalThis.fetch = async (url, init) => {
@@ -71,7 +96,7 @@ test('cache is separated by source identity, pool and operation and renews near 
  };
  await invokeA2A('maple', 'tasks/get', {id:'t'}, 'a'); await invokeA2A('maple', 'tasks/get', {id:'t'}, 'a'); assert.equal(exchanges, 1);
  await invokeA2A('maple', 'tasks/get', {id:'t'}, 'b'); await invokeA2A('other', 'tasks/get', {id:'t'}, 'a'); await invokeA2A('maple', 'tasks/cancel', {id:'t'}, 'a'); assert.equal(exchanges, 4);
- process.env.VERSE8_TOKEN_EXCHANGE_URL = 'https://second.example/token';
+ process.env.VERSE8_TOKEN_EXCHANGE_URL = 'https://second.verse8.io/token';
  await invokeA2A('maple', 'tasks/get', {id:'t'}, 'a'); assert.equal(exchanges, 5);
  const now = Date.now; Date.now = () => now() + 301000;
  try { await invokeA2A('maple', 'tasks/get', {id:'t'}, 'a'); assert.equal(exchanges, 6); } finally { Date.now = now; }

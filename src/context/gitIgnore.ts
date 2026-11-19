@@ -15,6 +15,7 @@ import * as path from "node:path";
  */
 
 const REQUIRED_ENTRIES = [
+  "ip-assets/",
   "preview.log",
   "mcp.log",
   "mcp.log.*",

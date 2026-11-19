@@ -5,6 +5,8 @@
 ## Endpoint configuration
 
 Set two HTTPS URLs in the MCP server environment and restart the server.
+Allowed hosts are `verse8.io`, its subdomains, loopback, and exactly
+`vicoop-router.fly.dev`. Both URLs must pass validation before token exchange.
 Both URLs may include a path. Credentials, queries and fragments are rejected.
 
 - `VERSE8_TOKEN_EXCHANGE_URL` is the full RFC 8693 token endpoint. Configure
@@ -60,9 +62,9 @@ exclusive writes. Repeated task snapshots reuse identical verified files rather
 than writing duplicate copies. The response contains file paths and sizes, task state and
 text messages, not base64 file bodies. Incomplete streamed artifacts are listed
 but not written; use task retrieval/resubscription to obtain complete output.
-Symlinked `.verse8` or `ip-assets` directories are rejected. Files are not
-uploaded or published automatically; move/register them in the project as
-appropriate and keep `.verse8/ip-assets/` out of version control.
+Symlinked `.verse8` or `ip-assets` directories are rejected. Before saving files, the client ensures
+`.verse8/ip-assets/.gitignore` excludes all downloads from checkpoint staging.
+Attach also excludes the directory in `.verse8/.gitignore`.
 
 Exchange responses are limited to 64 KiB; A2A responses/streams to 32 MiB.
 Redirects are disabled for both hops. Transport, exchange and JSON-RPC errors
