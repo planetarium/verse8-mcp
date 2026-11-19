@@ -127,3 +127,10 @@ Then:
 ## License
 
 MIT
+
+### IP asset pools
+
+The `verse8_ip_assets` tool uses your Verse8 login to request pool-scoped
+A2A access and saves inline files locally. Configure the token endpoint with
+`VERSE8_TOKEN_EXCHANGE_URL` and the pool base URL with `VERSE8_A2A_BASE_URL`.
+See [IP asset integration](docs/ip-assets.md) for configuration and task continuation.
