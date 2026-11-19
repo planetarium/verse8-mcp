@@ -171,7 +171,11 @@ export async function runIpAssets(input: Input, cwd = process.cwd()) {
     return { ok: true, pool: input.pool, messageId, taskId, contextId, state, ...assets };
   } catch (e) {
     const error = e instanceof IpAssetError ? e.code : "artifact_write_failed";
-    if (e instanceof DuplicateMessageError) taskId = e.taskId;
+    if (e instanceof DuplicateMessageError) {
+      taskId = e.taskId;
+      // The router identifies the original dispatch but does not return its context.
+      contextId = undefined;
+    }
     let hint = taskId
       ? "Use tasks/get or tasks/resubscribe with the returned taskId. Do not automatically resend the message."
       : "Keep the messageId and pool for operator dispatch lookup. The message may have executed. Do not automatically resend it.";
