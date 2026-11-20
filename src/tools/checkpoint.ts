@@ -33,6 +33,8 @@ import { synthesizeFileChangesFromDiff } from "../format/fileChangeSynthesis.js"
  *  - Else → fall back to "[verse8] checkpoint" subject-only message.
  *
  * On commit-hook failure we surface stderr verbatim so the LLM sees why.
+ * A staging or commit failure restores the index to its state before the
+ * call, so a retry does not pick up files this call staged.
  */
 
 const toolCallEntrySchema = z
@@ -145,13 +147,21 @@ export type CheckpointResult =
       hint: string;
       missing: string[];
     }
-  | { ok: false; error: "stage_failed"; hint: string }
+  | {
+      ok: false;
+      error: "stage_failed";
+      hint: string;
+      /** The index is back to its state before this call. */
+      indexRestored?: boolean;
+    }
   | { ok: false; error: "nothing_to_commit"; hint: string }
   | {
       ok: false;
       error: "commit_failed";
       hint: string;
       hookStderr?: string;
+      /** The index is back to its state before this call. */
+      indexRestored?: boolean;
     }
   | { ok: false; error: "push_failed"; hint: string };
 
@@ -225,6 +235,53 @@ export function unstageNeverCommitFiles(cwd: string): string[] {
   });
   return hits;
 }
+
+/**
+ * Record the index as a tree object so a failed checkpoint can put it back.
+ * null when the index cannot be written as a tree (e.g. unmerged entries);
+ * the caller then leaves the index as it is.
+ */
+export function snapshotIndex(cwd: string): string | null {
+  try {
+    const tree = execFileSync("git", ["write-tree"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return tree || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Put the index back to `tree` (from snapshotIndex). Only the index changes;
+ * the working tree is never touched. Returns false when it could not.
+ */
+export function restoreIndex(cwd: string, tree: string | null): boolean {
+  if (!tree) return false;
+  try {
+    execFileSync("git", ["read-tree", tree], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return false;
+  }
+  // read-tree drops the cached stat data; refresh it so the next
+  // `git status` does not re-hash every file. Best effort.
+  try {
+    execFileSync("git", ["update-index", "-q", "--refresh"], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // exit 1 only means some files differ from the index — expected.
+  }
+  return true;
+}
+
+const RESTORED_NOTE = " The index was restored to its state before this call.";
 
 /**
  * `git commit` with the message read from a temp file (`-F`), not argv.
@@ -398,7 +455,8 @@ export async function runCheckpoint(
     );
   }
 
-  // 1. Stage
+  // 1. Stage — remember the index first so a failure below can undo it.
+  const indexBefore = snapshotIndex(cwd);
   try {
     if (input.files && input.files.length > 0) {
       execFileSync("git", ["add", "--", ...input.files], {
@@ -412,10 +470,12 @@ export async function runCheckpoint(
     }
   } catch (e) {
     const err = e as RunError;
+    const indexRestored = restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "stage_failed",
-      hint: err.stderr?.toString().trim() || err.message,
+      hint: (err.stderr?.toString().trim() || err.message) + (indexRestored ? RESTORED_NOTE : ""),
+      indexRestored,
     };
   }
 
@@ -424,10 +484,12 @@ export async function runCheckpoint(
     unstageNeverCommitFiles(cwd);
   } catch (e) {
     const err = e as RunError;
+    const indexRestored = restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "stage_failed",
-      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}`,
+      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}` + (indexRestored ? RESTORED_NOTE : ""),
+      indexRestored,
     };
   }
 
@@ -448,8 +510,10 @@ export async function runCheckpoint(
 
   // 2. Commit — message via a file (-F): it can be longer than argv allows.
   let commitSha: string | undefined;
+  let committed = false;
   try {
     commitWithMessageFile(cwd, messageText);
+    committed = true;
     const sha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd,
       encoding: "utf8",
@@ -457,11 +521,15 @@ export async function runCheckpoint(
     commitSha = sha;
   } catch (e) {
     const err = e as RunError;
+    // Undo staging only when no commit was made; after a commit the index
+    // already matches the new HEAD.
+    const indexRestored = committed ? false : restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "commit_failed",
-      hint: err.stderr?.toString().trim() || err.message,
+      hint: (err.stderr?.toString().trim() || err.message) + (indexRestored ? RESTORED_NOTE : ""),
       hookStderr: err.stderr?.toString(),
+      indexRestored,
     };
   }
 
