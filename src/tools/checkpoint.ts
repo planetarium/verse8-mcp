@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { z } from "zod";
 import { detectAttachment } from "../context/attachment.js";
 import { loadToken } from "../context/token.js";
@@ -21,6 +24,10 @@ import { synthesizeFileChangesFromDiff } from "../format/fileChangeSynthesis.js"
  *
  * Default staging is `git add -A` (verse8 projects commit `.env` by
  * convention — VITE_AGENT8_ACCOUNT / VITE_AGENT8_VERSE live there).
+ * `stageAll: false` (or VERSE8_CHECKPOINT_REQUIRE_FILES=1) turns that off:
+ * without `files` the call stops with `files_required` and lists the
+ * changed paths, so work of another session in the same folder is not
+ * committed by accident.
  *
  * Message format selection:
  *  - If `userPrompt` is provided → build the V8 format deterministically
@@ -30,6 +37,8 @@ import { synthesizeFileChangesFromDiff } from "../format/fileChangeSynthesis.js"
  *  - Else → fall back to "[verse8] checkpoint" subject-only message.
  *
  * On commit-hook failure we surface stderr verbatim so the LLM sees why.
+ * A staging or commit failure restores the index to its state before the
+ * call, so a retry does not pick up files this call staged.
  */
 
 const toolCallEntrySchema = z
@@ -45,6 +54,12 @@ export const checkpointInputSchema = z
   .object({
     // Staging
     files: z.array(z.string().min(1)).optional(),
+    stageAll: z
+      .boolean()
+      .optional()
+      .describe(
+        "Only matters when `files` is omitted. true: stage every change under projectDir (`git add -A`). false: stage nothing and stop with `files_required` + `changedFiles`, so another session's work in the same folder is never committed — then call again with `files`. Default: false when the MCP server has VERSE8_CHECKPOINT_REQUIRE_FILES=1, else true.",
+      ),
     projectDir: z
       .string()
       .min(1)
@@ -142,13 +157,29 @@ export type CheckpointResult =
       hint: string;
       missing: string[];
     }
-  | { ok: false; error: "stage_failed"; hint: string }
+  | {
+      ok: false;
+      error: "stage_failed";
+      hint: string;
+      /** The index is back to its state before this call. */
+      indexRestored?: boolean;
+    }
   | { ok: false; error: "nothing_to_commit"; hint: string }
+  | {
+      ok: false;
+      error: "files_required";
+      hint: string;
+      /** Changed paths under projectDir (relative), at most CHANGED_FILES_LIMIT. */
+      changedFiles: string[];
+      changedFilesTruncated?: boolean;
+    }
   | {
       ok: false;
       error: "commit_failed";
       hint: string;
       hookStderr?: string;
+      /** The index is back to its state before this call. */
+      indexRestored?: boolean;
     }
   | { ok: false; error: "push_failed"; hint: string };
 
@@ -221,6 +252,108 @@ export function unstageNeverCommitFiles(cwd: string): string[] {
     stdio: ["ignore", "pipe", "pipe"],
   });
   return hits;
+}
+
+/** Env switch: `1` / `true` / `yes` makes `stageAll` default to false. */
+export const REQUIRE_FILES_ENV = "VERSE8_CHECKPOINT_REQUIRE_FILES";
+
+/** Effective `stageAll`: the input wins, else the env switch, else true. */
+export function resolveStageAll(
+  stageAll: boolean | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (stageAll !== undefined) return stageAll;
+  const v = (env[REQUIRE_FILES_ENV] ?? "").trim().toLowerCase();
+  return !(v === "1" || v === "true" || v === "yes");
+}
+
+export const CHANGED_FILES_LIMIT = 200;
+
+/**
+ * Paths a `git add -A -- .` would pick up (staged, modified, deleted,
+ * untracked-not-ignored), relative to `cwd`, without NEVER_COMMIT_FILES.
+ */
+export function listChangedFiles(cwd: string): string[] {
+  const paths = new Set<string>(listStagedFiles(cwd));
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "--modified", "--deleted", "--others", "--exclude-standard", "-z"],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    for (const p of out.split("\0")) if (p) paths.add(p);
+  } catch {
+    // not a git repo / git missing: report what the index gave us
+  }
+  return [...paths].filter((p) => !NEVER_COMMIT_FILES.includes(p)).sort();
+}
+
+/**
+ * Record the index as a tree object so a failed checkpoint can put it back.
+ * null when the index cannot be written as a tree (e.g. unmerged entries);
+ * the caller then leaves the index as it is.
+ */
+export function snapshotIndex(cwd: string): string | null {
+  try {
+    const tree = execFileSync("git", ["write-tree"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return tree || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Put the index back to `tree` (from snapshotIndex). Only the index changes;
+ * the working tree is never touched. Returns false when it could not.
+ */
+export function restoreIndex(cwd: string, tree: string | null): boolean {
+  if (!tree) return false;
+  try {
+    execFileSync("git", ["read-tree", tree], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return false;
+  }
+  // read-tree drops the cached stat data; refresh it so the next
+  // `git status` does not re-hash every file. Best effort.
+  try {
+    execFileSync("git", ["update-index", "-q", "--refresh"], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // exit 1 only means some files differ from the index — expected.
+  }
+  return true;
+}
+
+const RESTORED_NOTE = " The index was restored to its state before this call.";
+
+/**
+ * `git commit` with the message read from a temp file (`-F`), not argv.
+ * The V8 message carries file diffs and can exceed the Windows command-line
+ * limit (32,767 chars) as `-m`, which fails with spawnSync ENAMETOOLONG.
+ * Cleanup mode is the same as `-m` (whitespace), so the stored message is
+ * unchanged.
+ */
+export function commitWithMessageFile(cwd: string, messageText: string): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-commit-msg-"));
+  try {
+    const file = path.join(dir, "MESSAGE");
+    fs.writeFileSync(file, messageText, "utf8");
+    execFileSync("git", ["commit", "-F", file], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function getFilePath(entry: V8ToolCallEntry): string | undefined {
@@ -347,6 +480,27 @@ export async function runCheckpoint(
     }
   }
 
+  // Without `files`, staging everything must be allowed (stageAll).
+  const hasFiles = !!input.files && input.files.length > 0;
+  if (!hasFiles && !resolveStageAll(input.stageAll)) {
+    const changed = listChangedFiles(cwd);
+    if (changed.length === 0) {
+      return {
+        ok: false,
+        error: "nothing_to_commit",
+        hint: "nothing staged; no changes to checkpoint",
+      };
+    }
+    const truncated = changed.length > CHANGED_FILES_LIMIT;
+    return {
+      ok: false,
+      error: "files_required",
+      hint: `stageAll is off (input or ${REQUIRE_FILES_ENV}), so nothing was staged. Call again with \`files\` set to the paths this change touched — ${changed.length} changed path(s) are listed in changedFiles; leave out work that is not yours. Pass stageAll: true to commit all of them.`,
+      changedFiles: truncated ? changed.slice(0, CHANGED_FILES_LIMIT) : changed,
+      ...(truncated ? { changedFilesTruncated: true } : {}),
+    };
+  }
+
   // 0. Self-heal .env. The verse8 runtime requires VITE_AGENT8_ACCOUNT /
   // VITE_AGENT8_VERSE; a commit that lands without them will boot a broken
   // preview. If the file is already intact this is a zero-network noop
@@ -374,10 +528,11 @@ export async function runCheckpoint(
     );
   }
 
-  // 1. Stage
+  // 1. Stage — remember the index first so a failure below can undo it.
+  const indexBefore = snapshotIndex(cwd);
   try {
-    if (input.files && input.files.length > 0) {
-      execFileSync("git", ["add", "--", ...input.files], {
+    if (hasFiles) {
+      execFileSync("git", ["add", "--", ...input.files!], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -388,10 +543,12 @@ export async function runCheckpoint(
     }
   } catch (e) {
     const err = e as RunError;
+    const indexRestored = restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "stage_failed",
-      hint: err.stderr?.toString().trim() || err.message,
+      hint: (err.stderr?.toString().trim() || err.message) + (indexRestored ? RESTORED_NOTE : ""),
+      indexRestored,
     };
   }
 
@@ -400,10 +557,12 @@ export async function runCheckpoint(
     unstageNeverCommitFiles(cwd);
   } catch (e) {
     const err = e as RunError;
+    const indexRestored = restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "stage_failed",
-      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}`,
+      hint: `could not unstage ${NEVER_COMMIT_FILES.join(", ")}: ${err.stderr?.toString().trim() || err.message}` + (indexRestored ? RESTORED_NOTE : ""),
+      indexRestored,
     };
   }
 
@@ -422,13 +581,12 @@ export async function runCheckpoint(
     cwd,
   );
 
-  // 2. Commit — pass message via -F to preserve multi-line + special characters.
+  // 2. Commit — message via a file (-F): it can be longer than argv allows.
   let commitSha: string | undefined;
+  let committed = false;
   try {
-    execFileSync("git", ["commit", "-m", messageText], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    commitWithMessageFile(cwd, messageText);
+    committed = true;
     const sha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd,
       encoding: "utf8",
@@ -436,11 +594,15 @@ export async function runCheckpoint(
     commitSha = sha;
   } catch (e) {
     const err = e as RunError;
+    // Undo staging only when no commit was made; after a commit the index
+    // already matches the new HEAD.
+    const indexRestored = committed ? false : restoreIndex(cwd, indexBefore);
     return {
       ok: false,
       error: "commit_failed",
-      hint: err.stderr?.toString().trim() || err.message,
+      hint: (err.stderr?.toString().trim() || err.message) + (indexRestored ? RESTORED_NOTE : ""),
       hookStderr: err.stderr?.toString(),
+      indexRestored,
     };
   }
 
