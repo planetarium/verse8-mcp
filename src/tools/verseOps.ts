@@ -21,7 +21,10 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * visibility resolution).
  */
 
-const ACTIONS = ["get", "mine", "update", "release_notes", "release_note_update", "analytics"] as const;
+const ACTIONS = [
+  "get", "mine", "update", "release_notes", "release_note_update", "analytics",
+  "comments", "comment_pin", "comment_delete",
+] as const;
 const REPORT_TYPES = ["dau", "mau", "sessions", "avgSessionDuration", "realtimeUsers"] as const;
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
 /** The web's default chart interval and range per report (verse8-vibe src/constants/analytics.ts). */
@@ -39,7 +42,7 @@ export const verseOpsInputSchema = z
     action: z
       .enum(ACTIONS)
       .describe(
-        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless confirm). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless confirm). analytics: DAU / MAU / sessions / avg session summary, plus a chart when reportType is given.",
+        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless confirm). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless confirm). analytics: DAU / MAU / sessions / avg session summary, plus a chart when reportType is given. comments: comment list with the pinned one. comment_pin: pin / unpin a comment (preview unless confirm). comment_delete: delete a comment (preview unless confirm; irreversible).",
       ),
     projectDir: projectDirField,
     verseId: verseIdField,
@@ -67,6 +70,10 @@ export const verseOpsInputSchema = z
     allowRemix: z.boolean().optional().describe("update: allow remixes (Spin)."),
     isMobileSupported: z.boolean().optional().describe("update: mark as playable on mobile."),
     orientation: z.enum(["landscape", "portrait", "auto"]).optional().describe("update: screen orientation; auto lets the device decide."),
+    visibility: z
+      .enum(["Public", "Unlisted", "Private"])
+      .optional()
+      .describe("update: Public (listed), Unlisted (link only) or Private (owner only). Omitted = keep the current one."),
     // release notes
     buildVersion: z.number().int().min(1).optional().describe("release_note_update: the note's build version (from release_notes)."),
     releaseNoteId: z.number().int().min(1).optional().describe("release_note_update: the note's id (alternative to buildVersion)."),
@@ -86,6 +93,10 @@ export const verseOpsInputSchema = z
     startDate: z.string().min(1).max(40).optional().describe("analytics chart: ISO 8601 start (default: the web's range for the metric)."),
     endDate: z.string().min(1).max(40).optional().describe("analytics chart: ISO 8601 end (default now)."),
     interval: z.enum(INTERVALS).optional().describe("analytics chart: bucket size (default: the web's for the metric)."),
+    // comments
+    sortBy: z.enum(["popular", "latest", "top"]).optional().describe("comments: order (default popular)."),
+    commentId: z.number().int().min(1).optional().describe("comment_pin / comment_delete: the comment (from comments)."),
+    pinned: z.boolean().optional().describe("comment_pin: true pins (replacing any other pin), false unpins. Default true."),
   })
   .strict();
 
@@ -177,6 +188,29 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
       case "analytics":
         if (!ctx.ok) return ctx as OpFail;
         return await runAnalytics(input, ctx.verseId, ctx.token);
+      case "comments": {
+        if (!ctx.ok) return ctx as OpFail;
+        const r = await v8Request<CommentPage>("GET", `/v1/verse/${encodeURIComponent(ctx.verseId)}/comments`, {
+          token: ctx.token,
+          query: { page: input.page ?? 1, limit: input.limit ?? 20, sortBy: input.sortBy },
+        });
+        if (!r.ok) return apiFail("GET comments", r);
+        const d = r.data ?? { comments: [], page: 1, limit: 20, total: 0 };
+        return {
+          ok: true,
+          action: "comments",
+          verseId: ctx.verseId,
+          total: d.total,
+          page: d.page,
+          limit: d.limit,
+          pinnedComment: d.pinnedComment ? presentComment(d.pinnedComment) : null,
+          comments: (d.comments ?? []).map(presentComment),
+        };
+      }
+      case "comment_pin":
+      case "comment_delete":
+        if (!ctx.ok) return ctx as OpFail;
+        return await runCommentChange(input, ctx.verseId, ctx.token);
     }
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
@@ -215,19 +249,32 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     ["allowRemix", cur.allowRemix, input.allowRemix],
     ["isMobileSupported", cur.isMobileSupported, input.isMobileSupported],
     ["orientation", cur.orientation, orientation],
+    ["visibility", cur.visibility, input.visibility],
   ]);
   if (changes.length === 0) return opFail("invalid_input", "Nothing to change: every given value equals the current one (or no field was given).");
 
   const warnings: string[] = [];
+  const vis = changes.find((c) => c.field === "visibility");
+  if (vis) warnings.push(...visibilityWarnings(cur, String(vis.to)));
   if (changes.some((c) => c.field === "imageUrl" || c.field === "videoUrl")) {
     warnings.push("The listing's theme colors are not recomputed from the new cover / video (the web editor's Save does that); they keep their current values.");
   }
-  // visibility: the current value, always — see the module comment.
-  const body: Record<string, unknown> = { visibility: cur.visibility, sendNotificationToFollowers: false };
+  // visibility: always sent — the new one, or the current one (see the module comment).
+  const body: Record<string, unknown> = { visibility: input.visibility ?? cur.visibility, sendNotificationToFollowers: false };
   for (const c of changes) body[c.field] = c.to;
 
   if (!input.confirm) {
-    return { ok: true, action: "update", dryRun: true, verseId, changes, keptVisibility: cur.visibility, warnings, publishBody: body, next: CONFIRM_NEXT };
+    return {
+      ok: true,
+      action: "update",
+      dryRun: true,
+      verseId,
+      changes,
+      ...(vis ? {} : { keptVisibility: cur.visibility }),
+      warnings,
+      publishBody: body,
+      next: CONFIRM_NEXT,
+    };
   }
 
   if (input.thumbnailPath) {
@@ -248,9 +295,14 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     dryRun: false,
     verseId,
     changes: changes.map((c) => ({ ...c, to: body[c.field] })),
-    visibility: res.data.visibility ?? cur.visibility,
+    visibility: res.data.visibility ?? body.visibility,
     reviewStatus: (res.data.reviewStatus as string | undefined) ?? null,
-    warnings,
+    warnings: [
+      ...warnings,
+      ...(vis && ["PRIVATE_REVIEW", "REJECTED"].includes(String(res.data.reviewStatus))
+        ? [`reviewStatus is now ${res.data.reviewStatus}: the game stays hidden from players until Verse8 review passes.`]
+        : []),
+    ],
   };
 }
 
@@ -380,4 +432,123 @@ async function runAnalytics(input: VerseOpsInput, verseId: string, token: string
     }
   }
   return out as VerseOpsResult;
+}
+
+/** What a visibility change does, from g2-sync verse.service.ts / review.service.ts. */
+export function visibilityWarnings(cur: VerseInfo, to: string): string[] {
+  const out: string[] = [];
+  const from = String(cur.visibility);
+  if (to === "Private") out.push("Private: only you can open the game; players lose access and it leaves listings.");
+  if (to === "Unlisted") out.push("Unlisted: anyone with the link can play; it is not listed.");
+  if (to === "Public") out.push("Public: listed on Verse8 for everyone.");
+  if (from === "Private" && to !== "Private" && (cur.tag ?? []).includes("__review_required")) {
+    out.push(
+      "This game carries __review_required: making it visible starts a Verse8 review, and without an earlier approval it goes to PRIVATE_REVIEW — still hidden until the review passes.",
+    );
+  }
+  return out;
+}
+
+interface VerseComment {
+  id: number;
+  userUid: string;
+  userDisplayName?: string;
+  userHandle?: string | null;
+  content: string;
+  parentCommentId: number | null;
+  likes: number;
+  isDeleted: boolean;
+  createdAt: string;
+  replies?: VerseComment[];
+}
+interface CommentPage {
+  pinnedComment?: VerseComment;
+  comments: VerseComment[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export function presentComment(c: VerseComment): Record<string, unknown> {
+  return {
+    id: c.id,
+    author: { uid: c.userUid, handle: c.userHandle ?? null, displayName: c.userDisplayName ?? null },
+    content: c.content,
+    likes: c.likes,
+    isDeleted: c.isDeleted,
+    parentCommentId: c.parentCommentId,
+    createdAt: c.createdAt,
+    ...(c.replies && c.replies.length > 0 ? { replies: c.replies.map(presentComment) } : {}),
+  };
+}
+
+/** Page through the newest comments (and their replies) for one id; also returns the pinned one. */
+async function findComment(
+  verseId: string,
+  token: string,
+  commentId: number,
+): Promise<{ ok: true; comment: VerseComment | null; pinnedId: number | null } | OpFail> {
+  let pinnedId: number | null = null;
+  for (let page = 1; page <= 10; page++) {
+    const r = await v8Request<CommentPage>("GET", `/v1/verse/${encodeURIComponent(verseId)}/comments`, {
+      token,
+      query: { page, limit: 100, sortBy: "latest" },
+    });
+    if (!r.ok) return apiFail("GET comments", r);
+    const d = r.data;
+    if (!d) break;
+    if (page === 1) pinnedId = d.pinnedComment?.id ?? null;
+    const pool = [...(d.pinnedComment ? [d.pinnedComment] : []), ...(d.comments ?? [])];
+    for (const c of pool) {
+      if (c.id === commentId) return { ok: true, comment: c, pinnedId };
+      const reply = (c.replies ?? []).find((x) => x.id === commentId);
+      if (reply) return { ok: true, comment: reply, pinnedId };
+    }
+    if ((d.comments ?? []).length < 100) break;
+  }
+  return { ok: true, comment: null, pinnedId };
+}
+
+async function runCommentChange(input: VerseOpsInput, verseId: string, token: string): Promise<VerseOpsResult> {
+  if (input.commentId === undefined) return opFail("invalid_input", `${input.action} needs commentId (see action comments).`);
+  const owned = await loadOwnedVerse(verseId, token);
+  if (!owned.ok) return owned;
+  const found = await findComment(verseId, token, input.commentId);
+  if (!found.ok) return found;
+  const c = found.comment;
+  if (!c) return opFail("not_found", `No comment ${input.commentId} among this verse's newest 1,000.`);
+  if (c.isDeleted) return opFail("invalid_input", `Comment ${c.id} is already deleted.`);
+  const shown = presentComment({ ...c, replies: undefined });
+
+  if (input.action === "comment_delete") {
+    const warnings = [
+      "Deleting is irreversible (no undo for creators).",
+      "It counts against the commenter's moderation record (deletedCommentCount).",
+      ...(found.pinnedId === c.id ? ["It is the pinned comment; it gets unpinned."] : []),
+    ];
+    if (!input.confirm) return { ok: true, action: "comment_delete", dryRun: true, verseId, comment: shown, warnings, next: CONFIRM_NEXT };
+    const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
+    if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);
+    return { ok: true, action: "comment_delete", dryRun: false, verseId, deleted: c.id };
+  }
+
+  // comment_pin — the route toggles, so call it only when the state would change.
+  const want = input.pinned ?? true;
+  const isPinned = found.pinnedId === c.id;
+  if (want === isPinned) {
+    return { ok: true, action: "comment_pin", dryRun: !input.confirm, verseId, comment: shown, pinned: isPinned, unchanged: true };
+  }
+  if (want && c.parentCommentId !== null) return opFail("invalid_input", "Only top-level comments can be pinned.");
+  const warnings = want
+    ? [
+        ...(found.pinnedId !== null ? [`Replaces the current pin (comment ${found.pinnedId}).`] : []),
+        "The commenter is notified that you pinned it.",
+      ]
+    : [];
+  if (!input.confirm) {
+    return { ok: true, action: "comment_pin", dryRun: true, verseId, comment: shown, changes: [{ field: "pinned", from: isPinned, to: want }], warnings, next: CONFIRM_NEXT };
+  }
+  const r = await v8Request<{ isPinned: boolean }>("POST", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}/pin`, { token });
+  if (!r.ok) return apiFail(`pin comment ${c.id}`, r);
+  return { ok: true, action: "comment_pin", dryRun: false, verseId, commentId: c.id, pinned: r.data?.isPinned ?? want, warnings };
 }

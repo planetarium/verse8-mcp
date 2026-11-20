@@ -22,7 +22,7 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  *    until `GET /v1/vx-wallet` says `isSeller` — the tool refuses the same.
  */
 
-const ACTIONS = ["list", "upsert", "sales", "revenue"] as const;
+const ACTIONS = ["list", "upsert", "sales", "revenue", "archive", "dispute"] as const;
 
 const purchaseConstraintsSchema = z
   .object({
@@ -38,7 +38,7 @@ export const vxShopInputSchema = z
   .object({
     action: z
       .enum(ACTIONS)
-      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless confirm. sales: purchases (paged; by item; disputes only). revenue: VX totals and refunds for a period."),
+      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless confirm. sales: purchases (paged; by item; disputes only). revenue: VX totals and refunds for a period. archive: archive / restore an item (preview unless confirm). dispute: answer a buyer's dispute (preview unless confirm)."),
     projectDir: projectDirField,
     verseId: verseIdField,
     confirm: z
@@ -64,7 +64,13 @@ export const vxShopInputSchema = z
     clearPurchaseConstraints: z.boolean().optional().describe("upsert edit: remove all purchase limits."),
     isActive: z.boolean().optional().describe("upsert: on sale. Create defaults to false (created hidden) unless set."),
     disputeOnly: z.boolean().optional().describe("sales: only purchases with a dispute."),
-    disputeStatus: z.enum(["REQUEST", "IGNORE", "RESOLVED"]).optional().describe("sales with disputeOnly: filter by dispute state."),
+    disputeStatus: z
+      .enum(["REQUEST", "IGNORE", "RESOLVED"])
+      .optional()
+      .describe("sales with disputeOnly: filter by dispute state. dispute: the new state (RESOLVED or IGNORE closes it)."),
+    archived: z.boolean().optional().describe("archive: true archives (stops selling, hidden), false restores. Default true."),
+    saleId: z.number().int().min(1).optional().describe("dispute: the sale (from sales with disputeOnly)."),
+    responseMessage: z.string().min(1).max(2000).optional().describe("dispute: your reply, shown to the buyer."),
     startDate: z.string().min(1).max(40).optional().describe("revenue: ISO 8601 period start (default: all time)."),
     endDate: z.string().min(1).max(40).optional().describe("revenue: ISO 8601 period end."),
     stage: z.enum(["PROD", "PREVIEW"]).optional().describe("revenue: published game (PROD, default) or preview purchases."),
@@ -173,6 +179,8 @@ export async function runVxShop(input: VxShopInput, serverCwd: string = process.
     }
     if (input.action === "sales") return await runSales(input, ctx.verseId, ctx.token);
     if (input.action === "revenue") return await runRevenue(input, ctx.verseId, ctx.token);
+    if (input.action === "archive") return await runArchive(input, ctx.verseId, ctx.token);
+    if (input.action === "dispute") return await runDispute(input, ctx.verseId, ctx.token);
     return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token);
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
@@ -334,4 +342,75 @@ async function runRevenue(input: VxShopInput, verseId: string, token: string): P
   });
   if (!r.ok) return apiFail("GET /v1/vx-shop-items/revenue-stats", r);
   return { ok: true, action: "revenue", verseId, stage: input.stage ?? "PROD", ...(r.data ?? {}) };
+}
+
+async function runArchive(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+  if (input.itemId === undefined) return opFail("invalid_input", "archive needs itemId (see action list).");
+  const found = await findItem(verseId, token, input.itemId);
+  if (!found.ok) return found;
+  const cur = found.item;
+  const want = input.archived ?? true;
+  if (cur.isArchived === want) {
+    return { ok: true, action: "archive", dryRun: !input.confirm, verseId, itemId: cur.id, archived: want, unchanged: true };
+  }
+  // Same trap as upsert: without purchaseConstraints the server deletes them.
+  const { purchaseConstraints } = parseItemMetadata(cur.metadata);
+  const body: Record<string, unknown> = { isArchived: want };
+  if (purchaseConstraints) body.purchaseConstraints = purchaseConstraints;
+  const warnings = want
+    ? ["Archived items are not sold and are hidden from buyers; restore brings them back. Its productId stays reserved."]
+    : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`];
+  if (!input.confirm) {
+    return { ok: true, action: "archive", dryRun: true, verseId, itemId: cur.id, changes: [{ field: "isArchived", from: cur.isArchived, to: want }], body, warnings, next: CONFIRM_NEXT };
+  }
+  const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
+  if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
+  return { ok: true, action: "archive", dryRun: false, verseId, item: r.data ? presentItem(r.data) : null, warnings };
+}
+
+async function findDisputedSale(verseId: string, token: string, saleId: number): Promise<{ ok: true; sale: Record<string, unknown> | null } | OpFail> {
+  for (let page = 1; page <= 20; page++) {
+    const r = await v8Request<{ sales: Record<string, unknown>[] }>("GET", "/v1/vx-shop-items/sales", {
+      token,
+      query: { verseId, disputeOnly: "true", page, limit: 100 },
+    });
+    if (!r.ok) return apiFail("GET /v1/vx-shop-items/sales", r);
+    const sales = r.data?.sales ?? [];
+    const hit = sales.find((s) => s.id === saleId);
+    if (hit) return { ok: true, sale: hit };
+    if (sales.length < 100) break;
+  }
+  return { ok: true, sale: null };
+}
+
+async function runDispute(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+  if (input.saleId === undefined || input.disputeStatus === undefined) {
+    return opFail("invalid_input", "dispute needs saleId and disputeStatus (see action sales with disputeOnly).");
+  }
+  const found = await findDisputedSale(verseId, token, input.saleId);
+  if (!found.ok) return found;
+  if (!found.sale) return opFail("not_found", `Sale ${input.saleId} has no dispute in ${verseId}.`);
+  const sale = presentSale(found.sale);
+  const body: Record<string, unknown> = { status: input.disputeStatus };
+  if (input.responseMessage) body.responseMessage = input.responseMessage;
+  const warnings = [
+    "The buyer gets an in-app notification of this answer.",
+    "Resolving a dispute does not refund the VX (refunds are not available from this tool).",
+  ];
+  if (!input.confirm) {
+    return {
+      ok: true,
+      action: "dispute",
+      dryRun: true,
+      verseId,
+      sale,
+      changes: [{ field: "disputeStatus", from: sale.disputeStatus ?? null, to: input.disputeStatus }],
+      body,
+      warnings,
+      next: CONFIRM_NEXT,
+    };
+  }
+  const r = await v8Request<{ success: boolean }>("PUT", `/v1/vx-shop-items/sales/${input.saleId}/dispute`, { token, body });
+  if (!r.ok) return apiFail(`PUT sales/${input.saleId}/dispute`, r);
+  return { ok: true, action: "dispute", dryRun: false, verseId, saleId: input.saleId, disputeStatus: input.disputeStatus, warnings };
 }
