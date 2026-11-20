@@ -97,6 +97,9 @@ export const ERROR_CODES = [
   "upload_response_malformed",
   // Credits / billing
   "insufficient_credits",
+  // Game server / creator operations
+  "not_found",
+  "logs_unavailable",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

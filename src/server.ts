@@ -22,6 +22,7 @@ import {
 } from "./tools/checkpoint.js";
 import { previewInputSchema, runPreview } from "./tools/preview.js";
 import { deployInputSchema, runDeploy } from "./tools/deploy.js";
+import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -173,6 +174,13 @@ export const DEPLOY_TOOL: Tool = {
   inputSchema: zodToJsonSchema(deployInputSchema),
 };
 
+export const GAMESERVER_TOOL: Tool = {
+  name: "verse8_gameserver",
+  description:
+    "Read this project's game server — READ-ONLY (no writes, no deploys). Pick `target`: prod (the published game) or preview (what verse8_preview deployed). Actions: status (v1/v2, state, players, rooms); collections / items (Firestore collections of `$collection`, paged with cursor, optional equality search by `field`+`value`); users / user / global (user, asset and global state); errors and logs (v2 servers only: recent error lines, or recent + live console output for a few seconds). Use it to check what the server stored or why a server function failed, instead of adding an admin-only server function. Results can include other players' wallet addresses and state — show the user only what they asked for. Requires the Verse8 login of the verse owner.",
+  inputSchema: zodToJsonSchema(gameserverInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -241,6 +249,7 @@ export function createServer(): Server {
       tools.push(UPLOAD_ASSET_TOOL);
       tools.push(UPLOAD_THUMBNAIL_TOOL);
       tools.push(DEPLOY_TOOL);
+      tools.push(GAMESERVER_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -374,6 +383,13 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runDeploy(parsed, cwd), {
           projectDir: pd,
         });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_gameserver") {
+        const parsed = gameserverInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runGameserver(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 
