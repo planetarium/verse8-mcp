@@ -86,6 +86,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |
 | `verse8_upload_asset` | Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via `agent8-backend /api/upload-attachment`. Pass `filePath` + `cdnPath`; the host is expected to mirror the project's `src/assets.json` URL patterns and to register the returned URL back into that manifest. | Logged in |
 | `verse8_upload_thumbnail` | Upload a verse cover image (png/jpg/gif/webp ≤4 MB) or preview video (mp4 ≤10 MiB) to `contents.verse8.io` via verse8.io `/api/upload`. | Logged in |
+| `verse8_gameserver` | Read-only view of the game server, prod or preview: status (v1/v2, players, rooms), `$collection` data (paged, equality search), user / asset / global state, recent errors and live logs (v2). Uses the gateway's developer API (`/v1/verses/:verse/*`, owner only). | Logged in, verse owner |
 | `verse8_deploy` | Publish: checkpoint → media upload → `bun run build --base ./` (+ gameserver build) → `@agent8/deploy --prod` → `POST /v1/verse/create` (first) or `/v1/verse/update/:id` (update). `dryRun: true` previews the mode + publish body. | Logged in |
 | `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
 
