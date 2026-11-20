@@ -279,3 +279,43 @@ export async function createProject(
 
   return { ok: false, status, body: raw };
 }
+
+export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
+
+/**
+ * Generic JSON call to v8-meme-api for the creator tools. Any 2xx is `ok`,
+ * including 204 with an empty body (`data: null`) — unlike `toVerseResult`.
+ * `query` values that are undefined / "" are left out.
+ */
+export async function v8Request<T>(
+  method: V8Method,
+  pathname: string,
+  opts: { token?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown } = {},
+): Promise<{ ok: true; status: number; data: T | null } | { ok: false; status: number; body: string }> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts.query ?? {})) {
+    if (v !== undefined && v !== "") qs.set(k, String(v));
+  }
+  const url = `${getBaseUrl()}${pathname}${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  });
+  const raw = await res.text();
+  if (res.status >= 200 && res.status < 300) {
+    let data: T | null = null;
+    if (raw.length > 0) {
+      try {
+        data = JSON.parse(raw) as T;
+      } catch {
+        data = null;
+      }
+    }
+    return { ok: true, status: res.status, data };
+  }
+  return { ok: false, status: res.status, body: raw };
+}

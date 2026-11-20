@@ -22,6 +22,10 @@ import {
 } from "./tools/checkpoint.js";
 import { previewInputSchema, runPreview } from "./tools/preview.js";
 import { deployInputSchema, runDeploy } from "./tools/deploy.js";
+import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
+import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
+import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
+import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -173,6 +177,34 @@ export const DEPLOY_TOOL: Tool = {
   inputSchema: zodToJsonSchema(deployInputSchema),
 };
 
+export const GAMESERVER_TOOL: Tool = {
+  name: "verse8_gameserver",
+  description:
+    "Read this project's game server — READ-ONLY (no writes, no deploys). Pick `target`: prod (the published game) or preview (what verse8_preview deployed). Actions: status (v1/v2, state, players, rooms); collections / items (Firestore collections of `$collection`, paged with cursor, optional equality search by `field`+`value`); users / user / global (user, asset and global state); errors and logs (v2 servers only: recent error lines, or recent + live console output for a few seconds). Use it to check what the server stored or why a server function failed, instead of adding an admin-only server function. Results can include other players' wallet addresses and state — show the user only what they asked for. Requires the Verse8 login of the verse owner.",
+  inputSchema: zodToJsonSchema(gameserverInputSchema),
+};
+
+export const DEPLOY_STATUS_TOOL: Tool = {
+  name: "verse8_deploy_status",
+  description:
+    "READ-ONLY: what is live for this project's verse. Returns the published commit (`publishedSha`, `publishedAt` from the live playUrl), title / visibility / review status, the latest release note (buildVersion, types, date, review status), how the local checkout relates to the published commit (HEAD, whether HEAD contains it, commits since, uncommitted paths), and the prod / preview game server version and state. Use it to answer \"is this commit live?\" or \"when was it published?\" before or after verse8_deploy. The game server's own upload time is not available from any API (said in the answer).",
+  inputSchema: zodToJsonSchema(deployStatusInputSchema),
+};
+
+export const VERSE_OPS_TOOL: Tool = {
+  name: "verse8_verse",
+  description:
+    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history), analytics (DAU / MAU / sessions summary and charts). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags, visibility; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Comments: comments (list), comment_pin (pin / unpin), comment_delete (irreversible). Changing actions PREVIEW by default: they return `changes` and change nothing until called again with confirm: true — show the preview to the user and get approval first. update keeps the current visibility unless `visibility` is given (making a Private game visible can start a review that keeps it hidden) and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
+  inputSchema: zodToJsonSchema(verseOpsInputSchema),
+};
+
+export const VXSHOP_TOOL: Tool = {
+  name: "verse8_vxshop",
+  description:
+    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. sales: purchases and disputes. revenue: VX totals / refunds for a period. archive: archive / restore an item. dispute: answer a buyer dispute (the buyer is notified; no refund). upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert, archive and dispute PREVIEW by default and change nothing until called again with confirm: true — price and on-sale changes affect real purchases, so show the preview to the user and get approval first. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
+  inputSchema: zodToJsonSchema(vxShopInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -241,6 +273,10 @@ export function createServer(): Server {
       tools.push(UPLOAD_ASSET_TOOL);
       tools.push(UPLOAD_THUMBNAIL_TOOL);
       tools.push(DEPLOY_TOOL);
+      tools.push(GAMESERVER_TOOL);
+      tools.push(DEPLOY_STATUS_TOOL);
+      tools.push(VERSE_OPS_TOOL);
+      tools.push(VXSHOP_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -374,6 +410,34 @@ export function createServer(): Server {
         const result = await dispatchTool(name, () => runDeploy(parsed, cwd), {
           projectDir: pd,
         });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_gameserver") {
+        const parsed = gameserverInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runGameserver(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_deploy_status") {
+        const parsed = deployStatusInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runDeployStatus(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_verse") {
+        const parsed = verseOpsInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_vxshop") {
+        const parsed = vxShopInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runVxShop(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

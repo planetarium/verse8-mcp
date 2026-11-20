@@ -10,6 +10,7 @@
 | `VERSE8_A2A_BASE_URL` | — | HTTPS base for IP asset pools. Receives the exchanged bearer token. |
 | `VERSE8_ACCESS_TOKEN` | _(미설정)_ | 설정 시 토큰 파일 대신 사용. |
 | `VERSE8_WEB_URL` | `https://verse8.io` | `verse8_upload_thumbnail` / `verse8_deploy`가 커버 이미지·영상을 올리는 verse8.io 웹 앱 base (`/api/upload`). `.verse8.io`·loopback만 허용. |
+| `VERSE8_GAMESERVER_URL` | `https://gs-gateway.verse8.io` | `verse8_gameserver`가 읽는 게임 서버 게이트웨이 base (`/v1/verses/:verse/*`). 토큰이 가므로 https `*.verse8.io`·loopback만 허용. |
 | `VERSE8_GAMESERVER_BUILD_PIN` | _(미설정)_ | `verse8_preview` preflight와 `verse8_deploy`가 사용하는 `@agent8/gameserver-node` / `@agent8/deploy` 버전 오버라이드 (`pkg=ver,pkg=ver` 포맷). `package.json :: verse8.gameserverPin`보다 우선. |
 | `VERSE8_AUDIT_LOG_PATH` | `${XDG_STATE_HOME:-~/.local/state}/verse8/mcp.log` | JSONL 감사 로그 위치. 1 MB에서 회전 (`.1` 하나만 보관). 모드 `0600`. |
 | `VERSE8_PROXY_REQUEST_TIMEOUT_MS` | `120000` (120초) | 업스트림 MCP 프록시 요청의 최소 타임아웃 (ms). 모든 서비스의 타임아웃이 이 값 이하로 내려가지 않도록 보장합니다. |
