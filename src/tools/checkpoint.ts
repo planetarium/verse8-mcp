@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { z } from "zod";
 import { detectAttachment } from "../context/attachment.js";
 import { loadToken } from "../context/token.js";
@@ -223,6 +226,27 @@ export function unstageNeverCommitFiles(cwd: string): string[] {
   return hits;
 }
 
+/**
+ * `git commit` with the message read from a temp file (`-F`), not argv.
+ * The V8 message carries file diffs and can exceed the Windows command-line
+ * limit (32,767 chars) as `-m`, which fails with spawnSync ENAMETOOLONG.
+ * Cleanup mode is the same as `-m` (whitespace), so the stored message is
+ * unchanged.
+ */
+export function commitWithMessageFile(cwd: string, messageText: string): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-commit-msg-"));
+  try {
+    const file = path.join(dir, "MESSAGE");
+    fs.writeFileSync(file, messageText, "utf8");
+    execFileSync("git", ["commit", "-F", file], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function getFilePath(entry: V8ToolCallEntry): string | undefined {
   const input = entry.input as Record<string, unknown> | undefined;
   if (!input || typeof input !== "object") return undefined;
@@ -422,13 +446,10 @@ export async function runCheckpoint(
     cwd,
   );
 
-  // 2. Commit — pass message via -F to preserve multi-line + special characters.
+  // 2. Commit — message via a file (-F): it can be longer than argv allows.
   let commitSha: string | undefined;
   try {
-    execFileSync("git", ["commit", "-m", messageText], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    commitWithMessageFile(cwd, messageText);
     const sha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd,
       encoding: "utf8",
