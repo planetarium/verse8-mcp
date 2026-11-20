@@ -25,6 +25,7 @@ import { deployInputSchema, runDeploy } from "./tools/deploy.js";
 import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
+import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -197,6 +198,13 @@ export const VERSE_OPS_TOOL: Tool = {
   inputSchema: zodToJsonSchema(verseOpsInputSchema),
 };
 
+export const VXSHOP_TOOL: Tool = {
+  name: "verse8_vxshop",
+  description:
+    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert PREVIEWS by default and changes nothing until called again with confirm: true — price and on-sale changes affect real purchases, so show the preview to the user and get approval first. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
+  inputSchema: zodToJsonSchema(vxShopInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -268,6 +276,7 @@ export function createServer(): Server {
       tools.push(GAMESERVER_TOOL);
       tools.push(DEPLOY_STATUS_TOOL);
       tools.push(VERSE_OPS_TOOL);
+      tools.push(VXSHOP_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -422,6 +431,13 @@ export function createServer(): Server {
         const parsed = verseOpsInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
         const result = await dispatchTool(name, () => runVerseOps(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_vxshop") {
+        const parsed = vxShopInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runVxShop(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

@@ -20,6 +20,9 @@ const DEFAULT_WEB_BASE = "https://verse8.io";
 
 /** verse8-vibe upload categories (src/constants/upload.ts). */
 export const VERSE_MEDIA_CATEGORY = "verses";
+/** Category the web uses for VX Shop item images (verse8-vibe vxShopApi.ts). */
+export const VX_SHOP_MEDIA_CATEGORY = "vx-shop";
+export type MediaCategory = typeof VERSE_MEDIA_CATEGORY | typeof VX_SHOP_MEDIA_CATEGORY;
 
 /** Mirrors verse8-vibe's server-side limits (src/constants/upload.ts). */
 export const MAX_IMAGE_BYTES = 4_000_000;
@@ -93,10 +96,11 @@ export async function uploadVerseImage(input: {
   file: Blob;
   filename: string;
   token: string;
+  category?: MediaCategory;
 }): Promise<MediaUploadResult> {
   const form = new FormData();
   form.append("file", input.file, input.filename);
-  form.append("category", VERSE_MEDIA_CATEGORY);
+  form.append("category", input.category ?? VERSE_MEDIA_CATEGORY);
   let res: Response;
   try {
     res = await fetch(`${getVerse8WebBaseUrl()}/api/upload`, {

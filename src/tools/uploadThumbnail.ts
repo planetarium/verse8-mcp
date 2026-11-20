@@ -6,6 +6,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_VIDEO_BYTES,
   VIDEO_CONTENT_TYPES,
+  type MediaCategory,
   uploadVerseImage,
   uploadVerseVideo,
 } from "../api/verse8Web.js";
@@ -107,6 +108,7 @@ export async function uploadLocalMedia(
   absPath: string,
   token: string,
   expect?: MediaKind,
+  category?: MediaCategory,
 ): Promise<UploadThumbnailResult> {
   const checked = validateLocalMedia(absPath, expect);
   if (!checked.ok) return checked;
@@ -115,7 +117,7 @@ export async function uploadLocalMedia(
   const blob = new Blob([fs.readFileSync(absPath)], { type: contentType });
   const resp =
     kind === "image"
-      ? await uploadVerseImage({ file: blob, filename: path.basename(absPath), token })
+      ? await uploadVerseImage({ file: blob, filename: path.basename(absPath), token, category })
       : await uploadVerseVideo({ file: blob, token });
   if (!resp.ok) return fail(resp.error, resp.hint, { status: resp.status });
   return { ok: true, url: resp.url, kind, sizeBytes, contentType };
