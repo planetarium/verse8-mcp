@@ -21,14 +21,25 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * visibility resolution).
  */
 
-const ACTIONS = ["get", "mine", "update", "release_notes", "release_note_update"] as const;
+const ACTIONS = ["get", "mine", "update", "release_notes", "release_note_update", "analytics"] as const;
+const REPORT_TYPES = ["dau", "mau", "sessions", "avgSessionDuration", "realtimeUsers"] as const;
+const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+/** The web's default chart interval and range per report (verse8-vibe src/constants/analytics.ts). */
+const DAY_MS = 86_400_000;
+export const CHART_DEFAULTS: Record<(typeof REPORT_TYPES)[number], { interval: (typeof INTERVALS)[number]; rangeMs: number }> = {
+  realtimeUsers: { interval: "15m", rangeMs: 7 * DAY_MS },
+  dau: { interval: "4h", rangeMs: 90 * DAY_MS },
+  mau: { interval: "1d", rangeMs: 365 * DAY_MS },
+  sessions: { interval: "4h", rangeMs: 90 * DAY_MS },
+  avgSessionDuration: { interval: "1d", rangeMs: 365 * DAY_MS },
+};
 
 export const verseOpsInputSchema = z
   .object({
     action: z
       .enum(ACTIONS)
       .describe(
-        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless confirm). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless confirm).",
+        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless confirm). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless confirm). analytics: DAU / MAU / sessions / avg session summary, plus a chart when reportType is given.",
       ),
     projectDir: projectDirField,
     verseId: verseIdField,
@@ -70,6 +81,11 @@ export const verseOpsInputSchema = z
     releaseNoteImagePath: z.string().min(1).optional().describe("release_note_update: local image, uploaded on confirm."),
     releaseNoteImageUrl: z.string().url().max(500).optional().describe("release_note_update: already-hosted image URL."),
     clearReleaseNoteImage: z.boolean().optional().describe("release_note_update: remove the note's image."),
+    // analytics
+    reportType: z.enum(REPORT_TYPES).optional().describe("analytics: also return this metric's time series."),
+    startDate: z.string().min(1).max(40).optional().describe("analytics chart: ISO 8601 start (default: the web's range for the metric)."),
+    endDate: z.string().min(1).max(40).optional().describe("analytics chart: ISO 8601 end (default now)."),
+    interval: z.enum(INTERVALS).optional().describe("analytics chart: bucket size (default: the web's for the metric)."),
   })
   .strict();
 
@@ -158,6 +174,9 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
       case "release_note_update":
         if (!ctx.ok) return ctx as OpFail;
         return await runReleaseNoteUpdate(input, ctx.projectDir, ctx.verseId, ctx.token);
+      case "analytics":
+        if (!ctx.ok) return ctx as OpFail;
+        return await runAnalytics(input, ctx.verseId, ctx.token);
     }
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
@@ -312,4 +331,53 @@ async function runReleaseNoteUpdate(input: VerseOpsInput, projectDir: string, ve
   const r = await v8Request<ReleaseNote>("PUT", `/v1/release-notes/${note.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/release-notes/${note.id}`, r);
   return { ok: true, action: "release_note_update", dryRun: false, verseId, releaseNote: r.data ?? { id: note.id }, changes, warnings };
+}
+
+/** Parse an ISO date input to epoch ms, or null when invalid. */
+function isoMs(v: string | undefined): number | null | undefined {
+  if (v === undefined) return undefined;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Analytics are keyed by the lowercased verseShortId (the GA page path), not
+ * the verse id (g2-sync analytics.service.ts); the routes are public, but the
+ * short id is resolved through the owner read so only the owner's games are
+ * asked for.
+ */
+async function runAnalytics(input: VerseOpsInput, verseId: string, token: string): Promise<VerseOpsResult> {
+  const owned = await loadOwnedVerse(verseId, token);
+  if (!owned.ok) return owned;
+  const shortId = typeof owned.verse.verseShortId === "string" ? owned.verse.verseShortId.toLowerCase() : null;
+  if (!shortId) return opFail("upstream_error", "The verse record has no verseShortId to look analytics up by.");
+  const base = `/v1/analytics/${encodeURIComponent(shortId)}`;
+  const summary = await v8Request<Record<string, number>>("GET", `${base}/summary`);
+  if (!summary.ok) return apiFail("GET analytics summary", summary);
+  const out: Record<string, unknown> = { ok: true, action: "analytics", verseId, verseShortId: owned.verse.verseShortId, summary: summary.data };
+  if (input.reportType) {
+    const d = CHART_DEFAULTS[input.reportType];
+    const end = isoMs(input.endDate) ?? (input.endDate === undefined ? Date.now() : null);
+    const start = isoMs(input.startDate) ?? (input.startDate === undefined && end !== null ? end - d.rangeMs : null);
+    if (start === null || end === null || start > end) {
+      return opFail("invalid_input", "startDate / endDate must be ISO 8601 dates with start ≤ end.");
+    }
+    const interval = input.interval ?? d.interval;
+    const chart = await v8Request<Array<{ date: number; metricValue: number }>>("GET", `${base}/chart`, {
+      query: { reportType: input.reportType, startDate: start, endDate: end, interval },
+    });
+    if (!chart.ok) return apiFail("GET analytics chart", chart);
+    out.chart = {
+      reportType: input.reportType,
+      interval,
+      startDate: new Date(start).toISOString(),
+      endDate: new Date(end).toISOString(),
+      // newest first, as the API returns it
+      points: (chart.data ?? []).map((p) => ({ at: new Date(p.date).toISOString(), value: p.metricValue })),
+    };
+    if (input.reportType === "realtimeUsers") {
+      out.note = "realtimeUsers is stored as a current value, not as chart ticks; its chart is usually empty — summary/get show the live number.";
+    }
+  }
+  return out as VerseOpsResult;
 }

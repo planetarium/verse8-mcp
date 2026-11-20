@@ -22,7 +22,7 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  *    until `GET /v1/vx-wallet` says `isSeller` — the tool refuses the same.
  */
 
-const ACTIONS = ["list", "upsert"] as const;
+const ACTIONS = ["list", "upsert", "sales", "revenue"] as const;
 
 const purchaseConstraintsSchema = z
   .object({
@@ -38,7 +38,7 @@ export const vxShopInputSchema = z
   .object({
     action: z
       .enum(ACTIONS)
-      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless confirm."),
+      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless confirm. sales: purchases (paged; by item; disputes only). revenue: VX totals and refunds for a period."),
     projectDir: projectDirField,
     verseId: verseIdField,
     confirm: z
@@ -63,6 +63,11 @@ export const vxShopInputSchema = z
     purchaseConstraints: purchaseConstraintsSchema.optional().describe("upsert: purchase limits (replaces the current ones). On edit, omitted = keep the current limits."),
     clearPurchaseConstraints: z.boolean().optional().describe("upsert edit: remove all purchase limits."),
     isActive: z.boolean().optional().describe("upsert: on sale. Create defaults to false (created hidden) unless set."),
+    disputeOnly: z.boolean().optional().describe("sales: only purchases with a dispute."),
+    disputeStatus: z.enum(["REQUEST", "IGNORE", "RESOLVED"]).optional().describe("sales with disputeOnly: filter by dispute state."),
+    startDate: z.string().min(1).max(40).optional().describe("revenue: ISO 8601 period start (default: all time)."),
+    endDate: z.string().min(1).max(40).optional().describe("revenue: ISO 8601 period end."),
+    stage: z.enum(["PROD", "PREVIEW"]).optional().describe("revenue: published game (PROD, default) or preview purchases."),
   })
   .strict();
 
@@ -166,6 +171,8 @@ export async function runVxShop(input: VxShopInput, serverCwd: string = process.
         items: r.items.map(presentItem),
       };
     }
+    if (input.action === "sales") return await runSales(input, ctx.verseId, ctx.token);
+    if (input.action === "revenue") return await runRevenue(input, ctx.verseId, ctx.token);
     return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token);
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
@@ -275,4 +282,56 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
   return { ok: true, action: "upsert", mode: "edit", dryRun: false, verseId, item: r.data ? presentItem(r.data) : null, changes, warnings };
+}
+
+/**
+ * A sale as the owner needs it: buyer reduced to uid / handle / display
+ * name (the API also returns wallet and profile picture), claim payloads
+ * left out (they can be large and are about delivery, not the sale).
+ */
+export function presentSale(s: Record<string, unknown>): Record<string, unknown> {
+  const keep = [
+    "id", "shopItemId", "quantity", "unitPrice", "totalPrice", "status", "stage", "createdAt", "refundedAt",
+    "disputeStatus", "disputeMessage", "disputedAt", "disputeResponseMessage", "disputeResolvedAt", "claimStatus", "claimedAt",
+  ];
+  const out: Record<string, unknown> = {};
+  for (const k of keep) if (s[k] !== undefined) out[k] = s[k];
+  const item = s.item as Record<string, unknown> | undefined;
+  if (item) out.item = { id: item.id, productId: item.productId, name: item.name };
+  const buyer = s.buyer as Record<string, unknown> | undefined;
+  if (buyer) out.buyer = { uid: buyer.uid, handle: buyer.handle ?? null, displayName: buyer.displayName ?? null };
+  const ext = s.externalDelivery as Record<string, unknown> | undefined;
+  if (ext) out.externalDelivery = { status: ext.status, attemptCount: ext.attemptCount, httpStatus: ext.httpStatus ?? null };
+  return out;
+}
+
+async function runSales(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+  const r = await v8Request<{ sales: Record<string, unknown>[]; total: number; page: number; limit: number }>("GET", "/v1/vx-shop-items/sales", {
+    token,
+    query: {
+      verseId,
+      itemId: input.itemId,
+      // Any non-empty value filters to disputes server-side, `false` included:
+      // send it only when true.
+      disputeOnly: input.disputeOnly ? "true" : undefined,
+      disputeStatus: input.disputeOnly ? input.disputeStatus : undefined,
+      page: input.page ?? 1,
+      limit: input.limit ?? 20,
+    },
+  });
+  if (!r.ok) return apiFail("GET /v1/vx-shop-items/sales", r);
+  const d = r.data ?? { sales: [], total: 0, page: 1, limit: 20 };
+  return { ok: true, action: "sales", verseId, total: Number(d.total), page: Number(d.page), limit: Number(d.limit), sales: (d.sales ?? []).map(presentSale) };
+}
+
+async function runRevenue(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+  for (const [k, v] of [["startDate", input.startDate], ["endDate", input.endDate]] as const) {
+    if (v !== undefined && !Number.isFinite(Date.parse(v))) return opFail("invalid_input", `${k} must be an ISO 8601 date.`);
+  }
+  const r = await v8Request<Record<string, unknown>>("GET", "/v1/vx-shop-items/revenue-stats", {
+    token,
+    query: { verseId, startDate: input.startDate, endDate: input.endDate, stage: input.stage ?? "PROD" },
+  });
+  if (!r.ok) return apiFail("GET /v1/vx-shop-items/revenue-stats", r);
+  return { ok: true, action: "revenue", verseId, stage: input.stage ?? "PROD", ...(r.data ?? {}) };
 }
