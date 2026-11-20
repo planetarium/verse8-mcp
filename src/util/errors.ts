@@ -100,6 +100,7 @@ export const ERROR_CODES = [
   // Game server / creator operations
   "not_found",
   "logs_unavailable",
+  "no_gameserver",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

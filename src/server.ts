@@ -23,6 +23,7 @@ import {
 import { previewInputSchema, runPreview } from "./tools/preview.js";
 import { deployInputSchema, runDeploy } from "./tools/deploy.js";
 import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
+import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -181,6 +182,13 @@ export const GAMESERVER_TOOL: Tool = {
   inputSchema: zodToJsonSchema(gameserverInputSchema),
 };
 
+export const DEPLOY_STATUS_TOOL: Tool = {
+  name: "verse8_deploy_status",
+  description:
+    "READ-ONLY: what is live for this project's verse. Returns the published commit (`publishedSha`, `publishedAt` from the live playUrl), title / visibility / review status, the latest release note (buildVersion, types, date, review status), how the local checkout relates to the published commit (HEAD, whether HEAD contains it, commits since, uncommitted paths), and the prod / preview game server version and state. Use it to answer \"is this commit live?\" or \"when was it published?\" before or after verse8_deploy. The game server's own upload time is not available from any API (said in the answer).",
+  inputSchema: zodToJsonSchema(deployStatusInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -250,6 +258,7 @@ export function createServer(): Server {
       tools.push(UPLOAD_THUMBNAIL_TOOL);
       tools.push(DEPLOY_TOOL);
       tools.push(GAMESERVER_TOOL);
+      tools.push(DEPLOY_STATUS_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -390,6 +399,13 @@ export function createServer(): Server {
         const parsed = gameserverInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
         const result = await dispatchTool(name, () => runGameserver(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_deploy_status") {
+        const parsed = deployStatusInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runDeployStatus(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 
