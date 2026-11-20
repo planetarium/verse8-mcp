@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { z } from "zod";
 import {
@@ -40,6 +41,8 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  *   3. media          thumbnailPath / videoPath → contents.verse8.io
  *   4. build          rm -rf dist → install → `bun run build --base ./`
  *                     → `@agent8/gameserver-node build` (gameserver projects)
+ *                     — in the project folder, or with `buildFrom: "head"`
+ *                     in a temporary clean checkout of HEAD
  *   5. upload         `@agent8/deploy --prod --verse <id> --account <acct>`
  *   6. publish        POST /v1/verse/create | /v1/verse/update/:verseId
  *
@@ -178,6 +181,12 @@ export const deployInputSchema = checkpointInputSchema
       .min(1)
       .default("bun update")
       .describe("Dependency sync before the build. Default `bun update` (same as the web editor). Plain argv only — no shell operators."),
+    buildFrom: z
+      .enum(["workingTree", "head"])
+      .default("workingTree")
+      .describe(
+        "Where install / build / upload run. workingTree (default): the project folder as it is, uncommitted changes included. head: a temporary clean checkout of the deployed commit (HEAD after the checkpoint), so uncommitted work — e.g. another session's in the same folder — never ships; untracked local files @agent8/deploy reads (.env*, .agent8.lock, .crossramp, .secret, .deployed) are copied in and .deployed is copied back. Slower: dependencies install from scratch.",
+      ),
     stepTimeoutMs: z
       .number()
       .int()
@@ -526,6 +535,115 @@ function isGameserverProject(projectDir: string): boolean {
   return detectGameserver(projectDir) || fs.existsSync(path.join(projectDir, "src", "server.ts"));
 }
 
+/**
+ * Untracked files at the project root that a build / `@agent8/deploy`
+ * reads but a clean checkout lacks: Vite env files, the agent8 lock,
+ * CrossRamp config, secrets and the upload-hash record.
+ */
+export function isLocalOnlyBuildFile(name: string): boolean {
+  return (
+    name === ".env" ||
+    name.startsWith(".env.") ||
+    name === ".agent8.lock" ||
+    name === ".crossramp" ||
+    name === ".secret" ||
+    name === ".deployed"
+  );
+}
+
+export interface CleanCheckout {
+  /** The project dir inside the checkout (same prefix as in the repo). */
+  projectDir: string;
+  /** Untracked local files copied in from the real project dir. */
+  copiedIn: string[];
+  /** Copy a `.deployed` the upload rewrote back to the real project dir. */
+  syncBack(): void;
+  /** Remove the checkout and its worktree record. Never throws. */
+  cleanup(): void;
+}
+
+function gitOut(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/**
+ * `git worktree add --detach <tmp> HEAD` of the repo that holds
+ * `projectDir`, plus copies of its untracked local build files. Hooks are
+ * disabled for the checkout (`core.hooksPath` → an empty dir).
+ */
+export function createCleanCheckout(projectDir: string): CleanCheckout {
+  const prefix = gitOut(projectDir, ["rev-parse", "--show-prefix"]).trim();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-deploy-head-"));
+  const root = path.join(tmp, "checkout");
+  const noHooks = path.join(tmp, "no-hooks");
+  fs.mkdirSync(noHooks);
+  const removeTmp = () => {
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  };
+  try {
+    gitOut(projectDir, ["-c", `core.hooksPath=${noHooks}`, "worktree", "add", "--detach", "--quiet", root, "HEAD"]);
+  } catch (e) {
+    removeTmp();
+    throw e;
+  }
+  const buildDir = path.join(root, prefix);
+  const tracked = new Set(gitOut(projectDir, ["ls-files", "-z", "--", "."]).split("\0").filter(Boolean));
+  const copiedIn: string[] = [];
+  for (const entry of fs.readdirSync(projectDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !isLocalOnlyBuildFile(entry.name) || tracked.has(entry.name)) continue;
+    fs.copyFileSync(path.join(projectDir, entry.name), path.join(buildDir, entry.name));
+    copiedIn.push(entry.name);
+  }
+  const deployedBefore = readIfExists(path.join(buildDir, ".deployed"));
+  return {
+    projectDir: buildDir,
+    copiedIn,
+    syncBack() {
+      const now = readIfExists(path.join(buildDir, ".deployed"));
+      if (now !== null && now !== deployedBefore) {
+        fs.writeFileSync(path.join(projectDir, ".deployed"), now);
+      }
+    },
+    cleanup() {
+      try {
+        gitOut(projectDir, ["worktree", "remove", "--force", root]);
+      } catch {
+        /* fall through: delete the files and prune the record */
+      }
+      removeTmp();
+      try {
+        gitOut(projectDir, ["worktree", "prune"]);
+      } catch {
+        /* best effort */
+      }
+    },
+  };
+}
+
+function readIfExists(p: string): string | null {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Paths under `cwd` that differ from HEAD (staged, unstaged or untracked). */
+export function uncommittedPaths(cwd: string): string[] {
+  try {
+    return gitOut(cwd, ["status", "--porcelain", "-z", "--untracked-files=all", "--", "."])
+      .split("\0")
+      .filter((l) => l.length > 3)
+      .map((l) => l.slice(3));
+  } catch {
+    return [];
+  }
+}
+
 interface StepSpec {
   command: string;
   cmd: string;
@@ -608,6 +726,57 @@ function runStep(cwd: string, step: StepSpec, timeoutMs: number): DeployStepResu
       stderrTail: safeHint(tail(String(err.stderr ?? err.message ?? ""))),
     };
   }
+}
+
+/**
+ * rm -rf dist → install → build → (gameserver build) → upload, in
+ * `buildCwd` (the project dir, or a clean checkout of it).
+ */
+function runBuildAndUpload(
+  buildCwd: string,
+  steps: StepSpec[],
+  timeoutMs: number,
+): { ok: true; completed: DeployStepResult[] } | { ok: false; result: DeployResult } {
+  const distDir = path.join(buildCwd, "dist");
+  try {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  } catch (e) {
+    return { ok: false, result: fail("build", "build_failed", `could not clear dist/: ${safeErrorHint(e)}`) };
+  }
+  const completed: DeployStepResult[] = [];
+  const uploadStep = steps[steps.length - 1];
+  for (const step of steps) {
+    if (step === uploadStep) {
+      if (!fs.existsSync(path.join(distDir, "index.html"))) {
+        return {
+          ok: false,
+          result: fail("build", "build_failed", "Build finished but dist/index.html is missing — check the project's build script.", {
+            stepsCompleted: completed,
+          }),
+        };
+      }
+      if (detectDebugPanelWithoutShim(distDir)) {
+        return { ok: false, result: fail(
+          "build",
+          "plugin_shim_missing",
+          "The build references `DebugPanel` but no publish plugin shim is in dist/ (the web editor injects dist/__agent8/plugins/debug-panel-shim.js at publish time; verse8-mcp cannot yet). Publishing would crash the game with ReferenceError: DebugPanel. The game files were not uploaded (the checkpoint and any cover/video upload already happened). Remove the DebugPanel usage from the shipped code, checkpoint, and deploy again — or publish this project from the web editor.",
+          { stepsCompleted: completed },
+        ) };
+      }
+    }
+    const res = runStep(buildCwd, step, timeoutMs);
+    if (res.exitCode !== 0) {
+      const isUpload = step === uploadStep;
+      return { ok: false, result: fail(
+        isUpload ? "upload" : "build",
+        isUpload ? "deploy_upload_failed" : "build_failed",
+        `Deploy aborted at: ${step.command} (exit ${res.exitCode}).` + (res.stderrTail ? `\n--- stderr (last lines) ---\n${res.stderrTail}` : ""),
+        { failedStep: res, stepsCompleted: completed },
+      ) };
+    }
+    completed.push(res);
+  }
+  return { ok: true, completed };
 }
 
 /** Whole-word match so `MyDebugPanelThing` does not count as `DebugPanel` (container publish.ts). */
@@ -822,7 +991,9 @@ export async function runDeploy(
         "verse8_checkpoint (pending changes)",
         ...(input.thumbnailPath ? [`upload thumbnail ${input.thumbnailPath}`] : []),
         ...(input.videoPath ? [`upload video ${input.videoPath}`] : []),
-        "rm -rf dist",
+        input.buildFrom === "head"
+          ? "git worktree add --detach <tmp> HEAD (clean checkout; the steps below run there)"
+          : "rm -rf dist",
         ...steps.map((s) => s.command),
         mode === "first" ? "POST /v1/verse/create" : `POST /v1/verse/update/${verseId}`,
       ],
@@ -862,42 +1033,36 @@ export async function runDeploy(
   }
 
   // ── 7. Build + upload ─────────────────────────────────────────────────
-  const distDir = path.join(cwd, "dist");
-  try {
-    fs.rmSync(distDir, { recursive: true, force: true });
-  } catch (e) {
-    return fail("build", "build_failed", `could not clear dist/: ${safeErrorHint(e)}`);
-  }
-  const completed: DeployStepResult[] = [];
-  const uploadStep = steps[steps.length - 1];
-  for (const step of steps) {
-    if (step === uploadStep) {
-      if (!fs.existsSync(path.join(distDir, "index.html"))) {
-        return fail("build", "build_failed", "Build finished but dist/index.html is missing — check the project's build script.", {
-          stepsCompleted: completed,
-        });
-      }
-      if (detectDebugPanelWithoutShim(distDir)) {
-        return fail(
-          "build",
-          "plugin_shim_missing",
-          "The build references `DebugPanel` but no publish plugin shim is in dist/ (the web editor injects dist/__agent8/plugins/debug-panel-shim.js at publish time; verse8-mcp cannot yet). Publishing would crash the game with ReferenceError: DebugPanel. The game files were not uploaded (the checkpoint and any cover/video upload already happened). Remove the DebugPanel usage from the shipped code, checkpoint, and deploy again — or publish this project from the web editor.",
-          { stepsCompleted: completed },
-        );
-      }
+  let checkout: CleanCheckout | null = null;
+  if (input.buildFrom === "head") {
+    try {
+      checkout = createCleanCheckout(cwd);
+    } catch (e) {
+      return fail("build", "build_failed", `could not create a clean checkout of HEAD for buildFrom: "head": ${safeErrorHint(e)}`);
     }
-    const res = runStep(cwd, step, input.stepTimeoutMs);
-    if (res.exitCode !== 0) {
-      const isUpload = step === uploadStep;
-      return fail(
-        isUpload ? "upload" : "build",
-        isUpload ? "deploy_upload_failed" : "build_failed",
-        `Deploy aborted at: ${step.command} (exit ${res.exitCode}).` + (res.stderrTail ? `\n--- stderr (last lines) ---\n${res.stderrTail}` : ""),
-        { failedStep: res, stepsCompleted: completed },
+  } else {
+    const dirty = uncommittedPaths(cwd);
+    if (dirty.length > 0) {
+      warnings.push(
+        `Built from the working tree: ${dirty.length} uncommitted path(s) (e.g. ${dirty.slice(0, 3).join(", ")}) are in this build but not in the deployed commit. Pass buildFrom: "head" to build only what is committed.`,
       );
     }
-    completed.push(res);
   }
+  let built: { ok: true; completed: DeployStepResult[] } | { ok: false; result: DeployResult };
+  try {
+    built = runBuildAndUpload(checkout?.projectDir ?? cwd, steps, input.stepTimeoutMs);
+  } finally {
+    if (checkout) {
+      try {
+        checkout.syncBack();
+      } catch (e) {
+        warnings.push(`could not copy .deployed back from the clean checkout: ${safeErrorHint(e)}`);
+      }
+      checkout.cleanup();
+    }
+  }
+  if (!built.ok) return built.result;
+  const completed = built.completed;
 
   // ── 8. Publish verse record ───────────────────────────────────────────
   const playUrl = buildPlayUrl(verseId, readHeadSha(cwd), projectPath, Date.now());
