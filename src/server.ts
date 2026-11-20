@@ -24,6 +24,7 @@ import { previewInputSchema, runPreview } from "./tools/preview.js";
 import { deployInputSchema, runDeploy } from "./tools/deploy.js";
 import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
+import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -189,6 +190,13 @@ export const DEPLOY_STATUS_TOOL: Tool = {
   inputSchema: zodToJsonSchema(deployStatusInputSchema),
 };
 
+export const VERSE_OPS_TOOL: Tool = {
+  name: "verse8_verse",
+  description:
+    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Changing actions PREVIEW by default: they return `changes` and change nothing until called again with confirm: true — show the preview to the user and get approval first. update always keeps the current visibility and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
+  inputSchema: zodToJsonSchema(verseOpsInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -259,6 +267,7 @@ export function createServer(): Server {
       tools.push(DEPLOY_TOOL);
       tools.push(GAMESERVER_TOOL);
       tools.push(DEPLOY_STATUS_TOOL);
+      tools.push(VERSE_OPS_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -406,6 +415,13 @@ export function createServer(): Server {
         const parsed = deployStatusInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
         const result = await dispatchTool(name, () => runDeployStatus(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_verse") {
+        const parsed = verseOpsInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 
