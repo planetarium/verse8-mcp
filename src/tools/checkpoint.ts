@@ -24,6 +24,10 @@ import { synthesizeFileChangesFromDiff } from "../format/fileChangeSynthesis.js"
  *
  * Default staging is `git add -A` (verse8 projects commit `.env` by
  * convention — VITE_AGENT8_ACCOUNT / VITE_AGENT8_VERSE live there).
+ * `stageAll: false` (or VERSE8_CHECKPOINT_REQUIRE_FILES=1) turns that off:
+ * without `files` the call stops with `files_required` and lists the
+ * changed paths, so work of another session in the same folder is not
+ * committed by accident.
  *
  * Message format selection:
  *  - If `userPrompt` is provided → build the V8 format deterministically
@@ -50,6 +54,12 @@ export const checkpointInputSchema = z
   .object({
     // Staging
     files: z.array(z.string().min(1)).optional(),
+    stageAll: z
+      .boolean()
+      .optional()
+      .describe(
+        "Only matters when `files` is omitted. true: stage every change under projectDir (`git add -A`). false: stage nothing and stop with `files_required` + `changedFiles`, so another session's work in the same folder is never committed — then call again with `files`. Default: false when the MCP server has VERSE8_CHECKPOINT_REQUIRE_FILES=1, else true.",
+      ),
     projectDir: z
       .string()
       .min(1)
@@ -157,6 +167,14 @@ export type CheckpointResult =
   | { ok: false; error: "nothing_to_commit"; hint: string }
   | {
       ok: false;
+      error: "files_required";
+      hint: string;
+      /** Changed paths under projectDir (relative), at most CHANGED_FILES_LIMIT. */
+      changedFiles: string[];
+      changedFilesTruncated?: boolean;
+    }
+  | {
+      ok: false;
       error: "commit_failed";
       hint: string;
       hookStderr?: string;
@@ -234,6 +252,40 @@ export function unstageNeverCommitFiles(cwd: string): string[] {
     stdio: ["ignore", "pipe", "pipe"],
   });
   return hits;
+}
+
+/** Env switch: `1` / `true` / `yes` makes `stageAll` default to false. */
+export const REQUIRE_FILES_ENV = "VERSE8_CHECKPOINT_REQUIRE_FILES";
+
+/** Effective `stageAll`: the input wins, else the env switch, else true. */
+export function resolveStageAll(
+  stageAll: boolean | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (stageAll !== undefined) return stageAll;
+  const v = (env[REQUIRE_FILES_ENV] ?? "").trim().toLowerCase();
+  return !(v === "1" || v === "true" || v === "yes");
+}
+
+export const CHANGED_FILES_LIMIT = 200;
+
+/**
+ * Paths a `git add -A -- .` would pick up (staged, modified, deleted,
+ * untracked-not-ignored), relative to `cwd`, without NEVER_COMMIT_FILES.
+ */
+export function listChangedFiles(cwd: string): string[] {
+  const paths = new Set<string>(listStagedFiles(cwd));
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "--modified", "--deleted", "--others", "--exclude-standard", "-z"],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    for (const p of out.split("\0")) if (p) paths.add(p);
+  } catch {
+    // not a git repo / git missing: report what the index gave us
+  }
+  return [...paths].filter((p) => !NEVER_COMMIT_FILES.includes(p)).sort();
 }
 
 /**
@@ -428,6 +480,27 @@ export async function runCheckpoint(
     }
   }
 
+  // Without `files`, staging everything must be allowed (stageAll).
+  const hasFiles = !!input.files && input.files.length > 0;
+  if (!hasFiles && !resolveStageAll(input.stageAll)) {
+    const changed = listChangedFiles(cwd);
+    if (changed.length === 0) {
+      return {
+        ok: false,
+        error: "nothing_to_commit",
+        hint: "nothing staged; no changes to checkpoint",
+      };
+    }
+    const truncated = changed.length > CHANGED_FILES_LIMIT;
+    return {
+      ok: false,
+      error: "files_required",
+      hint: `stageAll is off (input or ${REQUIRE_FILES_ENV}), so nothing was staged. Call again with \`files\` set to the paths this change touched — ${changed.length} changed path(s) are listed in changedFiles; leave out work that is not yours. Pass stageAll: true to commit all of them.`,
+      changedFiles: truncated ? changed.slice(0, CHANGED_FILES_LIMIT) : changed,
+      ...(truncated ? { changedFilesTruncated: true } : {}),
+    };
+  }
+
   // 0. Self-heal .env. The verse8 runtime requires VITE_AGENT8_ACCOUNT /
   // VITE_AGENT8_VERSE; a commit that lands without them will boot a broken
   // preview. If the file is already intact this is a zero-network noop
@@ -458,8 +531,8 @@ export async function runCheckpoint(
   // 1. Stage — remember the index first so a failure below can undo it.
   const indexBefore = snapshotIndex(cwd);
   try {
-    if (input.files && input.files.length > 0) {
-      execFileSync("git", ["add", "--", ...input.files], {
+    if (hasFiles) {
+      execFileSync("git", ["add", "--", ...input.files!], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
       });

@@ -20,6 +20,12 @@ export const previewInputSchema = z
     // V8 commit fields — mirrored from checkpointInputSchema so agents can
     // call this tool exactly like verse8_checkpoint.
     files: z.array(z.string().min(1)).optional(),
+    stageAll: z
+      .boolean()
+      .optional()
+      .describe(
+        "Mirrored from verse8_checkpoint: false (or VERSE8_CHECKPOINT_REQUIRE_FILES=1) means no `git add -A` when `files` is omitted — the call stops with files_required + changedFiles.",
+      ),
     projectDir: z
       .string()
       .min(1)
@@ -526,6 +532,7 @@ export async function runPreview(
     // Build the checkpoint input by stripping preview-specific fields.
     const ckInput = checkpointInputSchema.parse({
       files: input.files,
+      stageAll: input.stageAll,
       projectDir: input.projectDir,
       userPrompt: input.userPrompt,
       model: input.model,

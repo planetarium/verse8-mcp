@@ -51,6 +51,7 @@ export const ERROR_CODES = [
   // Checkpoint
   "stage_failed",
   "nothing_to_commit",
+  "files_required",
   "commit_failed",
   "push_failed",
   "checkpoint_failed",
