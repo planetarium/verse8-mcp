@@ -5,6 +5,10 @@ import type { ZodTypeAny } from "zod";
  * the Verse8 MCP tools (objects with string, optional string, optional
  * string[]). Avoiding the `zod-to-json-schema` dep keeps the dependency
  * surface tight.
+ *
+ * `z.enum` values are emitted as `enum`: the host LLM sees only this JSON
+ * Schema, so a value list that stays in zod is invisible until a call fails
+ * validation.
  */
 export interface JsonSchemaObject {
   type: "object";
@@ -54,11 +58,16 @@ function zodFieldToJsonSchema(schema: ZodTypeAny): object {
       return { type: "number" };
     case "ZodBoolean":
       return { type: "boolean" };
+    case "ZodEnum":
+      return { type: "string", enum: [...def.values] };
     case "ZodArray":
       return { type: "array", items: zodFieldToJsonSchema(def.type) };
     case "ZodOptional":
     case "ZodDefault":
       return zodFieldToJsonSchema(def.innerType);
+    case "ZodEffects":
+      // .refine() / .superRefine() / .transform(): describe the input type.
+      return zodFieldToJsonSchema(def.schema);
     case "ZodObject":
       return zodToJsonSchema(schema);
     default:
