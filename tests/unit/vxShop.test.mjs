@@ -1,5 +1,5 @@
 // verse8_vxshop: list / create / edit VX Shop items. fetch is mocked.
-// Guards: no write without confirm; an edit always re-sends the current
+// Guards: no write without the preview's planId; an edit always re-sends the current
 // purchase limits (the server deletes them when absent); metadata goes as a
 // JSON object string; stock required on create; non-sellers refused.
 
@@ -76,6 +76,16 @@ async function withApi(routes, f, { seller = true } = {}) {
 const run = (dir, input) => runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
+// Preview, then run with the planId the preview returned (as a host does
+// after the user approved). Without a planId (refusal / no-op) the preview's
+// answer is returned.
+const planned = (runner) => async (dir, input) => {
+  const pre = await runner(dir, input);
+  if (!pre.planId) return pre;
+  return runner(dir, { ...input, planId: pre.planId });
+};
+const runP = planned(run);
+
 test("parseItemMetadata: splits custom keys from purchase limits; junk → nulls", () => {
   assert.deepEqual(parseItemMetadata(ITEM.metadata), { metadata: { rarity: "rare" }, purchaseConstraints: { maxPurchasePerUser: 2 } });
   assert.deepEqual(parseItemMetadata("not json"), { metadata: null, purchaseConstraints: null });
@@ -109,7 +119,7 @@ test("list as a non-seller: answered, with a warning", async () => {
 test("upsert as a non-seller → not_seller, no write", async () => {
   const dir = project();
   await withApi({}, async (calls) => {
-    const r = await run(dir, { action: "upsert", productId: "p", name: "n", price: 1, stock: 1, confirm: true });
+    const r = await runP(dir, { action: "upsert", productId: "p", name: "n", price: 1, stock: 1 });
     assert.equal(r.error, "not_seller");
     assert.deepEqual(writes(calls), []);
   }, { seller: false });
@@ -124,7 +134,7 @@ test("edit, the web's {isActive} toggle case: the current purchase limits are re
     assert.ok(pre.warnings.some((w) => /stops selling/.test(w)));
     assert.deepEqual(writes(calls), []);
 
-    const done = await run(dir, { action: "upsert", itemId: 7, isActive: false, confirm: true });
+    const done = await runP(dir, { action: "upsert", itemId: 7, isActive: false });
     assert.equal(done.ok, true, JSON.stringify(done));
     const put = writes(calls);
     assert.equal(put.length, 1);
@@ -170,7 +180,7 @@ test("create: requires productId/name/price/stock; productId taken → product_i
   });
 });
 
-test("create: hidden by default; on confirm the image goes to category vx-shop, then POST", async () => {
+test("create: hidden by default; when run, the image goes to category vx-shop, then POST", async () => {
   const dir = project();
   await withApi(
     {
@@ -185,7 +195,7 @@ test("create: hidden by default; on confirm the image goes to category vx-shop, 
       assert.ok(pre.warnings.some((w) => /out of stock/.test(w)));
       assert.deepEqual(writes(calls), []);
 
-      const done = await run(dir, { action: "upsert", productId: "gem-pack", name: "Gems", price: 100, stock: 0, imagePath: "item.png", purchaseConstraints: { maxPurchasePerUser: 1 }, confirm: true });
+      const done = await runP(dir, { action: "upsert", productId: "gem-pack", name: "Gems", price: 100, stock: 0, imagePath: "item.png", purchaseConstraints: { maxPurchasePerUser: 1 } });
       assert.equal(done.ok, true, JSON.stringify(done));
       const upload = calls.find((c) => c.path === "/api/upload");
       assert.equal(upload.form.get("category"), "vx-shop");
@@ -204,7 +214,7 @@ test("create: hidden by default; on confirm the image goes to category vx-shop, 
   );
 });
 
-test("tools/list: verse8_vxshop listed, description ≤ 2,048, confirm gate stated", async () => {
+test("tools/list: verse8_vxshop listed, description ≤ 2,048, planId gate stated", async () => {
   const saved = { tok: process.env.VERSE8_ACCESS_TOKEN, fetch: globalThis.fetch };
   process.env.VERSE8_ACCESS_TOKEN = "tok";
   globalThis.fetch = async () => json(503, {});
@@ -213,7 +223,8 @@ test("tools/list: verse8_vxshop listed, description ≤ 2,048, confirm gate stat
     const t = tools.find((x) => x.name === "verse8_vxshop");
     assert.ok(t);
     assert.ok(t.description.length <= 2048);
-    assert.match(t.description, /confirm: true/);
+    assert.match(t.description, /planId/);
+    assert.equal(t.inputSchema.properties.confirm, undefined);
     assert.equal(t.inputSchema.properties.purchaseConstraints.type, "object");
   } finally {
     globalThis.fetch = saved.fetch;

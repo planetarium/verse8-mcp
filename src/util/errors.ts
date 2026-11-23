@@ -103,6 +103,7 @@ export const ERROR_CODES = [
   "no_gameserver",
   "not_seller",
   "product_id_taken",
+  "plan_mismatch",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

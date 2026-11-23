@@ -3,7 +3,7 @@ import { z } from "zod";
 import { loadToken } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
-import { CONFIRM_NEXT, apiFail, diff, mediaPath, opFail, type OpFail } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -13,8 +13,9 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * read the verse and the creator's games, edit the listing (title, texts,
  * tags, cover, preview video, flags), read and edit release notes.
  *
- * Changing actions preview by default and only call the API with
- * `confirm: true`. Every listing update re-sends the current `visibility`:
+ * Changing actions preview by default and only call the API with the
+ * planId their preview returned (creatorOps plan gate). Every listing
+ * update re-sends the current `visibility`:
  * the backend's update DTO defaults `isPublic` to true, so a body without
  * `visibility` would make a Private / Unlisted game Public
  * (g2-sync verseUpdate.dto.ts isPublic default + verse.service.ts
@@ -42,14 +43,11 @@ export const verseOpsInputSchema = z
     action: z
       .enum(ACTIONS)
       .describe(
-        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless confirm). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless confirm). analytics: DAU / MAU / sessions / avg session summary, plus a chart when reportType is given. comments: comment list with the pinned one. comment_pin: pin / unpin a comment (preview unless confirm). comment_delete: delete a comment (preview unless confirm; irreversible).",
+        "get: this verse's listing, visibility, review status, latest release note. mine: your games (paged). update: edit the listing without a rebuild (preview unless planId). release_notes: release-note history (paged). release_note_update: edit one release note (preview unless planId). analytics: DAU / MAU / sessions / avg session summary, plus a chart when reportType is given. comments: comment list with the pinned one. comment_pin: pin / unpin a comment (preview unless planId). comment_delete: delete a comment (preview unless planId; irreversible).",
       ),
     projectDir: projectDirField,
     verseId: verseIdField,
-    confirm: z
-      .boolean()
-      .default(false)
-      .describe("Changing actions only run with true. Without it they return the planned `changes` and change nothing — show them to the user first."),
+    planId: planIdField,
     page: z.number().int().min(1).optional().describe("mine / release_notes: page (default 1)."),
     limit: z.number().int().min(1).max(100).optional().describe("mine / release_notes: page size (default 20 / 10)."),
     // update
@@ -62,9 +60,9 @@ export const verseOpsInputSchema = z
       .max(WEB_PUBLISH_FORM.TAGS_MAX)
       .optional()
       .describe("update: user tags (1–5, no `__` prefix). System tags already on the verse are kept by the server."),
-    thumbnailPath: z.string().min(1).optional().describe("update: local cover image (png/jpg/gif/webp ≤4 MB), uploaded on confirm."),
+    thumbnailPath: z.string().min(1).optional().describe("update: local cover image (png/jpg/gif/webp ≤4 MB), uploaded when it runs."),
     imageUrl: z.string().url().optional().describe("update: already-hosted cover image URL."),
-    videoPath: z.string().min(1).optional().describe("update: local preview video (mp4 ≤10 MiB), uploaded on confirm."),
+    videoPath: z.string().min(1).optional().describe("update: local preview video (mp4 ≤10 MiB), uploaded when it runs."),
     videoUrl: z.string().url().optional().describe("update: already-hosted preview video URL."),
     clearVideo: z.boolean().optional().describe("update: remove the preview video."),
     allowRemix: z.boolean().optional().describe("update: allow remixes (Spin)."),
@@ -85,7 +83,7 @@ export const verseOpsInputSchema = z
       .optional()
       .describe("release_note_update: 1–3 types."),
     releaseNoteDescription: z.string().min(1).max(WEB_PUBLISH_FORM.RELEASE_NOTE_DESCRIPTION_MAX).optional().describe("release_note_update: body (≤1000)."),
-    releaseNoteImagePath: z.string().min(1).optional().describe("release_note_update: local image, uploaded on confirm."),
+    releaseNoteImagePath: z.string().min(1).optional().describe("release_note_update: local image, uploaded when it runs."),
     releaseNoteImageUrl: z.string().url().max(500).optional().describe("release_note_update: already-hosted image URL."),
     clearReleaseNoteImage: z.boolean().optional().describe("release_note_update: remove the note's image."),
     // analytics
@@ -263,19 +261,39 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   const body: Record<string, unknown> = { visibility: input.visibility ?? cur.visibility, sendNotificationToFollowers: false };
   for (const c of changes) body[c.field] = c.to;
 
-  if (!input.confirm) {
-    return {
-      ok: true,
-      action: "update",
-      dryRun: true,
-      verseId,
-      changes,
-      ...(vis ? {} : { keptVisibility: cur.visibility }),
-      warnings,
-      publishBody: body,
-      next: CONFIRM_NEXT,
-    };
-  }
+  // The current value of every field asked about, and of what is always re-sent.
+  const asked: Array<[string, unknown, unknown]> = [
+    ["title", input.title, cur.title],
+    ["shortDescription", input.shortDescription, cur.shortDescription],
+    ["description", input.description, cur.description],
+    ["tag", input.tags ?? input.visibility, cur.tag ?? []],
+    ["imageUrl", input.thumbnailPath ?? input.imageUrl, cur.imageUrl],
+    ["videoUrl", input.videoPath ?? input.videoUrl ?? input.clearVideo, cur.videoUrl],
+    ["allowRemix", input.allowRemix, cur.allowRemix],
+    ["isMobileSupported", input.isMobileSupported, cur.isMobileSupported],
+    ["orientation", input.orientation, cur.orientation],
+  ];
+  const state: Record<string, unknown> = { visibility: cur.visibility };
+  for (const [field, given, now] of asked) if (given !== undefined) state[field] = now ?? null;
+  const plan: Plan = {
+    op: "verse8_verse.update",
+    target: { verseId },
+    body,
+    state,
+    files: {
+      ...(input.thumbnailPath ? { thumbnailPath: mediaPath(projectDir, input.thumbnailPath) } : {}),
+      ...(input.videoPath ? { videoPath: mediaPath(projectDir, input.videoPath) } : {}),
+    },
+  };
+  const gate = planGate(plan, input.planId, {
+    action: "update" as const,
+    verseId,
+    changes,
+    ...(vis ? {} : { keptVisibility: cur.visibility }),
+    warnings,
+    publishBody: body,
+  });
+  if (gate) return gate;
 
   if (input.thumbnailPath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.thumbnailPath), token, "image");
@@ -363,18 +381,26 @@ async function runReleaseNoteUpdate(input: VerseOpsInput, projectDir: string, ve
   }
   const body: Record<string, unknown> = {};
   for (const c of changes) body[c.field] = c.to;
-  if (!input.confirm) {
-    return {
-      ok: true,
-      action: "release_note_update",
-      dryRun: true,
-      verseId,
-      releaseNote: { id: note.id, buildVersion: note.buildVersion },
-      changes,
-      warnings,
-      next: CONFIRM_NEXT,
-    };
-  }
+  const state: Record<string, unknown> = { author: note.userUid };
+  if (input.releaseNoteTitle !== undefined) state.title = note.title;
+  if (input.releaseNoteTypes !== undefined) state.releaseTypes = note.releaseTypes;
+  if (input.releaseNoteDescription !== undefined) state.description = note.description;
+  if (input.releaseNoteImagePath ?? input.releaseNoteImageUrl ?? input.clearReleaseNoteImage) state.imageUrl = note.imageUrl;
+  const plan: Plan = {
+    op: "verse8_verse.release_note_update",
+    target: { verseId, releaseNoteId: note.id },
+    body,
+    state,
+    files: input.releaseNoteImagePath ? { releaseNoteImagePath: mediaPath(projectDir, input.releaseNoteImagePath) } : {},
+  };
+  const gate = planGate(plan, input.planId, {
+    action: "release_note_update" as const,
+    verseId,
+    releaseNote: { id: note.id, buildVersion: note.buildVersion },
+    changes,
+    warnings,
+  });
+  if (gate) return gate;
   if (input.releaseNoteImagePath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.releaseNoteImagePath), token, "image");
     if (!up.ok) return opFail(up.error, `releaseNoteImagePath: ${up.hint}`);
@@ -519,24 +545,41 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
   if (!c) return opFail("not_found", `No comment ${input.commentId} among this verse's newest 1,000.`);
   if (c.isDeleted) return opFail("invalid_input", `Comment ${c.id} is already deleted.`);
   const shown = presentComment({ ...c, replies: undefined });
+  const isPinned = found.pinnedId === c.id;
 
   if (input.action === "comment_delete") {
     const warnings = [
       "Deleting is irreversible (no undo for creators).",
       "It counts against the commenter's moderation record (deletedCommentCount).",
-      ...(found.pinnedId === c.id ? ["It is the pinned comment; it gets unpinned."] : []),
+      ...(isPinned ? ["It is the pinned comment; it gets unpinned."] : []),
     ];
-    if (!input.confirm) return { ok: true, action: "comment_delete", dryRun: true, verseId, comment: shown, warnings, next: CONFIRM_NEXT };
+    const plan: Plan = {
+      op: "verse8_verse.comment_delete",
+      target: { verseId, commentId: c.id },
+      body: null,
+      state: { content: c.content, pinned: isPinned },
+    };
+    const gate = planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
+    if (gate) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);
     return { ok: true, action: "comment_delete", dryRun: false, verseId, deleted: c.id };
   }
 
-  // comment_pin — the route toggles, so call it only when the state would change.
+  // comment_pin — the route toggles, so call it only when the state would
+  // change; the pin state read now is part of the plan.
   const want = input.pinned ?? true;
-  const isPinned = found.pinnedId === c.id;
+  const plan: Plan = {
+    op: "verse8_verse.comment_pin",
+    target: { verseId, commentId: c.id },
+    body: { pinned: want },
+    state: { pinned: isPinned, pinnedCommentId: found.pinnedId, content: c.content },
+  };
   if (want === isPinned) {
-    return { ok: true, action: "comment_pin", dryRun: !input.confirm, verseId, comment: shown, pinned: isPinned, unchanged: true };
+    // A preview never hands out a planId for this state, so a given one is stale.
+    const stale = input.planId === undefined ? null : checkPlan(plan, input.planId);
+    if (stale) return stale;
+    return { ok: true, action: "comment_pin", dryRun: input.planId === undefined, verseId, comment: shown, pinned: isPinned, unchanged: true };
   }
   if (want && c.parentCommentId !== null) return opFail("invalid_input", "Only top-level comments can be pinned.");
   const warnings = want
@@ -545,9 +588,14 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
         "The commenter is notified that you pinned it.",
       ]
     : [];
-  if (!input.confirm) {
-    return { ok: true, action: "comment_pin", dryRun: true, verseId, comment: shown, changes: [{ field: "pinned", from: isPinned, to: want }], warnings, next: CONFIRM_NEXT };
-  }
+  const gate = planGate(plan, input.planId, {
+    action: "comment_pin" as const,
+    verseId,
+    comment: shown,
+    changes: [{ field: "pinned", from: isPinned, to: want }],
+    warnings,
+  });
+  if (gate) return gate;
   const r = await v8Request<{ isPinned: boolean }>("POST", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}/pin`, { token });
   if (!r.ok) return apiFail(`pin comment ${c.id}`, r);
   return { ok: true, action: "comment_pin", dryRun: false, verseId, commentId: c.id, pinned: r.data?.isPinned ?? want, warnings };
