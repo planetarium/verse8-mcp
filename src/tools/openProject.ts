@@ -18,8 +18,8 @@ import {
 } from "./projectClone.js";
 
 /**
- * `verse8_open_project` — bring an existing Verse8 game (usually made in the
- * web editor) onto this machine: grant a project token → `git clone` →
+ * `verse8_open_project` — bring an existing Verse8 game that is not cloned
+ * here yet onto this machine: grant a project token → `git clone` →
  * attach, in one call. Never creates a project and never overwrites a folder.
  */
 

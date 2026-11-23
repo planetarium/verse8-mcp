@@ -9,8 +9,9 @@ breaking changes when clearly documented.
 
 ### Added — open an existing Verse8 game (#32)
 
-`verse8_open_project({project, targetDir?})` brings a game made in the web
-editor onto this machine in one call: it grants a project token, clones
+`verse8_open_project({project, targetDir?})` brings an existing game that is
+not cloned on this machine yet — wherever it was made — onto it in one call:
+it grants a project token, clones
 branch `develop` into `<targetDir>/<slug>`, and attaches (hooks, AGENTS.md,
 skills, `.env`). `project` is a project path (`owner/game-slug`), the web
 editor URL (`…/creator/editor?chat=owner/game-slug`), or a gitlab.verse8.io

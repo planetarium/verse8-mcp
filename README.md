@@ -43,7 +43,7 @@ The agent handles login, proposes a template, and (after you approve the templat
 
 Installing is free; creating a project and some asset tools require Verse8 credits. A new account gets no credits at sign-up — verify a phone number and claim the one-time welcome credit first (see [Troubleshooting](#insufficient_credits)).
 
-### Existing project (made in the web editor)
+### Existing project (not on this machine yet)
 
 Open the folder you want the game in and say, with the project path or the web editor URL:
 
@@ -92,7 +92,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_login_start` / `_complete` | RFC 8628 device-flow login. | Always |
 | `verse8_status` | Token / project / expiry check + routing. | Always |
 | `verse8_new_project_start` → `_confirm` | Create new Verse8 project (2-step: propose → approve → clone + attach). | Always |
-| `verse8_open_project` | Bring an existing Verse8 game (project path or web editor URL) onto this machine: project token → clone → attach. Never overwrites a folder. | Always |
+| `verse8_open_project` | Bring an existing Verse8 game that is not cloned here yet (project path or web editor URL) onto this machine: project token → clone → attach. Never overwrites a folder. | Always |
 | `verse8_attach` | Install hooks + AGENTS.md + skills into an already-cloned `gitlab.verse8.io` project. Idempotent. | Always |
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. | Logged in |

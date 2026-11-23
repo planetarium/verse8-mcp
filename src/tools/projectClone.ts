@@ -16,7 +16,7 @@ import { CREDIT_RECHARGE_URL } from "../constants.js";
  *
  * Used by `verse8_new_project_confirm` (after the backend created the GitLab
  * project from a template) and `verse8_open_project` (an existing project
- * made in the web editor). Both tools go through these functions so the
+ * not cloned locally yet). Both tools go through these functions so the
  * backend response-shape tolerance and the clone guards live in one place.
  */
 
