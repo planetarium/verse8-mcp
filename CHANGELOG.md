@@ -5,9 +5,9 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
+## [0.10.0] — 2026-11-23
 
-### Added — open an existing Verse8 game (#32)
+### Added — open an existing Verse8 game (#32, #51)
 
 `verse8_open_project({project, targetDir?})` brings an existing game that is
 not cloned on this machine yet — wherever it was made — onto it in one call:
@@ -35,6 +35,77 @@ Every recorded tool call (input and output) is redacted when it is recorded,
 before `verse8_checkpoint` folds it into the pushed commit message. A
 tokenized clone URL passed to any tool — even one the tool rejected — no
 longer ends up in git history.
+
+### Added — creator tools: game server, deploy status, game page, VX shop (#49, #50)
+
+Four new tools, listed after login:
+- `verse8_gameserver` reads the game server through the gateway (GET only):
+  status, collections, items, users, global state, recent errors and a log
+  stream (`followSeconds`), against `prod` or `preview`. The gateway base is
+  `VERSE8_GAMESERVER_URL` (https `*.verse8.io` or loopback only).
+- `verse8_deploy_status` reports the published commit and time, review
+  status, the latest release note, how local `HEAD` relates to what is
+  published, and the prod / preview server state.
+- `verse8_verse` lists your games and reads a game, its release notes,
+  comments and analytics (DAU / MAU / sessions); it can update the game page
+  (title, texts, tags, cover, preview video, visibility), edit a release
+  note, and pin or delete a comment.
+- `verse8_vxshop` lists shop items, sales and revenue; it can create or edit
+  an item (hidden by default), archive / restore it, and answer a dispute.
+
+Every changing action previews first and changes nothing. The preview returns
+a `planId`; calling again with the same arguments plus that `planId` runs it.
+If the action, target, arguments, a local file or a value read for the
+preview changed since then, the run is refused with `plan_mismatch` and says
+what changed. Refunds, game deletion and game-database writes are not
+exposed. `verse8_preview` gains `serverOnly` (game server build + preview
+deploy only). Tool input schemas now carry enums and field descriptions.
+
+### Added — IP asset pools (#34, #36)
+
+`verse8_ip_assets` (listed after login) sends messages to A2A IP asset pools
+and gets, cancels or resubscribes to their tasks, exchanging the Verse8 login
+for a pool token (RFC 8693). Configure `VERSE8_TOKEN_EXCHANGE_URL` (the token
+endpoint, the only host that receives the Verse8 token) and
+`VERSE8_A2A_BASE_URL` (the pool base); both must be HTTPS. Sends are
+non-blocking and return the task and context IDs right away; a duplicate
+message returns the recognized outcome instead of an error. Received files
+are saved under private, content-addressed task folders, and attach keeps
+downloaded IP assets out of Git.
+
+### Added — `stageAll` for checkpoint / preview / deploy (#40)
+
+`stageAll: false` stages nothing and returns `files_required` with the
+changed files, so the caller retries with `files`.
+`VERSE8_CHECKPOINT_REQUIRE_FILES=1` makes `false` the default on that
+machine; an explicit `stageAll` wins. The default is unchanged (`git add -A`).
+
+### Added — `verse8-analytics` skill (#45)
+
+A bundled skill, copied into projects on attach, that shows how a game sends
+analytics events (a `track()` helper, payload rules, reserved event names)
+and what each host does with them.
+
+### Fixed
+
+- `verse8_preview` runs preflight steps through the shell on Windows, so
+  `npx` steps no longer fail there. A step with shell syntax in its arguments
+  is refused as `preflight_failed`; `verse8_deploy`'s `installCommand` also
+  accepts `\` and `~` (#33).
+- `verse8_checkpoint` passes the commit message through a file, so a long
+  message no longer fails with `ENAMETOOLONG` on Windows. If staging or the
+  commit fails, the git index is restored to what it was before the call
+  (`indexRestored` in the error) (#40).
+- `verse8_status` accepts `projectDir` like the other project tools (#38).
+
+### Other
+
+- The AGENTS.md template says what `$sender.account` is in prod and on the
+  local preview, and that the preview server accepts any claimed account.
+  Existing projects get it on their next `overwriteAgentsDoc` attach (#42).
+- `skills-vendor/` re-synced from agent8-skills: new r3f skills (grass,
+  model-placer, navigator, stage-maze, terrain, trigger, water, weather)
+  (#29, #55).
 
 ## [0.9.1] — 2026-11-06
 
