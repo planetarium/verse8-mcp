@@ -2,7 +2,7 @@
 
 ## React Three Fiber Projects
 
-3D is React Three Fiber (JSX under `<Canvas>`); the template's AGENTS.md and PROJECT/Structure.md take precedence. basic-3d-r3f-* templates: player = kinematic `src/game/player.ts`, frame state = mutable objects in `src/game/state.ts` (no React state), rapier only for dynamic bodies in lazy `src/physics/`.
+3D is React Three Fiber (JSX under `<Canvas>`); the template's AGENTS.md and PROJECT/Structure.md take precedence. basic-3d-* templates: kinematic player `src/game/player.ts` (flightview `flight.ts`), mutable frame state `state.ts` (no React state); rapier only for dynamic bodies in lazy `src/physics/`.
 
 ### Rules
 
