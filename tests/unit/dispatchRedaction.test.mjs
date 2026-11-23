@@ -154,3 +154,86 @@ test("dispatch: every secret shape from SECRET_SHAPES is scrubbed by safeHint+js
     assert.doesNotMatch(enveloped, /devSecretCode_xx/);
   }
 });
+
+test("dispatch: a rejected tokenized URL never reaches the next checkpoint commit message", async () => {
+  // Every tool call is recorded and verse8_checkpoint folds the calls of the
+  // same cwd into its (pushed) commit message. A verse8_open_project call
+  // rejected for carrying credentials must not leak them there.
+  const { execFileSync } = await import("node:child_process");
+  const { clearLog } = await import("../../dist/util/v8CallLog.js");
+  const SECRET = "glpat-leakOpenProject0123456789";
+  const orig = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-calllog-redact-"));
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-calllog-bare-"));
+  const saved = {
+    token: process.env.VERSE8_ACCESS_TOKEN,
+    api: process.env.VERSE8_API_URL,
+    prompt: process.env.GIT_TERMINAL_PROMPT,
+  };
+  const git = (...a) => execFileSync("git", a, { cwd: dir, stdio: "ignore" });
+  try {
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git("init", "-q");
+    git("config", "user.email", "t@verse8.io");
+    git("config", "user.name", "t");
+    // Looks like a Verse8 project (gitlab origin + marker) but pushes locally.
+    git("remote", "add", "origin", "https://gitlab.verse8.io/owner/redact-demo.git");
+    git("config", "remote.origin.pushurl", bare);
+    fs.mkdirSync(path.join(dir, ".verse8"));
+    fs.writeFileSync(path.join(dir, ".verse8", "project.json"), '{"version":1,"projectId":"t"}\n');
+    fs.writeFileSync(path.join(dir, ".env"), "VITE_AGENT8_ACCOUNT=0xabc\nVITE_AGENT8_VERSE=redact-demo\n");
+    fs.writeFileSync(path.join(dir, "game.txt"), "v1\n");
+    process.chdir(dir);
+    process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+    process.env.VERSE8_API_URL = "http://127.0.0.1:9"; // never reached; fail fast if it is
+    process.env.GIT_TERMINAL_PROMPT = "0";
+    clearLog();
+
+    const server = createServer();
+    const call = getHandler(server, "tools/call");
+    const rejected = await call(
+      {
+        method: "tools/call",
+        params: {
+          name: "verse8_open_project",
+          arguments: { project: `https://oauth2:${SECRET}@gitlab.verse8.io/owner/redact-demo.git` },
+        },
+      },
+      {},
+    );
+    assert.match(envelopeText(rejected), /invalid_input/);
+
+    const cp = await call(
+      {
+        method: "tools/call",
+        params: {
+          name: "verse8_checkpoint",
+          arguments: {
+            userPrompt: "change the game",
+            model: "test-model",
+            provider: "test",
+            skipAttachCheck: true,
+          },
+        },
+      },
+      {},
+    );
+    const cpText = envelopeText(cp);
+    assert.match(cpText, /"committed": true/, cpText);
+    const message = execFileSync("git", ["log", "-1", "--format=%B"], { cwd: dir, encoding: "utf8" });
+    assert.match(message, /verse8_open_project/, "the call itself is still recorded");
+    assert.ok(!message.includes(SECRET), `commit message leaked the token:\n${message}`);
+  } finally {
+    process.chdir(orig);
+    for (const [k, v] of [
+      ["VERSE8_ACCESS_TOKEN", saved.token],
+      ["VERSE8_API_URL", saved.api],
+      ["GIT_TERMINAL_PROMPT", saved.prompt],
+    ]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(bare, { recursive: true, force: true });
+  }
+});

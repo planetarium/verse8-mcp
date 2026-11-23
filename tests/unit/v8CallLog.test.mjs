@@ -125,3 +125,22 @@ test("v8CallLog: clearLog drops every bucket", () => {
   assert.deepEqual(peekAll("/tmp/c1"), []);
   assert.deepEqual(peekAll("/tmp/c2"), []);
 });
+
+test("v8CallLog: recorded input and output are redacted at the entry point", () => {
+  clearLog();
+  const proj = "/tmp/redact";
+  recordToolCall(
+    base({
+      projectDir: proj,
+      input: { project: "https://oauth2:glpat-inputSecret123456@gitlab.verse8.io/a/b.git", n: 1 },
+      output: { ok: false, hint: "HTTP 400: glpat-outputSecret123456", "access_token": "abcdefabcdefabcdef" },
+    }),
+  );
+  const [e] = peekAll(proj);
+  const text = JSON.stringify(e);
+  assert.ok(!text.includes("inputSecret"), text);
+  assert.ok(!text.includes("outputSecret"), text);
+  assert.ok(!text.includes("abcdefabcdefabcdef"), text);
+  assert.equal(e.input.n, 1, "non-secret fields survive");
+  assert.match(e.input.project, /gitlab\.verse8\.io\/a\/b\.git$/);
+});

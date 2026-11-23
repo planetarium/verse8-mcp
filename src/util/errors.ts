@@ -43,6 +43,9 @@ export const ERROR_CODES = [
   "token_check_failed",
   "token_grant_failed",
   "tool_renamed",
+  // Open existing project (verse8_open_project)
+  "environment_mismatch",
+  "open_in_flight",
   // Attach / verse-project
   "not_a_verse_project",
   "missing_git",
@@ -51,6 +54,7 @@ export const ERROR_CODES = [
   // Checkpoint
   "stage_failed",
   "nothing_to_commit",
+  "files_required",
   "commit_failed",
   "push_failed",
   "checkpoint_failed",

@@ -5,6 +5,7 @@ import { detectAttachment, type AttachmentState } from "../context/attachment.js
 import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
+import { isSafeAbsPath } from "../util/safePath.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
 import { CREDIT_RECHARGE_URL } from "../constants.js";
@@ -13,7 +14,23 @@ import {
   type BootstrapWorkflow,
 } from "./bootstrap.js";
 
-export const statusInputSchema = z.object({}).strict();
+export const statusInputSchema = z
+  .object({
+    projectDir: z
+      .string()
+      .min(1)
+      .refine(isSafeAbsPath, {
+        message:
+          "projectDir must not contain `..`, NUL byte, or redundant separators (rejected at MCP dispatch boundary)",
+      })
+      .optional()
+      .describe(
+        "Absolute path to the verse8 project directory. Pass it when the project lives in a subdirectory of the MCP server's cwd (same as verse8_checkpoint / verse8_preview). If omitted, process.cwd() is used.",
+      ),
+  })
+  .strict();
+
+export type StatusInput = z.infer<typeof statusInputSchema>;
 
 export interface ProjectStatus {
   isVerse: boolean;

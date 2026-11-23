@@ -100,6 +100,37 @@ export function safeHint(input: string): string {
 }
 
 /**
+ * `safeHint` for structured values (tool-call inputs / outputs): every string
+ * inside is redacted, and so are the JSON-keyed shapes (`"access_token": …`),
+ * which only match with their key. Returns a redacted copy; never throws.
+ */
+export function redactValue<T>(value: T): T {
+  if (value === undefined || value === null) return value;
+  if (typeof value === "string") return safeHint(value) as unknown as T;
+  if (typeof value !== "object") return value;
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) return value;
+    return JSON.parse(safeHint(json)) as T;
+  } catch {
+    return redactStrings(value) as T;
+  }
+}
+
+function redactStrings(value: unknown): unknown {
+  if (typeof value === "string") return safeHint(value);
+  if (Array.isArray(value)) return value.map(redactStrings);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactStrings(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Best-effort hint extractor for catch-block values. Never throws — accepts
  * Error, string, undefined, null, and arbitrary objects. The returned
  * string has every known secret shape redacted.

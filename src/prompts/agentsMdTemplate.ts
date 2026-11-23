@@ -160,6 +160,15 @@ omit that line (the project isn't hosted on gitlab.verse8.io).
 Use \`startOnly: true\` only when the user specifically asks to reopen the
 preview with no new changes.
 
+**Who is \`$sender.account\`?** On verse8.io it is the player's wallet
+address (EIP-55 \`0x…\`; guests get a temporary one), not the numeric
+Verse8 user id — compare addresses case-insensitively. On the local preview
+(\`http://localhost:5173\`) the client sends \`?account=\` if the URL has it,
+otherwise a random \`anonymous-…\` id — not the wallet in \`.env\`. To test as
+the owner, open \`http://localhost:5173/?account=<VITE_AGENT8_ACCOUNT>\`. The
+preview server accepts whatever account the client claims, so an account
+allow-list is not a security boundary there.
+
 ## Commit policy (critical)
 
 Principle: **preview-delta commits**. If the user would see a visible change

@@ -46,6 +46,7 @@ import {
   runNewProjectConfirm,
   runNewProjectStart,
 } from "./tools/newProject.js";
+import { openProjectInputSchema, runOpenProject } from "./tools/openProject.js";
 import { runStatus, statusInputSchema } from "./tools/status.js";
 import {
   callImageTool,
@@ -126,7 +127,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_status",
     description:
-      "Return the current Verse8 profile via GET /v1/auth/verify plus cwd attachment state and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info.",
+      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
     inputSchema: zodToJsonSchema(statusInputSchema),
   },
   {
@@ -142,6 +143,12 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: zodToJsonSchema(newProjectConfirmInputSchema),
   },
   {
+    name: "verse8_open_project",
+    description:
+      "Bring an EXISTING Verse8 game that is not cloned on this machine yet onto it to keep working locally — wherever it was made (the web editor, verse8_new_project_confirm on another machine, a local clone that was deleted). Pass `project` exactly as the user gave it: a project path like `owner/game-slug`, the web editor URL (`.../creator/editor?chat=owner/game-slug`), or a gitlab.verse8.io URL. Optional `targetDir` = parent folder (default: cwd). Grants a 30-day project token, clones branch `develop` into `<targetDir>/<slug>`, and installs the verse8 hooks + AGENTS.md (same as verse8_attach). Does NOT create a project — use verse8_new_project_start for a new game. Returns {projectDir, webEditor, nextCallRequires:{projectDir}} — pass `projectDir` on every later verse8_checkpoint / verse8_preview call. `clone_target_exists`: the folder is already there and was NOT overwritten — follow the hint (verse8_attach if it is the same project, else another targetDir). `token_check_failed` / `token_grant_failed` carry the backend's `status` and message: on a 4xx (e.g. the project belongs to someone else, or the token limit is reached) show the message to the user and do not retry — follow the hint; on a 5xx or a network error (`status` 0) you may retry once. `environment_mismatch`: the editor URL is from another Verse8 environment than this server.",
+    inputSchema: zodToJsonSchema(openProjectInputSchema),
+  },
+  {
     name: "verse8_attach",
     description:
       "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_attach' (typically: user cd'd into a freshly cloned gitlab.verse8.io repo that lacks hooks). Idempotent — safe to re-run. Installs pre-commit + commit-msg hooks, writes AGENTS.md / CLAUDE.md with the dynamic skills catalog, copies each bundled skill to `<projectDir>/.claude/skills/<name>/SKILL.md` (hash-fingerprinted so user edits survive re-attach), and ensures .verse8/project.json exists. Optional flags: `overwriteAgentsDoc`, `overwriteAllSkills`, `pruneOrphanedSkills` (deletes only our unedited SKILL.md of skills no longer bundled; other files in the folder stay), `overwriteEnv`. After attach, re-call verse8_bootstrap to confirm `nextAction === 'ready'` before implementing anything.",
@@ -152,7 +159,7 @@ const BASE_TOOLS: Tool[] = [
 const CHECKPOINT_TOOL: Tool = {
   name: "verse8_checkpoint",
   description:
-    "MANDATORY commit tool for Verse8 projects — NEVER use `git commit` via Bash (the installed commit-msg hook rejects non-V8 commits with exit 1). Stages `files` if provided else `git add -A`, builds a V8-format commit from your `userPrompt` + `model` + `provider` (+ optional `toolCalls`), and pushes to gitlab.verse8.io. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload. Call this whenever `verse8_bootstrap` returned `workflow.nextAction === \"ready\"` and the user's change is complete (or before launching verse8_preview).",
+    "MANDATORY commit tool for Verse8 projects — NEVER use `git commit` via Bash (the installed commit-msg hook rejects non-V8 commits with exit 1). Stages `files` if provided else `git add -A` (with `stageAll: false` or VERSE8_CHECKPOINT_REQUIRE_FILES=1 it stages nothing and returns `files_required` + `changedFiles` — pass `files` when other sessions share the folder), builds a V8-format commit from your `userPrompt` + `model` + `provider` (+ optional `toolCalls`), and pushes to gitlab.verse8.io. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload. Call this whenever `verse8_bootstrap` returned `workflow.nextAction === \"ready\"` and the user's change is complete (or before launching verse8_preview).",
   inputSchema: zodToJsonSchema(checkpointInputSchema),
 };
 
@@ -235,7 +242,8 @@ export function createServer(): Server {
       // server emits `notifications/tools/list_changed`. The set of
       // verse8 tools surfaced depends on (a) cwd being a verse project
       // and (b) a valid token — both of which can flip mid-session
-      // after verse8_attach / verse8_login_complete / verse8_new_project_confirm.
+      // after verse8_attach / verse8_login_complete / verse8_new_project_confirm /
+      // verse8_open_project.
       tools: { listChanged: true },
       resources: {},
       prompts: {},
@@ -323,9 +331,10 @@ export function createServer(): Server {
       }
 
       if (name === "verse8_status") {
-        statusInputSchema.parse(args ?? {});
-        const result = await dispatchTool(name, () => runStatus(cwd), {
-          projectDir: cwd,
+        const parsed = statusInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runStatus(pd), {
+          projectDir: pd,
         });
         return { content: jsonContent(result), isError: !result.ok };
       }
@@ -346,6 +355,16 @@ export function createServer(): Server {
         // Project was just created + cloned + attached; tool surface
         // may have expanded (preview/checkpoint/image_* if token was
         // minted during confirm).
+        if (result.ok) notifyToolListChanged();
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_open_project") {
+        const parsed = openProjectInputSchema.parse(args ?? {});
+        const result = await dispatchTool(name, () =>
+          runOpenProject(parsed, cwd),
+        );
+        // Cloned + attached, same as new_project_confirm.
         if (result.ok) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }

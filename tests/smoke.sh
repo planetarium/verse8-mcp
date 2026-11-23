@@ -272,6 +272,10 @@ test_ac1_empty_cwd_tools_list() {
     fail "ac1_empty_cwd_tools_list" "verse8_new_project_confirm missing in: $resp"
     return
   fi
+  if ! json_contains "$resp" '"verse8_open_project"'; then
+    fail "ac1_empty_cwd_tools_list" "verse8_open_project missing in: $resp"
+    return
+  fi
 
   # Must NOT contain verse8_checkpoint or image tools
   if json_contains "$resp" '"verse8_checkpoint"'; then
