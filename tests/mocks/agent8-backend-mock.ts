@@ -25,10 +25,21 @@
  *                                 is reachable — use only for URL-shape tests.)
  *   --fixed-project-path=<str>    Fixed project.path to return from
  *                                 select-template (default uses a timestamp).
+ *   --deny-token=<status>         Answer GET+POST project-access-token with
+ *                                 this status and the backend owner-check body.
+ *   --oauth-git-url               Return `gitUrl` in the real
+ *                                 https://oauth2:<PAT>@gitlab.verse8.io/… shape
+ *                                 while `cloneCommand` keeps the file://
+ *                                 fixture, so the clone still succeeds.
+ *   --token-limit                 Answer POST project-access-token with the
+ *                                 backend's 400 TOKEN_LIMIT_EXCEEDED body.
+ *   --state-dir=<abs-path>        Write the port / call-log files below
+ *                                 here instead of /tmp (lets test files that
+ *                                 run in parallel keep separate mocks).
  *
  * Writes:
- *   /tmp/agent8-mock-port.txt   — listening port
- *   /tmp/agent8-mock-calls.jsonl — per-request call log for test assertions
+ *   <state-dir>/agent8-mock-port.txt   — listening port
+ *   <state-dir>/agent8-mock-calls.jsonl — per-request call log for test assertions
  */
 
 import * as http from "node:http";
@@ -37,8 +48,9 @@ import * as url from "node:url";
 
 const args = process.argv.slice(2);
 const VALID_TOKEN = "test-token-xyz";
-const PORT_FILE = "/tmp/agent8-mock-port.txt";
-const CALLS_FILE = "/tmp/agent8-mock-calls.jsonl";
+const STATE_DIR = flagValue("state-dir") ?? "/tmp";
+const PORT_FILE = `${STATE_DIR}/agent8-mock-port.txt`;
+const CALLS_FILE = `${STATE_DIR}/agent8-mock-calls.jsonl`;
 
 function flagValue(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -67,6 +79,22 @@ const omitGitUrl = hasFlag("omit-git-url");
 // environment where the field naming drifted from the documented
 // camelCase shape. Confirm must still succeed.
 const snakeCaseKeys = hasFlag("snake-case");
+// Answers both project-access-token routes with this HTTP status and the
+// backend's owner-check body — simulates opening someone else's project.
+const denyTokenStatus = flagValue("deny-token");
+const DENY_TOKEN_BODY = {
+  success: false,
+  message: "Access denied: You are not the owner of this project",
+  error: "PERMISSION_DENIED",
+};
+const oauthGitUrl = hasFlag("oauth-git-url");
+const tokenLimit = hasFlag("token-limit");
+const TOKEN_LIMIT_BODY = {
+  success: false,
+  message: "Token limit reached: Maximum 3 active tokens allowed per project",
+  error: "TOKEN_LIMIT_EXCEEDED",
+  details: "Please revoke an existing token before creating a new one",
+};
 
 // Reset call log on startup so each test run gets a clean slate.
 fs.writeFileSync(CALLS_FILE, "", "utf8");
@@ -189,6 +217,10 @@ const server = http.createServer(async (req, res) => {
       send(res, 500, { error: "token_check_injected_failure" });
       return;
     }
+    if (denyTokenStatus) {
+      send(res, Number(denyTokenStatus), DENY_TOKEN_BODY);
+      return;
+    }
     send(res, 200, { hasToken: false, tokens: [] });
     return;
   }
@@ -200,6 +232,14 @@ const server = http.createServer(async (req, res) => {
       send(res, 500, { error: "token_grant_injected_failure" });
       return;
     }
+    if (denyTokenStatus) {
+      send(res, Number(denyTokenStatus), DENY_TOKEN_BODY);
+      return;
+    }
+    if (tokenLimit) {
+      send(res, 400, TOKEN_LIMIT_BODY);
+      return;
+    }
     let body: Record<string, unknown> = {};
     try {
       body = JSON.parse(await readBody(req));
@@ -208,7 +248,9 @@ const server = http.createServer(async (req, res) => {
     }
     const projectPath = String(body.projectPath ?? "smoke-user/demo");
     const tokenValue = "glpat-smokeXXXXXXXXXXXXXX";
-    const gitUrl = buildGitUrl(projectPath, tokenValue);
+    const gitUrl = oauthGitUrl
+      ? `https://oauth2:${tokenValue}@gitlab.verse8.io/${projectPath}.git`
+      : buildGitUrl(projectPath, tokenValue);
     const expiresAtIso = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
     const payload: Record<string, unknown> = {
       token: tokenValue,

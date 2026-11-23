@@ -18,6 +18,7 @@ Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Cl
 | `verse8_bootstrap`, `verse8_status` | Detect whether the working directory is a Verse8 project and what to do next |
 | `verse8_login_start`, `verse8_login_complete` | Sign in with a one-time browser code (OAuth device flow) |
 | `verse8_new_project_start`, `verse8_new_project_confirm` | Create a Verse8 project from a template and clone it |
+| `verse8_open_project` | Clone an existing Verse8 game (project path or web editor URL) and set it up |
 | `verse8_attach` | Set up an existing clone (git hooks, `AGENTS.md`, skills) |
 | `verse8_checkpoint` | Commit and push in Verse8's commit-message format |
 | `verse8_preview` | Commit, install dependencies and start the local dev server |
@@ -46,7 +47,7 @@ Once you are signed in, the server lists its tools at the start of every session
 
 **Changes in your project**
 
-`verse8_attach` and `verse8_new_project_confirm` install `pre-commit` and `commit-msg` git hooks that keep Verse8's commit format — an existing hook of the same name that is not Verse8's is replaced, not backed up — and write `AGENTS.md`, `CLAUDE.md`, `.claude/skills/*`, `.verse8/project.json`, `.verse8/.gitignore` and `.env` (your wallet address as `VITE_AGENT8_ACCOUNT` and the game's `VITE_AGENT8_VERSE` id; Verse8 projects commit `.env`). Files you edited are kept unless you ask to overwrite them.
+`verse8_attach`, `verse8_new_project_confirm` and `verse8_open_project` install `pre-commit` and `commit-msg` git hooks that keep Verse8's commit format — an existing hook of the same name that is not Verse8's is replaced, not backed up — and write `AGENTS.md`, `CLAUDE.md`, `.claude/skills/*`, `.verse8/project.json`, `.verse8/.gitignore` and `.env` (your wallet address as `VITE_AGENT8_ACCOUNT` and the game's `VITE_AGENT8_VERSE` id; Verse8 projects commit `.env`). Files you edited are kept unless you ask to overwrite them.
 
 A new project is cloned with a 30-day GitLab access token embedded in the `origin` URL in `.git/config`, so pushes work without a credential prompt.
 

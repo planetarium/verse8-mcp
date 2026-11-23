@@ -528,3 +528,29 @@ test("not_logged_in: start returns structured error with no token", async () => 
     fs.rmSync(isolated, { recursive: true, force: true });
   }
 });
+
+test("confirm: a targetDir that is a file fails BEFORE the project is created or a token minted", async () => {
+  const handle = await startMock();
+  try {
+    process.env.VERSE8_AGENT8_BACKEND_URL = `http://127.0.0.1:${handle.port}`;
+    process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+    const file = path.join(mkTmpCwd(), "a-file");
+    fs.writeFileSync(file, "x");
+    const r = await runNewProjectConfirm({
+      templateName: "basic-vite-react",
+      repo: "planetarium/agent8-templates",
+      path: "basic-vite-react",
+      title: "Local",
+      projectRepo: "local",
+      targetDir: file,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_parent", JSON.stringify(r));
+    assert.equal(countCalls("/api/select-template"), 0, "no GitLab project created");
+    assert.equal(countCalls("/api/gitlab/project-access-token"), 0, "no token minted");
+  } finally {
+    await stopMock(handle);
+    delete process.env.VERSE8_AGENT8_BACKEND_URL;
+    delete process.env.VERSE8_ACCESS_TOKEN;
+  }
+});

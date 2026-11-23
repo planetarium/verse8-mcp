@@ -119,7 +119,7 @@ test("safePath: newProjectConfirmInputSchema.targetDir rejects traversal", async
 });
 
 test("checkParentDirSafe: rejects symlink-parent that escapes the textual path", async () => {
-  const { checkParentDirSafe } = await import("../../dist/tools/newProject.js");
+  const { checkParentDirSafe } = await import("../../dist/tools/projectClone.js");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-symlink-test-"));
   try {
     const realTarget = path.join(root, "real-target");
@@ -145,13 +145,13 @@ test("checkParentDirSafe: rejects symlink-parent that escapes the textual path",
 });
 
 test("checkParentDirSafe: accepts /tmp (macOS realpath /private/tmp)", async () => {
-  const { checkParentDirSafe } = await import("../../dist/tools/newProject.js");
+  const { checkParentDirSafe } = await import("../../dist/tools/projectClone.js");
   const r = checkParentDirSafe(os.tmpdir());
   assert.equal(r.ok, true, "os.tmpdir() must be accepted");
 });
 
 test("checkParentDirSafe: accepts path that doesn't exist yet (mkdir-recursive case)", async () => {
-  const { checkParentDirSafe } = await import("../../dist/tools/newProject.js");
+  const { checkParentDirSafe } = await import("../../dist/tools/projectClone.js");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-symlink-test2-"));
   try {
     const future = path.join(root, "deep", "nested", "future");

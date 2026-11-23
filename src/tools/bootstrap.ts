@@ -123,7 +123,7 @@ export function computeBootstrapWorkflow(params: {
           ? "Cwd is empty (no .git) and no Verse8 access token is available. Treating as a non-verse workspace."
           : "Cwd is a git repo whose origin is not gitlab.verse8.io, and no Verse8 access token is available. Treating as a non-verse workspace.",
       instructions:
-        `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, etc.). If the user EXPLICITLY asks to create a Verse8 game (mentions "verse8" / "Verse8 / 버스8"), call verse8_login_start then verse8_new_project_start.${echo}`,
+        `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, etc.). If the user EXPLICITLY asks to create a Verse8 game (mentions "verse8" / "Verse8 / 버스8"), call verse8_login_start then verse8_new_project_start. If they want to keep working on an EXISTING Verse8 game (a project path or web editor URL), call verse8_login_start then verse8_open_project({project}).${echo}`,
     };
   }
   return {
@@ -134,7 +134,7 @@ export function computeBootstrapWorkflow(params: {
         ? "Cwd has no .git directory. Treating as a non-verse workspace — Verse8 new-project is opt-in, not the default."
         : "Cwd is a git repo but its origin is not gitlab.verse8.io. This is not a verse8 project.",
     instructions:
-      `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, build, etc.) — do NOT call Verse8 checkpoint / preview / attach. If the user EXPLICITLY asks to create a Verse8 game (they mention "verse8" / "Verse8" / "버스8"), call verse8_new_project_start({userRequest}) to start the new-project flow.${echo}`,
+      `This workspace is NOT a Verse8 project. Proceed with the user's request using your usual tools (file edits, shell, build, etc.) — do NOT call Verse8 checkpoint / preview / attach. If the user EXPLICITLY asks to create a Verse8 game (they mention "verse8" / "Verse8" / "버스8"), call verse8_new_project_start({userRequest}) to start the new-project flow. If they want to keep working on an EXISTING Verse8 game (they give a project path like owner/game-slug or a web editor URL), call verse8_open_project({project}) with that value verbatim.${echo}`,
   };
 }
 

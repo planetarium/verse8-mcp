@@ -5,7 +5,7 @@
 | `VERSE8_API_URL` | `https://v8-meme-api.verse8.io` | Auth / verify API base. `*.verse8.io` + loopback에 host-validated. |
 | `VERSE8_AGENT8_BACKEND_URL` | `https://agent8-backend.verse8.io` | 프로젝트 생성 base (startcall / select-template / project-access-token). |
 | `VERSE8_IMAGE_MCP_URL` | `https://mcp-image-svc.verse8.io/mcp` | 이미지 생성 MCP 엔드포인트. |
-| `VERSE8_CREATE_URL` | `https://create.verse8.io` | preview 응답 `webEditor.url`의 웹 에디터 base. |
+| `VERSE8_CREATE_URL` | `https://create.verse8.io` | preview 응답 `webEditor.url`의 웹 에디터 base. `verse8_open_project` also accepts editor URLs only on this host (another host → `environment_mismatch`). |
 | `VERSE8_TOKEN_EXCHANGE_URL` | — | Full HTTPS endpoint that receives the Verse8 token for IP asset access. |
 | `VERSE8_A2A_BASE_URL` | — | HTTPS base for IP asset pools. Receives the exchanged bearer token. |
 | `VERSE8_ACCESS_TOKEN` | _(미설정)_ | 설정 시 토큰 파일 대신 사용. |

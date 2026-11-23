@@ -207,7 +207,7 @@ function isAllowedCreateUrl(url: string): boolean {
   return p.host === "verse8.io" || p.host.endsWith(".verse8.io");
 }
 
-function getCreateBaseUrl(): string {
+export function getCreateBaseUrl(): string {
   const override = process.env.VERSE8_CREATE_URL;
   if (!override || override.length === 0) return DEFAULT_CREATE_URL;
   // Local policy enumeration so the web-editor link allow-set can drift
