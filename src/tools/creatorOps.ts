@@ -91,19 +91,30 @@ const PLAN_VERSION = "v1";
 const PART_HEX = 4;
 const sha256 = (s: string | Buffer): string => createHash("sha256").update(s).digest("hex");
 
-function fileDigest(p: string): string {
+function readOrNull(p: string): Buffer<ArrayBuffer> | null {
   try {
-    return sha256(fs.readFileSync(p));
+    return fs.readFileSync(p);
   } catch {
-    return "unreadable";
+    return null;
   }
 }
 
-function planParts(p: Plan): Array<[string, unknown]> {
+/**
+ * The named parts of a plan, and the bytes of each local file as read for
+ * its hash. A run uploads exactly these bytes, never a second read of the
+ * path, so the file cannot change between the check and the upload. Files
+ * are read whole, as the upload does anyway (≤4 MB images, ≤10 MiB videos).
+ */
+function planParts(p: Plan): { parts: Array<[string, unknown]>; bytes: Record<string, Buffer<ArrayBuffer>> } {
   const parts: Array<[string, unknown]> = [["op", p.op], ["target", p.target], ["body", p.body ?? null]];
+  const bytes: Record<string, Buffer<ArrayBuffer>> = {};
   for (const k of Object.keys(p.state ?? {}).sort()) parts.push([`state.${k}`, p.state?.[k] ?? null]);
-  for (const k of Object.keys(p.files ?? {}).sort()) parts.push([`file.${k}`, fileDigest(p.files?.[k] ?? "")]);
-  return parts;
+  for (const k of Object.keys(p.files ?? {}).sort()) {
+    const b = readOrNull(p.files?.[k] ?? "");
+    if (b) bytes[k] = b;
+    parts.push([`file.${k}`, b ? sha256(b) : "unreadable"]);
+  }
+  return { parts, bytes };
 }
 
 const partHash = ([name, value]: [string, unknown]): string => sha256(`${name}\n${canonicalJson(value)}`).slice(0, PART_HEX);
@@ -118,16 +129,26 @@ function planIdOf(parts: Array<[string, unknown]>): string {
 }
 
 export function planId(p: Plan): string {
-  return planIdOf(planParts(p));
+  return planIdOf(planParts(p).parts);
+}
+
+/** A planId that matched: run it, uploading `files` (field → the bytes that were hashed). */
+export interface PlanApproved {
+  approved: true;
+  files: Record<string, Buffer<ArrayBuffer>>;
+}
+
+export function isApproved(g: unknown): g is PlanApproved {
+  return typeof g === "object" && g !== null && (g as { approved?: unknown }).approved === true;
 }
 
 const PLAN_ID_RE = new RegExp(`^${PLAN_VERSION}\\.[0-9a-f]{32}\\.((?:[0-9a-f]{${PART_HEX}})+)$`);
 const RE_PREVIEW = "Get a fresh preview (call again without planId), show it to the user, and run with the planId it returns.";
 
-/** null when `given` is this plan's id; otherwise the refusal, naming what differs. */
-export function checkPlan(p: Plan, given: string): OpFail | null {
-  const parts = planParts(p);
-  if (planIdOf(parts) === given) return null;
+/** Approved (with the hashed file bytes) when `given` is this plan's id; otherwise the refusal, naming what differs. */
+export function checkPlan(p: Plan, given: string): PlanApproved | OpFail {
+  const { parts, bytes } = planParts(p);
+  if (planIdOf(parts) === given) return { approved: true, files: bytes };
   const m = PLAN_ID_RE.exec(given);
   if (!m) return opFail("plan_mismatch", `Nothing was changed: planId is not one a preview of this tool returned. ${RE_PREVIEW}`);
   const old = m[1].match(new RegExp(`.{${PART_HEX}}`, "g")) ?? [];
@@ -166,14 +187,14 @@ export const PLAN_NEXT =
 
 /**
  * The gate every changing action goes through. Without planId: the preview,
- * with its planId. With a matching planId: null — run it. Otherwise the
- * refusal.
+ * with its planId. With a matching planId: approved — run it, uploading the
+ * returned file bytes. Otherwise the refusal.
  */
 export function planGate<T extends { action: string }>(
   p: Plan,
   given: string | undefined,
   preview: T,
-): (T & { ok: true; dryRun: true; planId: string; next: string }) | OpFail | null {
+): (T & { ok: true; dryRun: true; planId: string; next: string }) | OpFail | PlanApproved {
   if (given === undefined) return { ok: true, ...preview, dryRun: true, planId: planId(p), next: PLAN_NEXT };
   return checkPlan(p, given);
 }

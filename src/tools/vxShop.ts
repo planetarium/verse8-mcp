@@ -2,7 +2,7 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
@@ -240,9 +240,9 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
     };
     const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings });
-    if (gate) return gate;
+    if (!isApproved(gate)) return gate;
     if (input.imagePath) {
-      const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY);
+      const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
       if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
       body.imageUrl = up.url;
     }
@@ -305,9 +305,9 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
   };
   const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
   if (input.imagePath) {
-    const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY);
+    const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
     if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
     body.imageUrl = up.url;
   }
@@ -387,7 +387,7 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
   if (cur.isArchived === want) {
     // A preview never hands out a planId for this state, so a given one is stale.
     const stale = input.planId === undefined ? null : checkPlan(plan, input.planId);
-    if (stale) return stale;
+    if (stale && !isApproved(stale)) return stale;
     return { ok: true, action: "archive", dryRun: input.planId === undefined, verseId, itemId: cur.id, archived: want, unchanged: true };
   }
   const warnings = want
@@ -401,7 +401,7 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
     body,
     warnings,
   });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
   return { ok: true, action: "archive", dryRun: false, verseId, item: r.data ? presentItem(r.data) : null, warnings };
@@ -454,7 +454,7 @@ async function runDispute(input: VxShopInput, verseId: string, token: string): P
     body,
     warnings,
   });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
   const r = await v8Request<{ success: boolean }>("PUT", `/v1/vx-shop-items/sales/${input.saleId}/dispute`, { token, body });
   if (!r.ok) return apiFail(`PUT sales/${input.saleId}/dispute`, r);
   return { ok: true, action: "dispute", dryRun: false, verseId, saleId: input.saleId, disputeStatus: input.disputeStatus, warnings };

@@ -9,6 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import fsDefault from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -328,4 +330,95 @@ test("canonicalJson / planId: key order does not matter, values do", () => {
   assert.notEqual(planId(p), planId({ ...p, state: { ...p.state, price: 1 } }));
   assert.notEqual(planId(p), planId({ ...p, op: "x.z" }));
   assert.notEqual(planId(p), planId({ ...p, target: { verseId: "v", itemId: 2 } }));
+});
+
+// ── the run uploads the bytes the planId was checked against ──
+
+// Make the next read of `file` return its content and then overwrite the
+// file on disk — a change right after the plan check, before the upload.
+function tamperAfterNextRead(file, tampered) {
+  const orig = fsDefault.readFileSync;
+  let armed = true;
+  fsDefault.readFileSync = function (p, ...rest) {
+    const out = orig.call(this, p, ...rest);
+    if (armed && typeof p === "string" && path.resolve(p) === path.resolve(file)) {
+      armed = false;
+      fsDefault.writeFileSync(file, tampered);
+    }
+    return out;
+  };
+  syncBuiltinESMExports();
+  return () => {
+    fsDefault.readFileSync = orig;
+    syncBuiltinESMExports();
+  };
+}
+const bytesOf = async (blob) => Buffer.from(await blob.arrayBuffer());
+
+test("upsert create: the image changes right after the plan check → the checked bytes are uploaded, not the new file", async () => {
+  const dir = project();
+  const img = path.join(dir, "item.png");
+  const checked = fs.readFileSync(img);
+  const tampered = Buffer.from([0x89, 0x50, 0x4e, 0x47, 7, 7, 7, 7, 7]);
+  await withDb(async (_db, calls) => {
+    const input = { action: "upsert", productId: "gem", name: "Gems", price: 100, stock: 5, imagePath: "item.png" };
+    const pre = await call("vxshop", dir, input);
+    let uploaded = null;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if (new URL(url).pathname === "/api/upload") uploaded = await bytesOf(init.body.get("file"));
+      return savedFetch(url, init);
+    };
+    const restore = tamperAfterNextRead(img, tampered);
+    try {
+      const r = await call("vxshop", dir, { ...input, planId: pre.planId });
+      assert.equal(r.ok, true, JSON.stringify(r));
+    } finally {
+      restore();
+      globalThis.fetch = savedFetch;
+    }
+    assert.deepEqual(fs.readFileSync(img), tampered, "the file did change after the check");
+    assert.deepEqual(uploaded, checked);
+    assert.equal(writes(calls).filter((c) => c.path === "/api/upload").length, 1);
+  });
+});
+
+test("update videoPath: the video changes right after the plan check → the presigned PUT carries the checked bytes", async () => {
+  const dir = project();
+  const clip = path.join(dir, "clip.mp4");
+  const checked = Buffer.from("checked-video-bytes");
+  fs.writeFileSync(clip, checked);
+  await withDb(async (db) => {
+    let put = null;
+    let declaredSize = null;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = new URL(url);
+      if (u.pathname === "/api/upload/video-presigned") {
+        declaredSize = JSON.parse(init.body).fileSize;
+        return json(200, { uploadUrl: "https://r2.example/put/clip.mp4", publicUrl: "https://contents.verse8.io/verses/x/clip.mp4", contentType: "video/mp4" });
+      }
+      if (u.hostname === "r2.example") {
+        put = await bytesOf(init.body);
+        return new Response(null, { status: 200 });
+      }
+      return savedFetch(url, init);
+    };
+    try {
+      const pre = await call("verse", dir, { action: "update", videoPath: "clip.mp4" });
+      assert.ok(pre.planId, JSON.stringify(pre));
+      const restore = tamperAfterNextRead(clip, Buffer.from("a-different-and-longer-video"));
+      try {
+        const r = await call("verse", dir, { action: "update", videoPath: "clip.mp4", planId: pre.planId });
+        assert.equal(r.ok, true, JSON.stringify(r));
+      } finally {
+        restore();
+      }
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+    assert.deepEqual(put, checked);
+    assert.equal(declaredSize, checked.length);
+    assert.notDeepEqual(fs.readFileSync(clip), checked, "the file did change after the check");
+  });
 });

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { loadToken } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -293,15 +293,15 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     warnings,
     publishBody: body,
   });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
 
   if (input.thumbnailPath) {
-    const up = await uploadLocalMedia(mediaPath(projectDir, input.thumbnailPath), token, "image");
+    const up = await uploadLocalMedia(mediaPath(projectDir, input.thumbnailPath), token, "image", undefined, gate.files.thumbnailPath);
     if (!up.ok) return opFail(up.error, `thumbnailPath: ${up.hint}`);
     body.imageUrl = up.url;
   }
   if (input.videoPath) {
-    const up = await uploadLocalMedia(mediaPath(projectDir, input.videoPath), token, "video");
+    const up = await uploadLocalMedia(mediaPath(projectDir, input.videoPath), token, "video", undefined, gate.files.videoPath);
     if (!up.ok) return opFail(up.error, `videoPath: ${up.hint}`);
     body.videoUrl = up.url;
   }
@@ -400,9 +400,9 @@ async function runReleaseNoteUpdate(input: VerseOpsInput, projectDir: string, ve
     changes,
     warnings,
   });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
   if (input.releaseNoteImagePath) {
-    const up = await uploadLocalMedia(mediaPath(projectDir, input.releaseNoteImagePath), token, "image");
+    const up = await uploadLocalMedia(mediaPath(projectDir, input.releaseNoteImagePath), token, "image", undefined, gate.files.releaseNoteImagePath);
     if (!up.ok) return opFail(up.error, `releaseNoteImagePath: ${up.hint}`);
     body.imageUrl = up.url;
   }
@@ -560,7 +560,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
       state: { content: c.content, pinned: isPinned },
     };
     const gate = planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
-    if (gate) return gate;
+    if (!isApproved(gate)) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);
     return { ok: true, action: "comment_delete", dryRun: false, verseId, deleted: c.id };
@@ -578,7 +578,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
   if (want === isPinned) {
     // A preview never hands out a planId for this state, so a given one is stale.
     const stale = input.planId === undefined ? null : checkPlan(plan, input.planId);
-    if (stale) return stale;
+    if (stale && !isApproved(stale)) return stale;
     return { ok: true, action: "comment_pin", dryRun: input.planId === undefined, verseId, comment: shown, pinned: isPinned, unchanged: true };
   }
   if (want && c.parentCommentId !== null) return opFail("invalid_input", "Only top-level comments can be pinned.");
@@ -595,7 +595,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
     changes: [{ field: "pinned", from: isPinned, to: want }],
     warnings,
   });
-  if (gate) return gate;
+  if (!isApproved(gate)) return gate;
   const r = await v8Request<{ isPinned: boolean }>("POST", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}/pin`, { token });
   if (!r.ok) return apiFail(`pin comment ${c.id}`, r);
   return { ok: true, action: "comment_pin", dryRun: false, verseId, commentId: c.id, pinned: r.data?.isPinned ?? want, warnings };
