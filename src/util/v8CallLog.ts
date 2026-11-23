@@ -13,6 +13,8 @@
  * without a projectDir live in a shared "global" bucket for back-compat.
  */
 
+import { redactValue } from "./redact.js";
+
 export interface LoggedCall {
   name: string;
   status: "completed" | "error";
@@ -53,7 +55,13 @@ function bucketKey(projectDir?: string): string {
 export function recordToolCall(entry: RecordInput): void {
   const { projectDir, ...rest } = entry;
   const bucket = getBucket(bucketKey(projectDir));
-  bucket.buffer.push(rest);
+  // Entries end up in `verse8_checkpoint` commit messages, which are pushed.
+  // Redact at this single entry point so every tool's input and output is
+  // covered — including inputs a tool rejected (e.g. a tokenized clone URL).
+  const safe: LoggedCall = { ...rest };
+  if ("input" in rest) safe.input = redactValue(rest.input);
+  if ("output" in rest) safe.output = redactValue(rest.output);
+  bucket.buffer.push(safe);
   if (bucket.buffer.length > CAPACITY) {
     bucket.buffer = bucket.buffer.slice(-CAPACITY);
   }
