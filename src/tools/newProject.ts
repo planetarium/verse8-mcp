@@ -9,6 +9,7 @@ import {
 import { loadToken } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 import {
+  checkCloneTargetLocal,
   cloneAndAttach,
   creditError,
   grantCloneAccess,
@@ -104,7 +105,7 @@ export type NewProjectConfirmResult =
   | ReturnType<typeof creditError>
   | {
       ok: false;
-      error: "invalid_parent";
+      error: "invalid_parent" | "missing_git";
       hint: string;
       projectPath?: string;
     }
@@ -310,6 +311,16 @@ export async function runNewProjectConfirm(
   inFlightConfirms.add(concurrencyKey);
 
   try {
+    // Local checks first: a target that cannot be cloned into must fail
+    // before the backend creates the GitLab project and mints a token.
+    const parentDir = path.resolve(input.targetDir ?? cwd);
+    const local = checkCloneTargetLocal(parentDir);
+    if (!local.ok) {
+      return input.projectPath !== undefined
+        ? { ...local, projectPath: input.projectPath }
+        : local;
+    }
+
     let projectPath: string;
     let projectId: string;
 
@@ -361,7 +372,7 @@ export async function runNewProjectConfirm(
       projectPath,
       projectId,
       cloneCommand: access.cloneCommand,
-      parentDir: path.resolve(input.targetDir ?? cwd),
+      parentDir,
       token,
     });
     if (!cloned.ok) return cloned;

@@ -158,6 +158,11 @@ test("resolveProjectRef: accepted forms resolve to the GitLab project path", () 
     [`${PROD_CREATE}/creator/editor?chat=owner%2Fmy-platformer-1abc%3Fprompt%3Dhi`, "editor_url"],
     ["create.verse8.io/creator/editor?chat=owner/my-platformer-1abc", "editor_url"],
     ["https://gitlab.verse8.io/owner/my-platformer-1abc.git", "gitlab_url"],
+    // GitLab page URLs: everything from the first `/-/` is the page, not the project.
+    ["https://gitlab.verse8.io/owner/my-platformer-1abc/-/tree/develop", "gitlab_url"],
+    ["https://gitlab.verse8.io/owner/my-platformer-1abc/-/blob/develop/src/main.ts", "gitlab_url"],
+    ["https://gitlab.verse8.io/owner/my-platformer-1abc/-/merge_requests/3", "gitlab_url"],
+    ["owner/my-platformer-1abc/-/tree/develop", "path"],
   ];
   for (const [raw, source] of cases) {
     const r = resolveProjectRef(raw, PROD_CREATE);
@@ -192,6 +197,10 @@ test("resolveProjectRef: malformed input → invalid_input without echoing crede
     `${PROD_CREATE}/creator/editor`,
     `${PROD_CREATE}/creator/editor?chat=onlyone`,
     "https://gitlab.verse8.io/onlyone",
+    // Malformed percent-encoding must be invalid_input, not a thrown URIError.
+    "https://gitlab.verse8.io/owner/bad%E0%A4%A",
+    "https://gitlab.verse8.io/owner/%",
+    `${PROD_CREATE}/creator/editor?chat=owner%2Fbad%E0%A4%A`,
   ];
   for (const raw of bad) {
     const r = resolveProjectRef(raw, PROD_CREATE);
@@ -231,11 +240,85 @@ test("open happy path: token GET+POST once, no project creation, clone + attach"
 });
 
 test("open: clone URL userinfo is stripped from the returned gitUrl", async () => {
-  // --oauth-url makes the mock return the real https://oauth2:<PAT>@ shape;
-  // the clone itself fails (unreachable), so only check the envelope.
-  await withMock(["--oauth-url"], async () => {
+  // --oauth-git-url: gitUrl in the real https://oauth2:<PAT>@ shape, while the
+  // clone command still points at the local fixture — so the call succeeds
+  // and the returned gitUrl can be asserted exactly.
+  await withMock(["--oauth-git-url"], async () => {
     const r = await runOpenProject({ project: "someone/oauth-demo", targetDir: mkTmp() });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.gitUrl, "https://gitlab.verse8.io/someone/oauth-demo.git");
     assert.ok(!JSON.stringify(r).includes("glpat-"), JSON.stringify(r));
+  });
+});
+
+test("open: a second call for the same project while one runs → open_in_flight", async () => {
+  await withMock([], async () => {
+    const a = runOpenProject({ project: "someone/race-demo", targetDir: mkTmp() });
+    const b = runOpenProject({ project: "someone/race-demo", targetDir: mkTmp() });
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(ra.ok, true, JSON.stringify(ra));
+    assert.equal(rb.ok, false);
+    assert.equal(rb.error, "open_in_flight");
+    assert.equal(calls("POST", "/api/gitlab/project-access-token"), 1, "only one token minted");
+  });
+});
+
+test("open: token limit reached → hint says where to revoke; no folder", async () => {
+  await withMock(["--token-limit"], async () => {
+    const targetDir = mkTmp();
+    const r = await runOpenProject({ project: "someone/limit-demo", targetDir });
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "token_grant_failed");
+    assert.equal(r.status, 400);
+    assert.match(r.hint, /TOKEN_LIMIT_EXCEEDED/);
+    assert.match(r.hint, /web editor, open the Git Clone menu, and Revoke/);
+    assert.match(r.hint, /Do not call the revoke API yourself/);
+    assert.ok(!fs.existsSync(path.join(targetDir, "limit-demo")));
+  });
+});
+
+test("open: other 4xx from the token grant carries no revoke hint", async () => {
+  await withMock(["--deny-token=403"], async () => {
+    const r = await runOpenProject({ project: "someone-else/x", targetDir: mkTmp() });
+    assert.doesNotMatch(r.hint, /Revoke/);
+  });
+});
+
+test("open: local targets that cannot be cloned into fail BEFORE any token request", async () => {
+  await withMock([], async () => {
+    const root = mkTmp();
+    const file = path.join(root, "a-file");
+    fs.writeFileSync(file, "x");
+    // targetDir is a file, and targetDir is under a file.
+    for (const targetDir of [file, path.join(file, "sub")]) {
+      const r = await runOpenProject({ project: "someone/local-demo", targetDir });
+      assert.equal(r.ok, false, targetDir);
+      assert.equal(r.error, "invalid_parent", `${targetDir}: ${JSON.stringify(r)}`);
+      assert.match(r.hint, /is not a directory/);
+    }
+    // A parent the user cannot write to (POSIX non-root only).
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const ro = path.join(root, "read-only");
+      fs.mkdirSync(ro);
+      fs.chmodSync(ro, 0o555);
+      try {
+        const r = await runOpenProject({ project: "someone/local-demo", targetDir: path.join(ro, "games") });
+        assert.equal(r.error, "invalid_parent", JSON.stringify(r));
+        assert.match(r.hint, /not writable/);
+      } finally {
+        fs.chmodSync(ro, 0o755);
+      }
+    }
+    // git not runnable.
+    const savedPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const r = await runOpenProject({ project: "someone/local-demo", targetDir: mkTmp() });
+      assert.equal(r.error, "missing_git", JSON.stringify(r));
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    assert.equal(readCalls().length, 0, "no backend call — no token minted");
   });
 });
 
@@ -265,6 +348,25 @@ test("open: existing clone of the same project → hint points at verse8_attach"
     const r = await runOpenProject({ project: "someone/open-demo", targetDir });
     assert.equal(r.error, "clone_target_exists");
     assert.match(r.hint, /verse8_attach/);
+  } finally {
+    delete process.env.VERSE8_ACCESS_TOKEN;
+  }
+});
+
+test("open: plain subfolder inside a clone of the same project → no verse8_attach hint", async () => {
+  const targetDir = mkTmp();
+  const repo = path.join(targetDir, "outer");
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://gitlab.verse8.io/someone/open-demo.git"]);
+  // `<repo>/open-demo` is not a repository root, but `git remote` inside it
+  // would report the outer clone's origin.
+  fs.mkdirSync(path.join(repo, "open-demo"));
+  process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+  try {
+    const r = await runOpenProject({ project: "someone/open-demo", targetDir: repo });
+    assert.equal(r.error, "clone_target_exists");
+    assert.doesNotMatch(r.hint, /verse8_attach/);
+    assert.match(r.hint, /not a clone of someone\/open-demo/);
   } finally {
     delete process.env.VERSE8_ACCESS_TOKEN;
   }

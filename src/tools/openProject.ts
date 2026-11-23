@@ -10,7 +10,7 @@ import {
   getCreateBaseUrl,
 } from "./preview.js";
 import {
-  checkParentDirSafe,
+  checkCloneTargetLocal,
   cloneAndAttach,
   grantCloneAccess,
   type CloneAndAttachResult,
@@ -53,7 +53,11 @@ const ACCEPTED_FORMS =
   "Pass one of: a project path like `owner/game-slug`, the web editor URL (`<create host>/creator/editor?chat=owner/game-slug`), or `https://gitlab.verse8.io/owner/game-slug`.";
 
 function normalizeProjectPath(raw: string): string | null {
-  const trimmed = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "");
+  // GitLab page paths put `/-/` between the project and the page
+  // (`owner/slug/-/tree/develop`, `/-/blob/…`, `/-/merge_requests/…`); `-` is
+  // never a project path segment, so everything from it on is dropped.
+  const projectPart = raw.trim().split(/\/-(?:\/|$)/)[0];
+  const trimmed = projectPart.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "");
   if (trimmed.length === 0) return null;
   const segments = trimmed.split("/");
   if (segments.length < 2) return null;
@@ -111,7 +115,13 @@ export function resolveProjectRef(
   const host = url.hostname.toLowerCase();
 
   if (host === GITLAB_HOST) {
-    const projectPath = normalizeProjectPath(decodeURIComponent(url.pathname));
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(url.pathname);
+    } catch {
+      return invalid("gitlab.verse8.io URL has malformed percent-encoding.");
+    }
+    const projectPath = normalizeProjectPath(decoded);
     if (!projectPath) return invalid("gitlab.verse8.io URL has no `owner/slug` path.");
     return { ok: true, projectPath, source: "gitlab_url" };
   }
@@ -162,7 +172,12 @@ export type OpenProjectResult =
   | Extract<ResolveProjectRefResult, { ok: false }>
   | { ok: false; error: "not_logged_in"; hint: string }
   | { ok: false; error: "open_in_flight"; hint: string; projectPath: string }
-  | { ok: false; error: "invalid_parent"; hint: string; projectPath: string }
+  | {
+      ok: false;
+      error: "invalid_parent" | "missing_git";
+      hint: string;
+      projectPath: string;
+    }
   | {
       ok: false;
       error: "clone_target_exists";
@@ -194,7 +209,12 @@ function stripCredentials(gitUrl: string | null): string {
 }
 
 function targetExists(projectDir: string, projectPath: string): OpenProjectResult {
-  const sameProject = deriveProjectPathFromOrigin(projectDir) === projectPath;
+  // Only a repository ROOT can be attached. `git remote get-url` walks up, so
+  // a plain subfolder inside some other clone of the same project would
+  // otherwise look like a match.
+  const isRepoRoot = fs.existsSync(path.join(projectDir, ".git"));
+  const sameProject =
+    isRepoRoot && deriveProjectPathFromOrigin(projectDir) === projectPath;
   return {
     ok: false,
     error: "clone_target_exists",
@@ -237,12 +257,11 @@ export async function runOpenProject(
     const parentDir = path.resolve(input.targetDir ?? cwd);
 
     // Check the folder BEFORE asking the backend for a token: every POST
-    // mints a fresh 30-day project token, so failing after it is wasteful.
+    // mints a fresh 30-day project token and the backend caps active tokens
+    // per project, so a local failure after it wastes a slot.
     // cloneAndAttach re-checks with the backend's slug afterwards.
-    const parentGuard = checkParentDirSafe(parentDir);
-    if (!parentGuard.ok) {
-      return { ok: false, error: "invalid_parent", hint: parentGuard.hint, projectPath };
-    }
+    const local = checkCloneTargetLocal(parentDir);
+    if (!local.ok) return { ...local, projectPath };
     const expectedDir = path.join(parentDir, projectPath.split("/").pop() as string);
     if (fs.existsSync(expectedDir)) return targetExists(expectedDir, projectPath);
 

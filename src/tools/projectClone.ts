@@ -5,6 +5,7 @@ import {
   createProjectAccessToken,
   getProjectAccessToken,
   parseCloneCommand,
+  tolerantJsonParse,
 } from "../api/agent8Backend.js";
 import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
@@ -54,6 +55,23 @@ export function isCreditInsufficientError(status: number, body: string): boolean
   return keywords.some((kw) => lower.includes(kw));
 }
 
+// The backend owns the per-project cap on active tokens (and puts the number
+// in its own message); we only recognise its error code and say where the
+// user can free a slot. There is deliberately no revoke call here: revoking
+// breaks pushes from every other clone made with that token, and calling the
+// backend's DELETE without a tokenId revokes them all.
+const TOKEN_LIMIT_CODE = "TOKEN_LIMIT_EXCEEDED";
+const TOKEN_LIMIT_HINT =
+  "This project already has the maximum number of active access tokens. To free one: open this game in the Verse8 web editor, open the Git Clone menu, and Revoke a token that is no longer used, then retry. A revoked token stops every other folder cloned with it from pushing, so let the user choose which one to revoke. Do not call the revoke API yourself.";
+
+function isTokenLimitExceeded(body: string): boolean {
+  const parsed = tolerantJsonParse<{ error?: unknown; code?: unknown }>(body);
+  if (parsed && typeof parsed === "object") {
+    return parsed.error === TOKEN_LIMIT_CODE || parsed.code === TOKEN_LIMIT_CODE;
+  }
+  return body.includes(TOKEN_LIMIT_CODE);
+}
+
 export type GrantCloneAccessResult =
   | {
       ok: true;
@@ -101,10 +119,11 @@ export async function grantCloneAccess(
     if (isCreditInsufficientError(created.status, created.body)) {
       return creditError(created.status, created.body);
     }
+    const base = `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`;
     return {
       ok: false,
       error: "token_grant_failed",
-      hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
+      hint: isTokenLimitExceeded(created.body) ? `${base}\n${TOKEN_LIMIT_HINT}` : base,
       status: created.status,
     };
   }
@@ -341,6 +360,75 @@ export async function cloneAndAttach(
   }
 
   return { ok: true, projectDir, branch: parsed.branch };
+}
+
+export type CloneTargetCheckResult =
+  | { ok: true }
+  | { ok: false; error: "invalid_parent" | "missing_git"; hint: string };
+
+/**
+ * Local checks that must pass BEFORE a project token is requested (or, for
+ * new-project, before the GitLab project is created): every request mints a
+ * fresh 30-day token and the backend caps the active tokens per project, so
+ * a clone that is bound to fail locally must not spend one.
+ *
+ * Checks: the symlink-parent guard; the nearest existing component of
+ * `parentDir` is a directory (not a file) and writable, so `mkdir -p` and
+ * `git clone` can create the folder; `git` runs.
+ */
+export function checkCloneTargetLocal(parentDir: string): CloneTargetCheckResult {
+  const guard = checkParentDirSafe(parentDir);
+  if (!guard.ok) return { ok: false, error: "invalid_parent", hint: guard.hint };
+
+  let cur = parentDir;
+  for (;;) {
+    let st: fs.Stats | null = null;
+    try {
+      st = fs.statSync(cur);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        return {
+          ok: false,
+          error: "invalid_parent",
+          hint: safeHint(`cannot inspect ${cur}: ${(e as Error).message}`),
+        };
+      }
+    }
+    if (st) {
+      if (!st.isDirectory()) {
+        return {
+          ok: false,
+          error: "invalid_parent",
+          hint: `${cur} exists and is not a directory, so nothing can be cloned under ${parentDir}. Pass a targetDir that is (or can be created as) a folder.`,
+        };
+      }
+      try {
+        fs.accessSync(cur, fs.constants.W_OK);
+      } catch {
+        return {
+          ok: false,
+          error: "invalid_parent",
+          hint: `${cur} is not writable, so nothing can be cloned under ${parentDir}. Pass a targetDir you can write to.`,
+        };
+      }
+      break;
+    }
+    const up = path.dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+  } catch {
+    return {
+      ok: false,
+      error: "missing_git",
+      hint: "`git` could not be run (not installed or not on PATH). Install git, then retry.",
+    };
+  }
+  return { ok: true };
 }
 
 /**

@@ -15,12 +15,26 @@ it grants a project token, clones
 branch `develop` into `<targetDir>/<slug>`, and attaches (hooks, AGENTS.md,
 skills, `.env`). `project` is a project path (`owner/game-slug`), the web
 editor URL (`…/creator/editor?chat=owner/game-slug`), or a gitlab.verse8.io
-URL. An editor URL from another Verse8 environment than the server's
-`VERSE8_CREATE_URL` returns `environment_mismatch`; an existing target
-folder returns `clone_target_exists` before any token is granted; a project
-you cannot access returns the backend's status and message as
-`token_check_failed` / `token_grant_failed`. The token and clone steps are
-shared with `verse8_new_project_confirm`, whose behaviour is unchanged.
+URL (GitLab page URLs such as `…/-/tree/develop` resolve to the project).
+An editor URL from another Verse8 environment than the server's
+`VERSE8_CREATE_URL` returns `environment_mismatch`. Before any token is
+granted, an existing target folder returns `clone_target_exists`, and a
+target that is a file, sits under a file or is not writable returns
+`invalid_parent` (`missing_git` when git cannot run). A project you cannot
+access returns the backend's status and message as `token_check_failed` /
+`token_grant_failed`; when the project's active-token limit is reached the
+hint says where to revoke an unused token (the web editor's Git Clone menu).
+
+The token and clone steps are shared with `verse8_new_project_confirm`.
+Confirm now runs the same local checks before it creates the GitLab project,
+so a bad `targetDir` no longer leaves a new project and a token behind.
+
+### Fixed — no secrets in checkpoint commit messages from recorded tool calls
+
+Every recorded tool call (input and output) is redacted when it is recorded,
+before `verse8_checkpoint` folds it into the pushed commit message. A
+tokenized clone URL passed to any tool — even one the tool rejected — no
+longer ends up in git history.
 
 ## [0.9.1] — 2026-11-06
 
