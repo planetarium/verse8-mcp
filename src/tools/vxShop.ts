@@ -2,14 +2,14 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { CONFIRM_NEXT, apiFail, diff, mediaPath, opFail, type OpFail } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
 /**
  * `verse8_vxshop` — the creator page's VX Shop tab: seller status, item
  * list, create / edit items. Changing actions preview by default and run
- * only with `confirm: true`.
+ * only with the planId their preview returned (creatorOps plan gate).
  *
  * Backend traps this tool closes (g2-sync vxShop.service.ts):
  *  - an update without `purchaseConstraints` DELETES the item's purchase
@@ -38,13 +38,10 @@ export const vxShopInputSchema = z
   .object({
     action: z
       .enum(ACTIONS)
-      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless confirm. sales: purchases (paged; by item; disputes only). revenue: VX totals and refunds for a period. archive: archive / restore an item (preview unless confirm). dispute: answer a buyer's dispute (preview unless confirm)."),
+      .describe("list: seller status + items (with parsed purchase limits). upsert: create an item (no itemId) or edit one (itemId) — preview unless planId. sales: purchases (paged; by item; disputes only). revenue: VX totals and refunds for a period. archive: archive / restore an item (preview unless planId). dispute: answer a buyer's dispute (preview unless planId)."),
     projectDir: projectDirField,
     verseId: verseIdField,
-    confirm: z
-      .boolean()
-      .default(false)
-      .describe("upsert, archive and dispute only run with true. Without it, they return the planned body / `changes` and change nothing — show them to the user first."),
+    planId: planIdField,
     includeArchived: z.boolean().optional().describe("list: include archived items."),
     page: z.number().int().min(1).optional().describe("list: page (default 1)."),
     limit: z.number().int().min(1).max(100).optional().describe("list: page size (default 20)."),
@@ -54,7 +51,7 @@ export const vxShopInputSchema = z
     price: z.number().int().min(0).optional().describe("upsert: price in VX (integer)."),
     stock: z.number().int().min(0).optional().describe("upsert: units available; 0 = out of stock. Required on create."),
     description: z.string().max(5000).optional().describe("upsert: item description."),
-    imagePath: z.string().min(1).optional().describe("upsert: local item image (png/jpg/gif/webp ≤4 MB), uploaded on confirm."),
+    imagePath: z.string().min(1).optional().describe("upsert: local item image (png/jpg/gif/webp ≤4 MB), uploaded when it runs."),
     imageUrl: z.string().url().max(500).optional().describe("upsert: already-hosted image URL."),
     metadata: z
       .record(z.unknown())
@@ -235,9 +232,17 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     if (isActive) warnings.push(`The item goes on sale immediately at ${input.price} VX.`);
     else warnings.push("Created hidden (isActive: false). Set isActive: true later to sell it.");
     if (input.stock === 0) warnings.push("stock 0: the item shows as out of stock.");
-    if (!input.confirm) return { ok: true, action: "upsert", mode: "create", dryRun: true, verseId, body, warnings, next: CONFIRM_NEXT };
+    // Nothing to read for an item that does not exist yet: the body (and image) is the plan.
+    const plan: Plan = {
+      op: "verse8_vxshop.upsert.create",
+      target: { verseId, productId: input.productId },
+      body,
+      files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
+    };
+    const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings });
+    if (!isApproved(gate)) return gate;
     if (input.imagePath) {
-      const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY);
+      const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
       if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
       body.imageUrl = up.url;
     }
@@ -279,11 +284,30 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (active) warnings.push(active.to ? "The item goes on sale." : "The item stops selling.");
   if (input.clearPurchaseConstraints && parsed.purchaseConstraints) warnings.push("All purchase limits are removed.");
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
-  if (!input.confirm) {
-    return { ok: true, action: "upsert", mode: "edit", dryRun: true, verseId, itemId: cur.id, changes, body, warnings, next: CONFIRM_NEXT };
-  }
+  // The current value of every field asked about; the limits and the
+  // archived flag are always read (re-sent / warned about).
+  const state: Record<string, unknown> = { purchaseConstraints: parsed.purchaseConstraints, isArchived: cur.isArchived };
+  const asked: Array<[string, unknown, unknown]> = [
+    ["name", input.name, cur.name],
+    ["price", input.price, cur.price],
+    ["stock", input.stock, cur.stock],
+    ["imageUrl", imageTo, cur.imageUrl],
+    ["description", input.description, cur.description],
+    ["isActive", input.isActive, cur.isActive],
+    ["metadata", input.metadata, parsed.metadata],
+  ];
+  for (const [field, given, now] of asked) if (given !== undefined) state[field] = now ?? null;
+  const plan: Plan = {
+    op: "verse8_vxshop.upsert.edit",
+    target: { verseId, itemId: cur.id },
+    body,
+    state,
+    files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
+  };
+  const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings });
+  if (!isApproved(gate)) return gate;
   if (input.imagePath) {
-    const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY);
+    const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
     if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
     body.imageUrl = up.url;
   }
@@ -350,19 +374,34 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
   if (!found.ok) return found;
   const cur = found.item;
   const want = input.archived ?? true;
-  if (cur.isArchived === want) {
-    return { ok: true, action: "archive", dryRun: !input.confirm, verseId, itemId: cur.id, archived: want, unchanged: true };
-  }
   // Same trap as upsert: without purchaseConstraints the server deletes them.
   const { purchaseConstraints } = parseItemMetadata(cur.metadata);
   const body: Record<string, unknown> = { isArchived: want };
   if (purchaseConstraints) body.purchaseConstraints = purchaseConstraints;
+  const plan: Plan = {
+    op: "verse8_vxshop.archive",
+    target: { verseId, itemId: cur.id },
+    body,
+    state: { isArchived: cur.isArchived, isActive: cur.isActive },
+  };
+  if (cur.isArchived === want) {
+    // A preview never hands out a planId for this state, so a given one is stale.
+    const stale = input.planId === undefined ? null : checkPlan(plan, input.planId);
+    if (stale && !isApproved(stale)) return stale;
+    return { ok: true, action: "archive", dryRun: input.planId === undefined, verseId, itemId: cur.id, archived: want, unchanged: true };
+  }
   const warnings = want
     ? ["Archived items are not sold and are hidden from buyers; restore brings them back. Its productId stays reserved."]
     : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`];
-  if (!input.confirm) {
-    return { ok: true, action: "archive", dryRun: true, verseId, itemId: cur.id, changes: [{ field: "isArchived", from: cur.isArchived, to: want }], body, warnings, next: CONFIRM_NEXT };
-  }
+  const gate = planGate(plan, input.planId, {
+    action: "archive" as const,
+    verseId,
+    itemId: cur.id,
+    changes: [{ field: "isArchived", from: cur.isArchived, to: want }],
+    body,
+    warnings,
+  });
+  if (!isApproved(gate)) return gate;
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
   return { ok: true, action: "archive", dryRun: false, verseId, item: r.data ? presentItem(r.data) : null, warnings };
@@ -397,19 +436,25 @@ async function runDispute(input: VxShopInput, verseId: string, token: string): P
     "The buyer gets an in-app notification of this answer.",
     "Resolving a dispute does not refund the VX (refunds are not available from this tool).",
   ];
-  if (!input.confirm) {
-    return {
-      ok: true,
-      action: "dispute",
-      dryRun: true,
-      verseId,
-      sale,
-      changes: [{ field: "disputeStatus", from: sale.disputeStatus ?? null, to: input.disputeStatus }],
-      body,
-      warnings,
-      next: CONFIRM_NEXT,
-    };
-  }
+  const plan: Plan = {
+    op: "verse8_vxshop.dispute",
+    target: { verseId, saleId: input.saleId },
+    body,
+    state: {
+      disputeStatus: sale.disputeStatus ?? null,
+      disputeMessage: sale.disputeMessage ?? null,
+      disputeResponseMessage: sale.disputeResponseMessage ?? null,
+    },
+  };
+  const gate = planGate(plan, input.planId, {
+    action: "dispute" as const,
+    verseId,
+    sale,
+    changes: [{ field: "disputeStatus", from: sale.disputeStatus ?? null, to: input.disputeStatus }],
+    body,
+    warnings,
+  });
+  if (!isApproved(gate)) return gate;
   const r = await v8Request<{ success: boolean }>("PUT", `/v1/vx-shop-items/sales/${input.saleId}/dispute`, { token, body });
   if (!r.ok) return apiFail(`PUT sales/${input.saleId}/dispute`, r);
   return { ok: true, action: "dispute", dryRun: false, verseId, saleId: input.saleId, disputeStatus: input.disputeStatus, warnings };

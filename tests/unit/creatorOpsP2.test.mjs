@@ -45,6 +45,17 @@ const writes = (calls) => calls.filter((c) => c.method !== "GET");
 const V = (dir, i) => runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...i }), dir);
 const X = (dir, i) => runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...i }), dir);
 
+// Preview, then run with the planId the preview returned (as a host does
+// after the user approved). Without a planId (refusal / no-op) the preview's
+// answer is returned.
+const planned = (runner) => async (dir, input) => {
+  const pre = await runner(dir, input);
+  if (!pre.planId) return pre;
+  return runner(dir, { ...input, planId: pre.planId });
+};
+const VP = planned(V);
+const XP = planned(X);
+
 const PRIVATE_REVIEWED = { verseId: VERSE, isOwner: true, visibility: "Private", tag: ["RPG", "__review_required"], title: "Game" };
 
 // ── visibility ──
@@ -56,7 +67,7 @@ test("visibilityWarnings: per target, plus the review warning for a __review_req
   assert.equal(visibilityWarnings({ visibility: "Private", tag: ["RPG"] }, "Unlisted").some((x) => /review/.test(x)), false);
 });
 
-test("update visibility: preview sends the new visibility; after confirm a PRIVATE_REVIEW answer is reported", async () => {
+test("update visibility: preview sends the new visibility; once run, a PRIVATE_REVIEW answer is reported", async () => {
   const dir = project();
   await withApi(
     {
@@ -69,7 +80,7 @@ test("update visibility: preview sends the new visibility; after confirm a PRIVA
       assert.equal(pre.keptVisibility, undefined);
       assert.ok(pre.warnings.some((w) => /PRIVATE_REVIEW/.test(w)));
       assert.deepEqual(writes(calls), []);
-      const done = await V(dir, { action: "update", visibility: "Public", confirm: true });
+      const done = await VP(dir, { action: "update", visibility: "Public" });
       assert.equal(done.reviewStatus, "PRIVATE_REVIEW");
       assert.ok(done.warnings.some((w) => /stays hidden/.test(w)));
       assert.deepEqual(writes(calls)[0].body, { visibility: "Public", sendNotificationToFollowers: false });
@@ -102,14 +113,14 @@ test("comments: list with pinned comment, authors trimmed", async () => {
   });
 });
 
-test("comment_pin: preview → confirm POSTs the toggle once; replacing a pin is warned", async () => {
+test("comment_pin: preview → run POSTs the toggle once; replacing a pin is warned", async () => {
   const dir = project();
   await withApi(commentRoutes({ pinned: cm(2) }), async (calls) => {
     const pre = await V(dir, { action: "comment_pin", commentId: 1 });
     assert.deepEqual(pre.changes, [{ field: "pinned", from: false, to: true }]);
     assert.ok(pre.warnings.some((w) => /Replaces the current pin \(comment 2\)/.test(w)));
     assert.deepEqual(writes(calls), []);
-    const done = await V(dir, { action: "comment_pin", commentId: 1, confirm: true });
+    const done = await VP(dir, { action: "comment_pin", commentId: 1 });
     assert.equal(done.pinned, true);
     assert.equal(writes(calls).length, 1);
   });
@@ -118,12 +129,12 @@ test("comment_pin: preview → confirm POSTs the toggle once; replacing a pin is
 test("comment_pin: already in the wanted state → no call (the route would toggle it back)", async () => {
   const dir = project();
   await withApi(commentRoutes({ pinned: cm(2) }), async (calls) => {
-    const r = await V(dir, { action: "comment_pin", commentId: 2, pinned: true, confirm: true });
+    const r = await VP(dir, { action: "comment_pin", commentId: 2, pinned: true });
     assert.equal(r.unchanged, true);
-    const u = await V(dir, { action: "comment_pin", commentId: 1, pinned: false, confirm: true });
+    const u = await VP(dir, { action: "comment_pin", commentId: 1, pinned: false });
     assert.equal(u.unchanged, true);
     assert.deepEqual(writes(calls), []);
-    const unpin = await V(dir, { action: "comment_pin", commentId: 2, pinned: false, confirm: true });
+    const unpin = await VP(dir, { action: "comment_pin", commentId: 2, pinned: false });
     assert.equal(unpin.pinned, false);
     assert.equal(writes(calls).length, 1);
   });
@@ -139,7 +150,7 @@ test("comment_pin: a reply cannot be pinned; unknown / missing ids refused", asy
   });
 });
 
-test("comment_delete: preview shows the comment and the irreversibility; confirm → DELETE (204 is success)", async () => {
+test("comment_delete: preview shows the comment and the irreversibility; run → DELETE (204 is success)", async () => {
   const dir = project();
   await withApi(commentRoutes({ pinned: cm(1) }), async (calls) => {
     const pre = await V(dir, { action: "comment_delete", commentId: 1 });
@@ -147,7 +158,7 @@ test("comment_delete: preview shows the comment and the irreversibility; confirm
     assert.ok(pre.warnings.some((w) => /irreversible/.test(w)));
     assert.ok(pre.warnings.some((w) => /gets unpinned/.test(w)));
     assert.deepEqual(writes(calls), []);
-    const done = await V(dir, { action: "comment_delete", commentId: 1, confirm: true });
+    const done = await VP(dir, { action: "comment_delete", commentId: 1 });
     assert.equal(done.ok, true, JSON.stringify(done));
     assert.equal(done.deleted, 1);
   });
@@ -175,9 +186,9 @@ test("archive: keeps the purchase limits in the PUT; restore of a non-archived i
     const pre = await X(dir, { action: "archive", itemId: 7 });
     assert.deepEqual(pre.body, { isArchived: true, purchaseConstraints: { maxPurchasePerUser: 1 } });
     assert.deepEqual(writes(calls), []);
-    await X(dir, { action: "archive", itemId: 7, confirm: true });
+    await XP(dir, { action: "archive", itemId: 7 });
     assert.deepEqual(writes(calls)[0].body, { isArchived: true, purchaseConstraints: { maxPurchasePerUser: 1 } });
-    const noop = await X(dir, { action: "archive", itemId: 7, archived: false, confirm: true });
+    const noop = await XP(dir, { action: "archive", itemId: 7, archived: false });
     assert.equal(noop.unchanged, true);
     assert.equal(writes(calls).length, 1);
   });
@@ -185,7 +196,7 @@ test("archive: keeps the purchase limits in the PUT; restore of a non-archived i
 
 const DISPUTED = { id: 55, shopItemId: 7, status: "completed", disputeStatus: "REQUEST", disputeMessage: "not received", buyer: { uid: "1", walletAddress: "0x1", handle: "b" }, item: { id: 7, productId: "p", name: "n" } };
 
-test("dispute: preview shows the sale and warns the buyer is notified / no refund; confirm PUTs status + message", async () => {
+test("dispute: preview shows the sale and warns the buyer is notified / no refund; run PUTs status + message", async () => {
   const dir = project();
   await withApi(
     shopRoutes({
@@ -199,7 +210,7 @@ test("dispute: preview shows the sale and warns the buyer is notified / no refun
       assert.ok(pre.warnings.some((w) => /does not refund/.test(w)));
       assert.equal(calls[0].query.get("disputeOnly"), "true");
       assert.deepEqual(writes(calls), []);
-      const done = await X(dir, { action: "dispute", saleId: 55, disputeStatus: "RESOLVED", responseMessage: "Sent again", confirm: true });
+      const done = await XP(dir, { action: "dispute", saleId: 55, disputeStatus: "RESOLVED", responseMessage: "Sent again" });
       assert.equal(done.ok, true);
       assert.deepEqual(writes(calls)[0].body, { status: "RESOLVED", responseMessage: "Sent again" });
     },
@@ -210,7 +221,7 @@ test("dispute: missing inputs / no such dispute refused without a write", async 
   const dir = project();
   await withApi(shopRoutes({ "GET /v1/vx-shop-items/sales": () => json(200, { sales: [], total: 0 }) }), async (calls) => {
     assert.equal((await X(dir, { action: "dispute", saleId: 55 })).error, "invalid_input");
-    assert.equal((await X(dir, { action: "dispute", saleId: 55, disputeStatus: "IGNORE", confirm: true })).error, "not_found");
+    assert.equal((await XP(dir, { action: "dispute", saleId: 55, disputeStatus: "IGNORE" })).error, "not_found");
     assert.deepEqual(writes(calls), []);
   });
 });

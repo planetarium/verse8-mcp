@@ -1,6 +1,6 @@
 // verse8_verse: read / edit a published verse's listing and release notes.
 // fetch is mocked. Changing actions must not call any write route without
-// confirm, and an update must always carry the current visibility.
+// the preview's planId, and an update must always carry the current visibility.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -75,6 +75,16 @@ async function withApi(routes, f) {
 const run = (dir, input) => runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...input }), dir);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
+// Preview, then run with the planId the preview returned (as a host does
+// after the user approved). Without a planId (refusal / no-op) the preview's
+// answer is returned.
+const planned = (runner) => async (dir, input) => {
+  const pre = await runner(dir, input);
+  if (!pre.planId) return pre;
+  return runner(dir, { ...input, planId: pre.planId });
+};
+const runP = planned(run);
+
 test("get: owner listing, trimmed (no ad-unit / admin fields)", async () => {
   const dir = project();
   await withApi({ "GET /v1/verse/verseId": () => json(200, LIVE) }, async (calls) => {
@@ -108,7 +118,7 @@ test("mine: works without a verse in .env; asks for review info", async () => {
   );
 });
 
-test("update without confirm: preview only — changes listed, current visibility kept, no write call", async () => {
+test("update without planId: preview only — changes listed, current visibility kept, no write call", async () => {
   const dir = project();
   await withApi({ "GET /v1/verse/verseId": () => json(200, LIVE) }, async (calls) => {
     const r = await run(dir, { action: "update", title: "New title", tags: ["RPG", "Puzzle"], orientation: "auto", thumbnailPath: "cover.png" });
@@ -123,13 +133,14 @@ test("update without confirm: preview only — changes listed, current visibilit
     assert.equal(r.publishBody.sendNotificationToFollowers, false);
     assert.deepEqual(r.publishBody.tag, ["RPG", "Puzzle"]);
     assert.equal(r.publishBody.playUrl, undefined);
-    assert.match(r.next, /confirm: true/);
+    assert.match(r.next, /planId/);
+    assert.match(r.planId, /^v1\./);
     assert.ok(r.warnings.some((w) => /theme colors/.test(w)));
     assert.deepEqual(writes(calls), []);
   });
 });
 
-test("update with confirm: uploads the cover, then POSTs only changed fields + current visibility (never playUrl / isPublic)", async () => {
+test("update with the preview's planId: uploads the cover, then POSTs only changed fields + current visibility (never playUrl / isPublic)", async () => {
   const dir = project();
   await withApi(
     {
@@ -138,7 +149,7 @@ test("update with confirm: uploads the cover, then POSTs only changed fields + c
       [`POST /v1/verse/update/${VERSE}`]: (_u, body) => json(201, { ...LIVE, ...body, reviewStatus: "PASSED" }),
     },
     async (calls) => {
-      const r = await run(dir, { action: "update", title: "New title", thumbnailPath: "cover.png", allowRemix: true, confirm: true });
+      const r = await runP(dir, { action: "update", title: "New title", thumbnailPath: "cover.png", allowRemix: true });
       assert.equal(r.ok, true, JSON.stringify(r));
       const post = calls.find((c) => c.path === `/v1/verse/update/${VERSE}`);
       assert.deepEqual(post.body, {
@@ -182,7 +193,7 @@ test("update: a 400 from the API surfaces its message", async () => {
       [`POST /v1/verse/update/${VERSE}`]: () => json(400, { message: ["tag must be an array"] }),
     },
     async () => {
-      const r = await run(dir, { action: "update", title: "New title", confirm: true });
+      const r = await runP(dir, { action: "update", title: "New title" });
       assert.equal(r.error, "bad_request");
       assert.match(r.hint, /tag must be an array/);
     },
@@ -203,7 +214,7 @@ test("release_notes: paged list passes through", async () => {
 
 const NOTE = { id: 92, buildVersion: 3, title: "v3", releaseTypes: ["New"], description: "first", imageUrl: "https://i/x.png", userUid: "100012", createdAt: "t" };
 
-test("release_note_update preview → confirm: PUT only the changed fields; clear image sends null", async () => {
+test("release_note_update preview → run: PUT only the changed fields; clear image sends null", async () => {
   const dir = project();
   await withApi(
     {
@@ -216,7 +227,7 @@ test("release_note_update preview → confirm: PUT only the changed fields; clea
       assert.equal(pre.dryRun, true);
       assert.deepEqual(pre.warnings, []);
       assert.deepEqual(writes(calls), []);
-      const done = await run(dir, { action: "release_note_update", buildVersion: 3, releaseNoteTitle: "v3.1", clearReleaseNoteImage: true, confirm: true });
+      const done = await runP(dir, { action: "release_note_update", buildVersion: 3, releaseNoteTitle: "v3.1", clearReleaseNoteImage: true });
       assert.equal(done.ok, true, JSON.stringify(done));
       const put = writes(calls);
       assert.equal(put.length, 1);
@@ -247,10 +258,11 @@ test("schema: 1–3 release note types, title 4–50, tags ≤5", () => {
   assert.throws(() => verseOpsInputSchema.parse({ action: "release_note_update", releaseNoteTypes: ["New", "Events", "Balance", "BugFixes"] }));
   assert.throws(() => verseOpsInputSchema.parse({ action: "update", title: "abc" }));
   assert.throws(() => verseOpsInputSchema.parse({ action: "update", tags: ["a", "b", "c", "d", "e", "f"] }));
-  assert.equal(verseOpsInputSchema.parse({ action: "get" }).confirm, false);
+  assert.equal(verseOpsInputSchema.parse({ action: "get" }).planId, undefined);
+  assert.throws(() => verseOpsInputSchema.parse({ action: "update", title: "abcd", confirm: true }), /confirm/);
 });
 
-test("tools/list: verse8_verse listed, description ≤ 2,048 chars and mentions the confirm gate", async () => {
+test("tools/list: verse8_verse listed, description ≤ 2,048 chars and states the planId gate", async () => {
   const saved = { tok: process.env.VERSE8_ACCESS_TOKEN, fetch: globalThis.fetch };
   process.env.VERSE8_ACCESS_TOKEN = "tok";
   globalThis.fetch = async () => json(503, {});
@@ -259,7 +271,9 @@ test("tools/list: verse8_verse listed, description ≤ 2,048 chars and mentions 
     const t = tools.find((x) => x.name === "verse8_verse");
     assert.ok(t);
     assert.ok(t.description.length <= 2048, String(t.description.length));
-    assert.match(t.description, /confirm: true/);
+    assert.match(t.description, /planId/);
+    assert.equal(t.inputSchema.properties.confirm, undefined);
+    assert.equal(t.inputSchema.properties.planId.type, "string");
   } finally {
     globalThis.fetch = saved.fetch;
     if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;

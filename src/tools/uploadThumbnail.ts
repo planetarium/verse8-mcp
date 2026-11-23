@@ -72,7 +72,11 @@ export function validateLocalMedia(absPath: string, expect?: MediaKind): MediaVa
     return fail("file_not_found", `cannot stat ${absPath}`);
   }
   if (!stat.isFile()) return fail("file_not_regular", `${absPath} is not a regular file`);
+  return checkMedia(absPath, stat.size, expect);
+}
 
+/** Extension / kind / size checks of a media file of `size` bytes named `absPath`. */
+function checkMedia(absPath: string, size: number, expect?: MediaKind): MediaValidation {
   const ext = path.extname(absPath).toLowerCase();
   const kind: MediaKind | null = IMAGE_CONTENT_TYPES[ext]
     ? "image"
@@ -90,31 +94,34 @@ export function validateLocalMedia(absPath: string, expect?: MediaKind): MediaVa
   }
   const contentType = kind === "image" ? IMAGE_CONTENT_TYPES[ext] : VIDEO_CONTENT_TYPES[ext];
   const limit = kind === "image" ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES;
-  if (stat.size > limit) {
-    return fail("media_too_large", `${path.basename(absPath)} is ${stat.size} bytes; ${kind} limit is ${limit} bytes`, {
-      sizeBytes: stat.size,
+  if (size > limit) {
+    return fail("media_too_large", `${path.basename(absPath)} is ${size} bytes; ${kind} limit is ${limit} bytes`, {
+      sizeBytes: size,
       limitBytes: limit,
     });
   }
-  return { ok: true, kind, sizeBytes: stat.size, contentType };
+  return { ok: true, kind, sizeBytes: size, contentType };
 }
 
 /**
  * Validate + upload one local media file. Shared by verse8_upload_thumbnail
  * and verse8_deploy (thumbnailPath / videoPath). `expect` pins the kind when
- * the caller slot only accepts one (imageUrl vs videoUrl).
+ * the caller slot only accepts one (imageUrl vs videoUrl). `bytes`: send
+ * these instead of reading `absPath` (the content a planId was checked
+ * against); `absPath` then only names the file and its type.
  */
 export async function uploadLocalMedia(
   absPath: string,
   token: string,
   expect?: MediaKind,
   category?: MediaCategory,
+  bytes?: Buffer<ArrayBuffer>,
 ): Promise<UploadThumbnailResult> {
-  const checked = validateLocalMedia(absPath, expect);
+  const checked = bytes ? checkMedia(absPath, bytes.length, expect) : validateLocalMedia(absPath, expect);
   if (!checked.ok) return checked;
   const { kind, sizeBytes, contentType } = checked;
 
-  const blob = new Blob([fs.readFileSync(absPath)], { type: contentType });
+  const blob = new Blob([bytes ?? fs.readFileSync(absPath)], { type: contentType });
   const resp =
     kind === "image"
       ? await uploadVerseImage({ file: blob, filename: path.basename(absPath), token, category })
