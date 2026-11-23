@@ -16,7 +16,7 @@ import {
   tolerantJsonParse,
   uploadAttachment,
 } from "../../dist/api/agent8Backend.js";
-import { pickString } from "../../dist/tools/newProject.js";
+import { pickString } from "../../dist/tools/projectClone.js";
 
 const ENV_KEY = "VERSE8_AGENT8_BACKEND_URL";
 

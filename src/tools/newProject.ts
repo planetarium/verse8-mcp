@@ -1,22 +1,19 @@
-import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import {
-  createProjectAccessToken,
-  getProjectAccessToken,
-  parseCloneCommand,
   selectTemplate,
   startCall,
   type StartCallBody,
 } from "../api/agent8Backend.js";
 import { loadToken } from "../context/token.js";
-import { verifyToken } from "../api/v8MemeApi.js";
-import { applyAttachmentArtifacts } from "./attach.js";
-import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
-import { CREDIT_RECHARGE_URL } from "../constants.js";
+import {
+  cloneAndAttach,
+  creditError,
+  grantCloneAccess,
+  isCreditInsufficientError,
+} from "./projectClone.js";
 
 /**
  * `verse8_new_project_{start,confirm}` — two-phase project-creation flow.
@@ -58,40 +55,6 @@ export const newProjectConfirmInputSchema = z
 export type NewProjectConfirmInput = z.infer<
   typeof newProjectConfirmInputSchema
 >;
-
-function creditError(
-  status: number,
-  body: string,
-): { ok: false; error: "insufficient_credits"; hint: string; status: number } {
-  return {
-    ok: false,
-    error: "insufficient_credits",
-    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${body.slice(0, 500)})`,
-    status,
-  };
-}
-
-function isCreditInsufficientError(status: number, body: string): boolean {
-  if (status === 402) return true;
-  const lower = body.toLowerCase();
-  const keywords = [
-    "insufficient credit",
-    "insufficient fund",
-    "not enough credit",
-    "not enough fund",
-    "no credit",
-    "no fund",
-    "zero credit",
-    "zero fund",
-    "credit limit",
-    "check your credit",
-    "out of credit",
-    "recharge",
-    "top up",
-    "top-up",
-  ];
-  return keywords.some((kw) => lower.includes(kw));
-}
 
 export type NewProjectStartResult =
   | {
@@ -391,366 +354,29 @@ export async function runNewProjectConfirm(
       projectId = String(project.id ?? "unknown");
     }
 
-    const check = await getProjectAccessToken(projectPath, token);
-    if (!check.ok) {
-      if (isCreditInsufficientError(check.status, check.body)) {
-        return creditError(check.status, check.body);
-      }
-      return {
-        ok: false,
-        error: "token_check_failed",
-        hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
-        status: check.status,
-      };
-    }
+    const access = await grantCloneAccess(projectPath, token);
+    if (!access.ok) return access;
 
-    // The GET endpoint currently only reports PAT existence — it doesn't
-    // hand back a usable cloneCommand — so we always POST to get the
-    // token + clone URL. The hasToken bit is kept as an observable signal
-    // for future plumbing; the behavioural path is the same today.
-    const created = await createProjectAccessToken(projectPath, token);
-    if (!created.ok) {
-      if (isCreditInsufficientError(created.status, created.body)) {
-        return creditError(created.status, created.body);
-      }
-      return {
-        ok: false,
-        error: "token_grant_failed",
-        hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`,
-        status: created.status,
-      };
-    }
-
-    // Response-shape tolerance:
-    // The agent8-backend POST /api/gitlab/project-access-token response has
-    // drifted across environments — we've seen `cloneCommand`/`gitUrl` at the
-    // top level (camelCase), snake_case (`clone_command`/`git_url`), and
-    // occasionally one layer of nesting (`{data: {...}}` or `{result: {...}}`).
-    // Instead of pinning the parser to one shape, pick each field with
-    // `pickString` which tries a small list of sensible paths and returns
-    // the first non-empty string it finds.
-    const rawClone = pickString(created.data, [
-      "cloneCommand",
-      "clone_command",
-      "data.cloneCommand",
-      "data.clone_command",
-      "result.cloneCommand",
-      "result.clone_command",
-    ]);
-    const rawGitUrl = pickString(created.data, [
-      "gitUrl",
-      "git_url",
-      "cloneUrl",
-      "clone_url",
-      "data.gitUrl",
-      "data.git_url",
-      "result.gitUrl",
-      "result.git_url",
-    ]);
-    const rawExpiresAt = pickString(created.data, [
-      "expiresAt",
-      "expires_at",
-      "data.expiresAt",
-      "data.expires_at",
-    ]);
-
-    let cloneCommand = "";
-    if (rawClone) {
-      cloneCommand = rawClone;
-    } else if (rawGitUrl) {
-      // Synthesize from gitUrl — covers "backend re-issue" path (hasToken true
-      // returns token + gitUrl but no pre-formatted cloneCommand) AND any
-      // environment where the server just stopped emitting cloneCommand.
-      const synthesizedSlug =
-        projectPath.split("/").filter(Boolean).pop() ?? "repo";
-      cloneCommand = `git clone -b develop ${rawGitUrl} ${synthesizedSlug}`;
-    } else {
-      // Still no URL anywhere — surface the available keys in the hint so a
-      // follow-up session can narrow the schema drift without having to log
-      // the full body separately.
-      return {
-        ok: false,
-        error: "token_grant_failed",
-        hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: response body carries neither cloneCommand/clone_command nor gitUrl/git_url at any known path. Observed top-level keys: ${describeKeys(created.data)}. Body head: ${JSON.stringify(created.data).slice(0, 500)}`,
-        status: created.status,
-      };
-    }
-    const gitUrl: string | null = rawGitUrl ?? null;
-    const tokenExpiresAt: string | undefined = rawExpiresAt ?? undefined;
-
-    const parentDir = path.resolve(input.targetDir ?? cwd);
-
-    // Symlink-parent guard (US-M0-5). Reject when any non-realpath segment
-    // of `parentDir` is a symlink, because cloning into a symlinked
-    // directory tree is a TOCTOU vector — between resolution and
-    // `git clone`, the symlink target could be swapped to point at a
-    // sensitive location. macOS `/tmp → /private/tmp` is a legitimate OS-
-    // canonical equivalence and is allowed by re-validating the resolved
-    // path is itself traversal-free.
-    const parentGuard = checkParentDirSafe(parentDir);
-    if (!parentGuard.ok) {
-      return {
-        ok: false,
-        error: "invalid_parent",
-        hint: parentGuard.hint,
-        projectPath,
-      };
-    }
-
-    let parsed;
-    try {
-      parsed = parseCloneCommand(cloneCommand);
-    } catch (e) {
-      // parseCloneCommand already calls truncate() which redacts glpat-*,
-      // but defense-in-depth: run safeHint here too so any future
-      // code path that bypasses truncate still cannot leak the PAT.
-      return {
-        ok: false,
-        error: "clone_parse_failed",
-        hint: safeHint((e as Error).message),
-        projectPath,
-      };
-    }
-
-    // Path-traversal guard: parsed.slug is a token from the backend's
-    // cloneCommand. A hostile or buggy backend could return "..", "/",
-    // "../../etc", etc. Reject anything that isn't a plain directory
-    // name. parentDir is our trust boundary; the join must stay under it.
-    if (
-      parsed.slug.length === 0 ||
-      parsed.slug === "." ||
-      parsed.slug === ".." ||
-      parsed.slug.includes("/") ||
-      parsed.slug.includes("\\") ||
-      parsed.slug.includes("\0")
-    ) {
-      return {
-        ok: false,
-        error: "clone_parse_failed",
-        hint: `cloneCommand slug is not a safe directory name: ${JSON.stringify(parsed.slug)}`,
-        projectPath,
-      };
-    }
-
-    const projectDir = path.join(parentDir, parsed.slug);
-    if (fs.existsSync(projectDir)) {
-      return {
-        ok: false,
-        error: "clone_target_exists",
-        hint: `${projectDir} already exists; delete it or pass a different targetDir.`,
-        projectPath,
-      };
-    }
-
-    try {
-      try {
-        fs.mkdirSync(parentDir, { recursive: true });
-      } catch {
-        /* parent exists or unreachable — let git clone surface the real error */
-      }
-      execFileSync(
-        "git",
-        [
-          "clone",
-          // INV-1: Token never hits a shell
-          ...parsed.passthroughFlags,
-          "-b",
-          parsed.branch,
-          parsed.url,
-          parsed.slug,
-        ],
-        {
-          cwd: parentDir,
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-    } catch (e) {
-      return {
-        ok: false,
-        error: "clone_failed",
-        hint: safeHint((e as Error).message),
-        projectPath,
-      };
-    }
-
-    // Best-effort walletAddress lookup so the freshly-cloned project gets
-    // a populated .env (VITE_AGENT8_ACCOUNT / VITE_AGENT8_VERSE). A failed
-    // lookup degrades to skipped-not-logged-in in the env result envelope;
-    // it never blocks attach.
-    let walletAddress: string | null = null;
-    try {
-      const v = await verifyToken(token);
-      if (v.ok && typeof v.profile.walletAddress === "string") {
-        walletAddress = v.profile.walletAddress;
-      }
-    } catch {
-      /* best-effort */
-    }
-
-    try {
-      applyAttachmentArtifacts(projectDir, {
-        overwrite: false,
-        projectId,
-        walletAddress,
-      });
-    } catch (e) {
-      // Defense-in-depth: applyAttachmentArtifacts touches filesystem paths
-      // that may include the freshly-resolved projectDir. Route through
-      // safeHint so any future write that surfaces a tokenized URL or
-      // path can't leak. (Architect review note 2.)
-      return {
-        ok: false,
-        error: "attach_failed",
-        hint: safeHint((e as Error).message),
-        projectPath,
-      };
-    }
+    const cloned = await cloneAndAttach({
+      projectPath,
+      projectId,
+      cloneCommand: access.cloneCommand,
+      parentDir: path.resolve(input.targetDir ?? cwd),
+      token,
+    });
+    if (!cloned.ok) return cloned;
 
     return {
       ok: true,
-      projectDir,
+      projectDir: cloned.projectDir,
       projectId,
       projectPath,
-      gitUrl: gitUrl ?? "",
-      branch: parsed.branch,
-      tokenExpiresAt,
-      nextCallRequires: { projectDir },
+      gitUrl: access.gitUrl ?? "",
+      branch: cloned.branch,
+      tokenExpiresAt: access.tokenExpiresAt,
+      nextCallRequires: { projectDir: cloned.projectDir },
     };
   } finally {
     inFlightConfirms.delete(concurrencyKey);
   }
-}
-
-/**
- * Verify that `parentDir` and every existing ancestor segment is either a
- * regular directory or a symlink whose realpath has the same effective
- * meaning (e.g. macOS `/tmp` → `/private/tmp`). Returns `{ok:true}` when
- * the path is safe to clone into, `{ok:false, hint}` when a non-canonical
- * symlink is detected. Non-existent ancestor segments are ignored —
- * `mkdirSync(..., {recursive:true})` will create them later.
- *
- * (US-M0-5.)
- */
-export function checkParentDirSafe(
-  parentDir: string,
-): { ok: true } | { ok: false; hint: string } {
-  if (typeof parentDir !== "string" || parentDir.length === 0) {
-    return { ok: false, hint: "parentDir is empty" };
-  }
-  let realParent: string = parentDir;
-  try {
-    realParent = fs.realpathSync(parentDir);
-  } catch {
-    // parentDir doesn't fully exist yet — walk up to the deepest existing
-    // ancestor and treat that as the canonicalization target.
-    let cur = parentDir;
-    while (cur !== path.dirname(cur)) {
-      cur = path.dirname(cur);
-      try {
-        realParent = fs.realpathSync(cur);
-        break;
-      } catch {
-        /* keep walking */
-      }
-    }
-  }
-
-  // The realpath must itself be traversal-free (defence-in-depth even
-  // though zod refines `targetDir` at the dispatch boundary). Any
-  // ".." segments in the resolved path indicate the resolution went
-  // somewhere unexpected.
-  if (realParent.split(path.sep).includes("..")) {
-    return {
-      ok: false,
-      hint: safeHint(`resolved parentDir contains '..' after realpath: ${realParent}`),
-    };
-  }
-
-  let cursor = parentDir;
-  const segments: string[] = [];
-  while (cursor !== path.dirname(cursor)) {
-    segments.unshift(cursor);
-    cursor = path.dirname(cursor);
-  }
-  for (const seg of segments) {
-    let lstat: fs.Stats;
-    try {
-      lstat = fs.lstatSync(seg);
-    } catch {
-      // Segment doesn't exist — `mkdirSync` will create it; nothing to check.
-      continue;
-    }
-    if (!lstat.isSymbolicLink()) continue;
-    let segReal: string;
-    try {
-      segReal = fs.realpathSync(seg);
-    } catch (e) {
-      return {
-        ok: false,
-        hint: safeHint(`symlink at ${seg} could not be resolved: ${(e as Error).message}`),
-      };
-    }
-    let segRealStat: fs.Stats;
-    try {
-      segRealStat = fs.statSync(segReal);
-    } catch (e) {
-      return {
-        ok: false,
-        hint: safeHint(`symlink target at ${seg} → ${segReal} is not accessible: ${(e as Error).message}`),
-      };
-    }
-    if (!segRealStat.isDirectory()) {
-      return {
-        ok: false,
-        hint: safeHint(`symlink at ${seg} resolves to a non-directory: ${segReal}`),
-      };
-    }
-    if (segReal.split(path.sep).includes("..")) {
-      return {
-        ok: false,
-        hint: safeHint(`symlink at ${seg} resolves to a path with '..': ${segReal}`),
-      };
-    }
-  }
-
-  return { ok: true };
-}
-
-/**
- * Resolve the first non-empty string value found at any of the given dotted
- * paths. Used to read response fields tolerantly across camelCase vs
- * snake_case vs one-level-nested ("data.foo", "result.foo") variants so a
- * backend response-shape drift doesn't turn a recoverable success into a
- * structural failure.
- *
- * Returns `undefined` when no path resolves to a non-empty string; the
- * caller decides whether that's a real failure or a synthesis opportunity.
- */
-export function pickString(obj: unknown, paths: string[]): string | undefined {
-  if (!obj || typeof obj !== "object") return undefined;
-  for (const p of paths) {
-    let cursor: unknown = obj;
-    for (const seg of p.split(".")) {
-      if (cursor && typeof cursor === "object" && seg in (cursor as Record<string, unknown>)) {
-        cursor = (cursor as Record<string, unknown>)[seg];
-      } else {
-        cursor = undefined;
-        break;
-      }
-    }
-    if (typeof cursor === "string" && cursor.trim().length > 0) {
-      return cursor;
-    }
-  }
-  return undefined;
-}
-
-/** Diagnostic helper — comma-joined list of the top-level keys of an
- * object-shaped response, or a parenthesized type name for non-objects. */
-function describeKeys(obj: unknown): string {
-  if (obj === null) return "(null)";
-  if (obj === undefined) return "(undefined)";
-  if (typeof obj !== "object") return `(${typeof obj})`;
-  const keys = Object.keys(obj as Record<string, unknown>);
-  return keys.length === 0 ? "(empty)" : keys.join(",");
 }
