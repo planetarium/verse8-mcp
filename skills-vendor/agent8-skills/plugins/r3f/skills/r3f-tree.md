@@ -13,6 +13,8 @@ description: |
   Reference this document when a user wants to add trees or forests to a 3D scene.
 ---
 
+> **Kinematic-controller templates (basic-3d-r3f-\*) and forests:** use `EzForest` from `r3f-model-placer` instead of the per-tree scene objects below — it instances ez-tree variants at placement positions (a few draw calls), rescales them to player-sized metres, and imports ez-tree dynamically (the package is ~4 MB; a static `import { Tree }` puts it in the first-load bundle). This document remains the reference for presets and tree options.
+
 ```tsx
 import { useEffect, useRef, useMemo } from 'react';
 import { useThree } from '@react-three/fiber';
