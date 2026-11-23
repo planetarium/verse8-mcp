@@ -283,6 +283,54 @@ for (const buildFrom of ["head", "workingTree"]) {
   });
 }
 
+/**
+ * A pre-push hook: while the checkpoint pushes (its commit made, its result
+ * not yet returned), another session commits game.js in the same folder.
+ * The hook records the checkpoint commit (HEAD when it starts) first.
+ */
+function commitRightAfterCheckpoint(repo, dir) {
+  const hooks = path.resolve(repo, git(repo, "rev-parse", "--git-path", "hooks"));
+  fs.mkdirSync(hooks, { recursive: true });
+  const ckFile = path.join(repo, "..", `${path.basename(repo)}-checkpoint-sha`);
+  const sh = (p) => `'${p.replace(/\\/g, "/")}'`;
+  fs.writeFileSync(
+    path.join(hooks, "pre-push"),
+    [
+      "#!/bin/sh",
+      "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE",
+      `cd ${sh(dir)} || exit 1`,
+      `git rev-parse HEAD > ${sh(ckFile)}`,
+      "printf 'committed by another session right after the checkpoint\\n' > game.js",
+      'git -c user.email=o@o -c user.name=other commit -q -am "another session" >/dev/null 2>&1',
+      'rm -f "$0"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return () => fs.readFileSync(ckFile, "utf8").trim();
+}
+
+for (const buildFrom of ["head", "workingTree"]) {
+  test(`runDeploy buildFrom:${buildFrom}: a commit right after the checkpoint → playUrl records the checkpoint's commit${buildFrom === "head" ? ", and that commit is built" : "; the moved HEAD is warned"}`, async () => {
+    const { repo, dir } = makeDeployableRepo();
+    fs.writeFileSync(path.join(dir, "game.js"), "v2 from this session\n");
+    const checkpointSha = commitRightAfterCheckpoint(repo, dir);
+    const { res, sha, uploaded } = await deployWithFakes(dir, { buildFrom });
+    const ck = checkpointSha();
+    assert.match(ck, /^[0-9a-f]{40}$/, "the hook ran during the checkpoint's push");
+    assert.equal(git(dir, "log", "--format=%s", "--reverse", `${ck}..HEAD`).split("\n")[0], "another session", "another session committed right after the checkpoint");
+    assert.equal(sha, ck, "playUrl records the checkpoint's commit, not the HEAD after it");
+    assert.equal(git(dir, "show", `${sha}:game.js`), "v2 from this session");
+    if (buildFrom === "head") {
+      assert.equal(uploaded.game, "v2 from this session\n", "the checkpoint's commit is what was built");
+      assert.ok(!res.warnings.some((w) => w.includes("HEAD moved to")), res.warnings.join("\n"));
+    } else {
+      assert.equal(uploaded.game, "committed by another session right after the checkpoint\n", "the working tree build sees the later commit");
+      assert.ok(res.warnings.some((w) => w.includes("HEAD moved to") && w.includes(ck.slice(0, 12))), res.warnings.join("\n"));
+    }
+  });
+}
+
 const sweptWarning = (res) => res.warnings.find((w) => w.includes("without `files` the checkpoint committed"));
 const workingTreeWarning = (res) => res.warnings.find((w) => w.startsWith("Built from the working tree"));
 

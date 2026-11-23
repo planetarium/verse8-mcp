@@ -1153,13 +1153,16 @@ export async function runDeploy(
       return fail("checkpoint", "checkpoint_failed", `Deploy aborted: checkpoint failed (${code}). Fix the commit error first.`, { checkpoint: commit });
     }
   }
-  // The deployed commit, read once: the clean checkout is made from this sha
+  // The deployed commit, fixed once: the clean checkout is made from this sha
   // and playUrl records it, so a commit another session makes during the
-  // (minutes-long) build changes neither.
-  const deployedSha = readHeadSha(cwd);
+  // (minutes-long) build changes neither. It is the checkpoint's own commit
+  // when there is one — not a fresh read of HEAD, which another session may
+  // already have moved; HEAD only when the checkpoint made none it reports
+  // (nothing_to_commit, or push_failed after a local commit).
+  const deployedSha = (commit.ok && commit.commitSha) || readHeadSha(cwd);
   const checkpointCommitted = commit.ok || (commit as { error: string }).error === "push_failed";
   if (input.buildFrom === "head" && !(input.files && input.files.length > 0) && checkpointCommitted) {
-    const swept = pathsInCommit(cwd, (commit.ok && commit.commitSha) || deployedSha || "HEAD");
+    const swept = pathsInCommit(cwd, deployedSha ?? "HEAD");
     if (swept.length > 0) {
       const shown = swept.slice(0, CHECKPOINT_PATHS_SHOWN).join(", ");
       const more = swept.length > CHECKPOINT_PATHS_SHOWN ? ` … and ${swept.length - CHECKPOINT_PATHS_SHOWN} more` : "";
@@ -1201,6 +1204,12 @@ export async function runDeploy(
     // checkpoint. Local build files a clean checkout gets too are skipped,
     // and edits made while the build runs are not seen.
     const dirty = uncommittedPaths(cwd, { exceptLocalOnly: true });
+    const headNow = readHeadSha(cwd);
+    if (deployedSha && headNow && headNow !== deployedSha) {
+      warnings.push(
+        `Built from the working tree: HEAD moved to ${headNow.slice(0, 12)} after the checkpoint (another commit in this folder), so this build likely contains it, while playUrl records the checkpoint commit ${deployedSha.slice(0, 12)}. Pass buildFrom: "head" to build exactly the recorded commit.`,
+      );
+    }
     if (dirty.length > 0) {
       warnings.push(
         `Built from the working tree: ${dirty.length} path(s) not in the deployed commit (e.g. ${dirty.slice(0, 3).join(", ")}) were in the project folder when the build started, so they are likely in this build — left out of the checkpoint (\`files\`) or changed after it. Pass buildFrom: "head" to build only the commit.`,
