@@ -44,7 +44,7 @@ export const vxShopInputSchema = z
     confirm: z
       .boolean()
       .default(false)
-      .describe("upsert only runs with true. Without it, it returns the planned body / `changes` and changes nothing — show them to the user first."),
+      .describe("upsert, archive and dispute only run with true. Without it, they return the planned body / `changes` and change nothing — show them to the user first."),
     includeArchived: z.boolean().optional().describe("list: include archived items."),
     page: z.number().int().min(1).optional().describe("list: page (default 1)."),
     limit: z.number().int().min(1).max(100).optional().describe("list: page size (default 20)."),
