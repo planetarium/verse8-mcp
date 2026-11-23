@@ -122,7 +122,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_status",
     description:
-      "Return the current Verse8 profile via GET /v1/auth/verify plus cwd attachment state and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
+      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
     inputSchema: zodToJsonSchema(statusInputSchema),
   },
   {
