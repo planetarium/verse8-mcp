@@ -5,6 +5,10 @@ import type { ZodTypeAny } from "zod";
  * the Verse8 MCP tools (objects with string, optional string, optional
  * string[]). Avoiding the `zod-to-json-schema` dep keeps the dependency
  * surface tight.
+ *
+ * Field `.describe()` text is emitted as `description` and `z.enum` values
+ * as `enum`: the host LLM sees only this JSON Schema, so a value list or
+ * hint that stays in zod is invisible until a call fails validation.
  */
 export interface JsonSchemaObject {
   type: "object";
@@ -27,8 +31,7 @@ export function zodToJsonSchema(schema: ZodTypeAny): JsonSchemaObject {
       const childDef: any = (child as any)._def;
       const isOptional =
         childDef?.typeName === "ZodOptional" || childDef?.typeName === "ZodDefault";
-      const inner = isOptional ? childDef.innerType : child;
-      properties[key] = zodFieldToJsonSchema(inner);
+      properties[key] = zodFieldToJsonSchema(child);
       if (!isOptional) required.push(key);
     }
     const out: JsonSchemaObject = {
@@ -44,7 +47,19 @@ export function zodToJsonSchema(schema: ZodTypeAny): JsonSchemaObject {
   return { type: "object", properties: {}, additionalProperties: true };
 }
 
-function zodFieldToJsonSchema(schema: ZodTypeAny): object {
+function zodFieldToJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
+  const def: any = (schema as any)._def;
+  const out = zodFieldType(schema);
+  // `.optional().describe()` sets the text only on the wrapper, and a later
+  // describe() overrides an earlier one — so the outermost description wins.
+  const description: unknown = def?.description;
+  if (typeof description === "string" && description.length > 0) {
+    return { ...out, description };
+  }
+  return out;
+}
+
+function zodFieldType(schema: ZodTypeAny): Record<string, unknown> {
   const def: any = (schema as any)._def;
   const typeName: string = def?.typeName ?? "";
   switch (typeName) {
@@ -54,11 +69,16 @@ function zodFieldToJsonSchema(schema: ZodTypeAny): object {
       return { type: "number" };
     case "ZodBoolean":
       return { type: "boolean" };
+    case "ZodEnum":
+      return { type: "string", enum: [...def.values] };
     case "ZodArray":
       return { type: "array", items: zodFieldToJsonSchema(def.type) };
     case "ZodOptional":
     case "ZodDefault":
       return zodFieldToJsonSchema(def.innerType);
+    case "ZodEffects":
+      // .refine() / .superRefine() / .transform(): describe the input type.
+      return zodFieldToJsonSchema(def.schema);
     case "ZodObject":
       return zodToJsonSchema(schema);
     default:

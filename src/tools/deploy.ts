@@ -61,7 +61,7 @@ const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
 };
 const NINE_CHRONICLES_REVIEW_WARNING =
   "This update adds `__review_required`, which sends the game to review and may hide it until it is approved. Confirm with the user before deploying.";
-const RELEASE_NOTE_TYPES = [
+export const RELEASE_NOTE_TYPES = [
   "New",
   "Improvements",
   "Balance",

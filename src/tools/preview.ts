@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { parseOverrideHost } from "../util/hostAllowlist.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
+import { readEnvVerse } from "../context/envFile.js";
 import { loadToken } from "../context/token.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
 import { stepsUseShell, unsafeShellTokens } from "../util/shellArgv.js";
@@ -111,6 +112,12 @@ export const previewInputSchema = z
       .describe(
         "Preflight install/sync command run BEFORE the dev server spawns. Default `bun update`. Override per-project (e.g. `npm install`, `pnpm install`). Runs blocking; failure aborts the preview before the server starts.",
       ),
+    serverOnly: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Deploy only the game server to preview: `@agent8/gameserver-node build` + `@agent8/deploy --preview`. No checkpoint, no install, no dev server start or restart. server.js is always re-uploaded (its hash is dropped from .deployed first). Use after changing only server code while the preview is already running.",
+      ),
     skipPreflight: z
       .boolean()
       .default(false)
@@ -169,6 +176,20 @@ export type PreviewResult =
             url: string;
           };
       webEditor: WebEditorLink | null;
+    }
+  | {
+      ok: true;
+      serverOnly: true;
+      preflight: PreflightSummary;
+      /** `.deployed` had a server.js hash that was dropped to force the upload. */
+      forcedServerUpload: boolean;
+      verse: string | null;
+    }
+  | {
+      ok: false;
+      stage: "server_only";
+      error: "no_gameserver" | "not_logged_in";
+      hint: string;
     }
   | {
       ok: false;
@@ -389,7 +410,7 @@ interface PreflightSpec {
 export function buildPreflightSteps(
   installCommand: string,
   gameserver: boolean,
-  opts: { baseEnv?: NodeJS.ProcessEnv; token?: string | null } = {},
+  opts: { baseEnv?: NodeJS.ProcessEnv; token?: string | null; skipInstall?: boolean } = {},
 ): PreflightSpec[] {
   const baseEnv = opts.baseEnv ?? sanitizeChildEnv();
   const steps: PreflightSpec[] = [];
@@ -399,12 +420,14 @@ export function buildPreflightSteps(
     // passes "   ", emit nothing rather than spawning an empty command.
     return steps;
   }
-  steps.push({
-    command: installCommand.trim(),
-    cmd: installBin,
-    args: installArgs,
-    env: baseEnv,
-  });
+  if (!opts.skipInstall) {
+    steps.push({
+      command: installCommand.trim(),
+      cmd: installBin,
+      args: installArgs,
+      env: baseEnv,
+    });
+  }
   if (gameserver) {
     const gsPin = resolveAgent8Pin("gameserver-node");
     steps.push({
@@ -424,6 +447,27 @@ export function buildPreflightSteps(
     });
   }
   return steps;
+}
+
+/**
+ * Drop `server.js` from `.deployed` so the next `@agent8/deploy --preview`
+ * uploads it. The file is shared by preview and prod (`--prod` always
+ * uploads and records its hash), so after a prod deploy of the same code a
+ * preview upload would be skipped and the preview server would keep older
+ * code. Returns true when an entry was removed. Unreadable JSON is left as is.
+ */
+export function forgetDeployedServerHash(cwd: string): boolean {
+  const file = path.join(cwd, ".deployed");
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!data || typeof data !== "object" || !("server.js" in data)) return false;
+  delete data["server.js"];
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  return true;
 }
 
 function previewDeployCommand(): string {
@@ -521,11 +565,57 @@ function runPreflightSteps(
   return { ok: true, results: completed };
 }
 
+/** `serverOnly`: gameserver build + preview upload, nothing else. */
+function runServerOnlyPreview(input: PreviewInput, cwd: string): PreviewResult {
+  if (!detectGameserver(cwd)) {
+    return {
+      ok: false,
+      stage: "server_only",
+      error: "no_gameserver",
+      hint: `No game server in ${cwd} (no server.ts / server.js / server/). serverOnly deploys only a game server; use verse8_preview without it.`,
+    };
+  }
+  const token = loadToken(cwd);
+  if (!token) {
+    return {
+      ok: false,
+      stage: "server_only",
+      error: "not_logged_in",
+      hint: "The preview deploy needs the Verse8 login. Call verse8_login_start (then verse8_login_complete) and re-run.",
+    };
+  }
+  const forcedServerUpload = forgetDeployedServerHash(cwd);
+  const steps = buildPreflightSteps(input.installCommand, true, { token, skipInstall: true });
+  const result = runPreflightSteps(cwd, steps, input.preflightTimeoutMs, token);
+  if (!result.ok) {
+    return {
+      ok: false,
+      stage: "preflight_failed",
+      hint:
+        `Server-only preview deploy aborted at: ${result.failedStep.command} (exit ${result.failedStep.exitCode}). The running dev server was not touched.` +
+        (result.failedStep.stderrTail ? `\n--- stderr (last lines) ---\n${result.failedStep.stderrTail}` : ""),
+      failedStep: result.failedStep,
+      stepsCompleted: result.completed,
+      gameserver: true,
+    };
+  }
+  const verse = readEnvVerse(cwd);
+  return {
+    ok: true,
+    serverOnly: true,
+    preflight: { ran: true, gameserver: true, steps: result.results },
+    forcedServerUpload,
+    verse: verse ? `${verse}-preview` : null,
+  };
+}
+
 export async function runPreview(
   input: PreviewInput,
   serverCwd: string = process.cwd(),
 ): Promise<PreviewResult> {
   const cwd = path.resolve(input.projectDir ?? serverCwd);
+
+  if (input.serverOnly) return runServerOnlyPreview(input, cwd);
 
   let checkpoint: CheckpointResult | null = null;
   if (!input.startOnly) {
