@@ -155,7 +155,7 @@ const BASE_TOOLS: Tool[] = [
 const CHECKPOINT_TOOL: Tool = {
   name: "verse8_checkpoint",
   description:
-    "MANDATORY commit tool for Verse8 projects — NEVER use `git commit` via Bash (the installed commit-msg hook rejects non-V8 commits with exit 1). Stages `files` if provided else `git add -A`, builds a V8-format commit from your `userPrompt` + `model` + `provider` (+ optional `toolCalls`), and pushes to gitlab.verse8.io. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload. Call this whenever `verse8_bootstrap` returned `workflow.nextAction === \"ready\"` and the user's change is complete (or before launching verse8_preview).",
+    "MANDATORY commit tool for Verse8 projects — NEVER use `git commit` via Bash (the installed commit-msg hook rejects non-V8 commits with exit 1). Stages `files` if provided else `git add -A` (with `stageAll: false` or VERSE8_CHECKPOINT_REQUIRE_FILES=1 it stages nothing and returns `files_required` + `changedFiles` — pass `files` when other sessions share the folder), builds a V8-format commit from your `userPrompt` + `model` + `provider` (+ optional `toolCalls`), and pushes to gitlab.verse8.io. **Always pass `problemStatement` (how you framed the user's ask) and `workSummary` (what you did)** — these are the narrative future agents read from `git log` to understand project history without re-parsing every tool payload. Call this whenever `verse8_bootstrap` returned `workflow.nextAction === \"ready\"` and the user's change is complete (or before launching verse8_preview).",
   inputSchema: zodToJsonSchema(checkpointInputSchema),
 };
 
