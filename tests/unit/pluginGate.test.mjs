@@ -409,14 +409,14 @@ test("attach: a failed first attach leaves no .claude/ behind; a failed overwrit
   }
 });
 
-/** Every `.SKILL.md.verse8-tmp-*` left anywhere under .claude/skills. */
+/** Every `.SKILL.md.<pid>-<hex>.tmp` (util/atomicWrite.ts) left under .claude/skills. */
 function leftoverTempFiles(root) {
   const skillsDir = path.join(root, ".claude", "skills");
   const out = [];
   for (const name of fs.readdirSync(skillsDir)) {
     const dir = path.join(skillsDir, name);
     if (!fs.statSync(dir).isDirectory()) continue;
-    for (const f of fs.readdirSync(dir)) if (f.includes(".verse8-tmp-")) out.push(`${name}/${f}`);
+    for (const f of fs.readdirSync(dir)) if (/^\.SKILL\.md\..*\.tmp$/.test(f)) out.push(`${name}/${f}`);
   }
   return out;
 }

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ProjectWriter } from "../util/projectWrite.js";
 
 /**
  * Resolve where git hooks should live. Honors `git config core.hooksPath`
@@ -25,13 +26,15 @@ export function resolveHooksDir(projectDir: string): string {
 /**
  * Write a verse8-mcp git hook script. Idempotent — returns
  * `already-present` when the hook already carries the verse8 signature.
+ * `writer` confines the writes (see `util/projectWrite.ts`).
  */
 export function writeHook(
+  writer: ProjectWriter,
   hooksDir: string,
   name: string,
   script: string,
 ): "created" | "already-present" {
-  fs.mkdirSync(hooksDir, { recursive: true });
+  writer.mkdirp(hooksDir);
   const hookPath = path.join(hooksDir, name);
   let existing = "";
   try {
@@ -42,9 +45,9 @@ export function writeHook(
   if (existing.includes(`verse8-mcp hook ${name}`)) {
     return "already-present";
   }
-  fs.writeFileSync(hookPath, script, { mode: 0o755 });
+  writer.writeFile(hookPath, script, { mode: 0o755 });
   try {
-    fs.chmodSync(hookPath, 0o755);
+    writer.chmod(hookPath, 0o755);
   } catch {
     /* non-fatal */
   }

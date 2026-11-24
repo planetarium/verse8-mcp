@@ -28,6 +28,8 @@ npm test
 npm run test:unit
 ```
 
+`test:unit` preloads `tests/setup/isolateGit.cjs`, which points `GIT_CONFIG_GLOBAL` at an empty file and sets `GIT_CONFIG_NOSYSTEM=1`, so a global `core.hooksPath` on your machine is never touched. To run one file directly, keep the preload: `node --require ./tests/setup/isolateGit.cjs --test tests/unit/<file>.test.mjs`.
+
 분할 smoke 스위트 (M4.1) — 라이브 mock에 대해 단일 서브셋 실행:
 
 ```bash

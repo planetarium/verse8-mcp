@@ -40,7 +40,7 @@
     "start": "node dist/index.js",
     "test": "bash tests/smoke.sh && npm run test:unit",
     "test:smoke": "bash tests/smoke.sh",
-    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:unit": "node --require ./tests/setup/isolateGit.cjs --test tests/unit/*.test.mjs",
     "clean": "rm -rf dist",
     "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
     "sync:agent8-skills": "node scripts/sync-agent8-skills.mjs",
