@@ -46,10 +46,13 @@ function linkDir(target, link) {
   fs.symlinkSync(target, link, isWin ? "junction" : "dir");
 }
 
-/** File link; false when the OS refuses (Windows without symlink privilege). */
-function tryLinkFile(target, link) {
+/**
+ * Symlink (a file link, or a relative directory link that a junction can't
+ * express); false when the OS refuses (Windows without symlink privilege).
+ */
+function tryLinkFile(target, link, type = "file") {
   try {
-    fs.symlinkSync(target, link, "file");
+    fs.symlinkSync(target, link, type);
     return true;
   } catch (e) {
     if (isWin && (e.code === "EPERM" || e.code === "EACCES")) return false;
@@ -395,6 +398,61 @@ test("attach: a link to a dangling link that points outside is refused", (t) => 
     }
     assert.throws(() => attach(project), /AGENTS\.md is a link to .*outside the project folder/);
     assert.equal(fs.existsSync(target), false);
+  } finally {
+    cleanup(base);
+  }
+});
+
+/** A project nested `depth` folders below a fresh base, so `..` chains stay inside base. */
+function setupNested(depth) {
+  const base = mkRoot();
+  const project = path.join(base, ...Array.from({ length: depth }, (_, i) => `d${i}`), "project");
+  fs.mkdirSync(project, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: project });
+  return { base, project };
+}
+
+// The kernel follows `sub` before applying `..`; a guard that folds
+// `sub/../planted` as a string first judges the wrong place.
+for (const [label, subTarget, depth] of [
+  ["sub → ..", "..", 1],
+  ["sub → ../..", "../..", 2],
+]) {
+  // INV-14: Attach writes never leave the project folder
+  test(`attach: a dangling AGENTS.md → sub/../planted with ${label} is refused and nothing is created outside`, (t) => {
+    const { base, project } = setupNested(depth);
+    try {
+      if (
+        !tryLinkFile(subTarget, path.join(project, "sub"), "dir") ||
+        !tryLinkFile("sub/../planted", path.join(project, "AGENTS.md"))
+      ) {
+        t.skip("file symlinks need privilege on this Windows host");
+        return;
+      }
+      assert.throws(() => attach(project), /AGENTS\.md is a link to .*outside the project folder/);
+      assert.equal(fs.existsSync(path.join(base, "planted")), false);
+      assert.equal(fs.existsSync(path.join(path.dirname(project), "planted")), false);
+    } finally {
+      cleanup(base);
+    }
+  });
+}
+
+// INV-14: Attach writes never leave the project folder
+test("attach: a dangling CLAUDE.md → s/../hooks/x with s → .git/info is refused (lands in .git)", (t) => {
+  const { base, project } = setup();
+  try {
+    fs.mkdirSync(path.join(project, ".git", "info"), { recursive: true });
+    if (
+      !tryLinkFile(".git/info", path.join(project, "s"), "dir") ||
+      !tryLinkFile("s/../hooks/x", path.join(project, "CLAUDE.md"))
+    ) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    assert.throws(() => attach(project), /CLAUDE\.md is a link to .*inside the project's \.git folder/);
+    assert.equal(fs.existsSync(path.join(project, ".git", "hooks", "x")), false);
+    assert.equal(fs.existsSync(path.join(project, "hooks", "x")), false);
   } finally {
     cleanup(base);
   }

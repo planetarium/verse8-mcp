@@ -81,26 +81,52 @@ const MAX_LINK_HOPS = 40;
 
 /**
  * Where `p` really leads, following every link hop by hop even when the
- * end of the chain does not exist (`realpath` gives up there). Missing
- * components are joined on lexically. Throws after `MAX_LINK_HOPS` links.
+ * end of the chain does not exist (`realpath` gives up there). Throws after
+ * `MAX_LINK_HOPS` links.
+ *
+ * The path is walked one component at a time the way the kernel does, never
+ * folded as a string first: `..` steps up from the real location reached so
+ * far, so in `sub/../x` with `sub → ..` it leaves the folder `sub` points
+ * at, not the folder `sub` sits in. (`path.resolve("…/sub/../x")` would
+ * drop `sub` before it is followed and judge a different place than the
+ * one the write lands in.) Missing components are taken as plain names.
  */
 export function resolveLoose(p: string, budget = { hops: MAX_LINK_HOPS }): string {
-  const abs = path.resolve(p);
   try {
-    return fs.realpathSync.native(abs);
+    return fs.realpathSync.native(p); // everything exists: the OS answer
   } catch {
     /* something on the way is missing or dangling — walk it */
   }
-  const { root } = path.parse(abs);
-  const parts = abs.slice(root.length).split(path.sep).filter(Boolean);
-  let real = root;
-  for (let i = 0; i < parts.length; i++) {
-    const next = path.join(real, parts[i]);
+  const start = path.isAbsolute(p) ? path.parse(p).root : fs.realpathSync.native(process.cwd());
+  return walkComponents(start, splitComponents(p), budget, p);
+}
+
+function splitComponents(p: string): string[] {
+  const rest = path.isAbsolute(p) ? p.slice(path.parse(p).root.length) : p;
+  return rest.split(process.platform === "win32" ? /[\\/]/ : "/");
+}
+
+/** Walk `parts` from `start` (already a real path), following links as met. */
+function walkComponents(
+  start: string,
+  parts: string[],
+  budget: { hops: number },
+  original: string,
+): string {
+  let real = start;
+  for (const part of parts) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      real = path.dirname(real); // up from where we really are
+      continue;
+    }
+    const next = path.join(real, part);
     let st: fs.Stats;
     try {
       st = fs.lstatSync(next);
     } catch {
-      return path.join(next, ...parts.slice(i + 1)); // missing from here on
+      real = next; // missing: a plain name from here on
+      continue;
     }
     if (!st.isSymbolicLink()) {
       real = fs.realpathSync.native(next);
@@ -113,9 +139,13 @@ export function resolveLoose(p: string, budget = { hops: MAX_LINK_HOPS }): strin
       /* dangling — follow it by hand */
     }
     if (--budget.hops < 0) {
-      throw new ProjectWriteError(`too many links while resolving ${abs}`);
+      throw new ProjectWriteError(`too many links while resolving ${original}`);
     }
-    real = resolveLoose(path.resolve(real, fs.readlinkSync(next)), budget);
+    const target = fs.readlinkSync(next);
+    // A relative target starts in the link's own (real) folder.
+    real = path.isAbsolute(target)
+      ? walkComponents(path.parse(target).root, splitComponents(target), budget, original)
+      : walkComponents(real, splitComponents(target), budget, original);
   }
   return real;
 }
@@ -144,6 +174,9 @@ export function projectWriter(rootDir: string): ProjectWriter {
 
   // INV-14: Attach writes never leave the project folder
   function check(target: string): string {
+    // Folding `target` here is safe: the operation then uses this same
+    // folded string, so what is checked is what the kernel resolves. Only
+    // link targets (read from disk) must not be folded — see resolveLoose.
     const abs = path.resolve(target);
     const rel = path.relative(root, abs);
     if (!relIsInside(rel)) {
