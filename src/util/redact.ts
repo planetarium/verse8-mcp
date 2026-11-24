@@ -100,6 +100,38 @@ export function safeHint(input: string): string {
 }
 
 /**
+ * INV-13: redact, then cut to `max` chars — never the other way round. A
+ * JSON-keyed shape cut before its closing quote (`"access_token":"eyJ…`) no
+ * longer matches its pattern, so redacting the cut text leaks the head of
+ * the value. Use this wherever a backend body or a serialized response is
+ * shortened for a hint.
+ */
+export function redactHead(input: string, max: number): string {
+  if (typeof input !== "string") return input;
+  return safeHint(input).slice(0, max);
+}
+
+/**
+ * INV-15: drop userinfo (a token in `https://oauth2:<PAT>@host/…`) from a git
+ * URL. scp-style `git@host:path` carries only a user name and is returned
+ * as is. `null` for an empty or unparseable URL.
+ */
+export function stripUrlCredentials(url: string | null | undefined): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[^@\s/:]+@[^:\s/]+:/.test(trimmed)) return trimmed;
+  try {
+    const u = new URL(trimmed);
+    u.username = "";
+    u.password = "";
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `safeHint` for structured values (tool-call inputs / outputs): every string
  * inside is redacted, and so are the JSON-keyed shapes (`"access_token": …`),
  * which only match with their key. Returns a redacted copy; never throws.

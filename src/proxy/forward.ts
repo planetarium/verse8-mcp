@@ -1,5 +1,5 @@
 import { resolveMcpServices, parseProxyTimeout, type ResolvedService } from "./registry.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead } from "../util/redact.js";
 
 /**
  * Stateless HTTP proxy to Verse8 MCP services (JSON-RPC 2.0).
@@ -355,9 +355,7 @@ export async function callProxiedTool(
       // Trim and redact via the central registry. The previous inline
       // regex only covered the Bearer header; safeHint catches PATs,
       // oauth2 URLs, and JSON token fields too. (US-M0-6.)
-      // INV-13: redact before the cut — a JSON shape cut before its closing
-      // quote no longer matches.
-      hint: safeHint(resp.raw).slice(0, 500),
+      hint: redactHead(resp.raw, 500),
       serviceKey,
     };
   }

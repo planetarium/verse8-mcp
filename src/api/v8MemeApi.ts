@@ -159,7 +159,15 @@ export async function deviceToken(
     return { ok: true, token: data as DeviceTokenSuccess };
   }
 
-  const err = (data && "error" in data ? data : { error: `http_${status}`, error_description: safeHint(raw) }) as DeviceTokenPending;
+  // INV-13: backend text either way — redact the description.
+  const err = (
+    data && "error" in data
+      ? {
+          ...data,
+          ...(typeof data.error_description === "string" ? { error_description: safeHint(data.error_description) } : {}),
+        }
+      : { error: `http_${status}`, error_description: safeHint(raw) }
+  ) as DeviceTokenPending;
   return { ok: false, error: err, status };
 }
 

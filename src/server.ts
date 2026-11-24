@@ -10,7 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "./util/jsonSchema.js";
 import { recordToolCall } from "./util/v8CallLog.js";
-import { safeErrorHint, safeHint } from "./util/redact.js";
+import { redactHead, safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
 import { loadToken } from "./context/token.js";
 import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
@@ -531,7 +531,9 @@ export function createServer(): Server {
             try {
               compactOutput = JSON.parse(text);
             } catch {
-              compactOutput = text.length > 500 ? text.slice(0, 500) + "…" : text;
+              // INV-13: redact before the cut (the call log redacts again,
+              // but a shape already cut there no longer matches).
+              compactOutput = text.length > 500 ? redactHead(text, 500) + "…" : text;
             }
           }
         }

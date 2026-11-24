@@ -9,7 +9,7 @@ import {
 } from "../api/agent8Backend.js";
 import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint, stripUrlCredentials } from "../util/redact.js";
 import { CREDIT_RECHARGE_URL } from "../constants.js";
 
 /**
@@ -28,7 +28,7 @@ export function creditError(
   return {
     ok: false,
     error: "insufficient_credits",
-    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${body.slice(0, 500)})`,
+    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${redactHead(body, 500)})`,
     status,
   };
 }
@@ -114,7 +114,7 @@ export async function grantCloneAccess(
     return {
       ok: false,
       error: "token_check_failed",
-      hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
+      hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${redactHead(check.body, 500)}`,
       status: check.status,
     };
   }
@@ -128,7 +128,7 @@ export async function grantCloneAccess(
     if (isCreditInsufficientError(created.status, created.body)) {
       return creditError(created.status, created.body);
     }
-    const base = `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`;
+    const base = `POST /api/gitlab/project-access-token HTTP ${created.status}: ${redactHead(created.body, 500)}`;
     return {
       ok: false,
       error: "token_grant_failed",
@@ -196,22 +196,10 @@ export async function grantCloneAccess(
   return {
     ok: true,
     cloneCommand,
-    gitUrl: stripCredentials(rawGitUrl),
+    // INV-15: the clone URL's userinfo is the project token.
+    gitUrl: stripUrlCredentials(rawGitUrl),
     tokenExpiresAt: rawExpiresAt ?? undefined,
   };
-}
-
-/** Drop userinfo (the project token) from a clone URL. */
-function stripCredentials(gitUrl: string | undefined): string | null {
-  if (!gitUrl) return null;
-  try {
-    const u = new URL(gitUrl);
-    u.username = "";
-    u.password = "";
-    return u.toString();
-  } catch {
-    return null;
-  }
 }
 
 export interface CloneAndAttachParams {

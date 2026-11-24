@@ -8,6 +8,7 @@ import {
 } from "../api/agent8Backend.js";
 import { loadToken } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { redactHead } from "../util/redact.js";
 import {
   checkCloneTargetLocal,
   cloneAndAttach,
@@ -215,7 +216,7 @@ export async function runNewProjectStart(
     return {
       ok: false,
       error: "startcall_failed",
-      hint: `POST /api/startcall HTTP ${resp.status}: ${resp.body.slice(0, 500)}`,
+      hint: `POST /api/startcall HTTP ${resp.status}: ${redactHead(resp.body, 500)}`,
       status: resp.status,
     };
   }
@@ -226,7 +227,8 @@ export async function runNewProjectStart(
     return {
       ok: false,
       error: "startcall_failed",
-      hint: `startcall response missing template.name: ${JSON.stringify(body).slice(0, 500)}`,
+      // INV-13: a 2xx body can carry secrets; redact before the cut.
+      hint: `startcall response missing template.name: ${redactHead(JSON.stringify(body), 500)}`,
       status: resp.status,
     };
   }
@@ -244,7 +246,7 @@ export async function runNewProjectStart(
     return {
       ok: false,
       error: "startcall_failed",
-      hint: `startcall template missing githubRepo or path: ${JSON.stringify(template).slice(0, 500)}`,
+      hint: `startcall template missing githubRepo or path: ${redactHead(JSON.stringify(template), 500)}`,
       status: resp.status,
     };
   }
@@ -348,7 +350,7 @@ export async function runNewProjectConfirm(
         return {
           ok: false,
           error: "select_template_failed",
-          hint: `GET /api/select-template HTTP ${selected.status}: ${selected.body.slice(0, 500)}`,
+          hint: `GET /api/select-template HTTP ${selected.status}: ${redactHead(selected.body, 500)}`,
           status: selected.status,
         };
       }
@@ -357,7 +359,7 @@ export async function runNewProjectConfirm(
         return {
           ok: false,
           error: "select_template_failed",
-          hint: `select-template response missing project.path: ${JSON.stringify(selected.data).slice(0, 500)}`,
+          hint: `select-template response missing project.path: ${redactHead(JSON.stringify(selected.data), 500)}`,
           status: selected.status,
         };
       }

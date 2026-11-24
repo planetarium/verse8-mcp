@@ -15,7 +15,7 @@
  */
 
 import { parseOverrideHost } from "../util/hostAllowlist.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint } from "../util/redact.js";
 
 export const DEFAULT_GAMESERVER_URL = "https://gs-gateway.verse8.io";
 
@@ -70,10 +70,11 @@ export async function gatewayGet<T>(
     data = null;
   }
   if (res.ok && data !== null) return { ok: true, status: res.status, data: data as T };
+  // INV-13: the error string is backend text too — redact it either way.
   const msg =
     data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
-      ? (data as { error: string }).error
-      : safeHint(raw).slice(0, 300); // INV-13: redact before the cut
+      ? safeHint((data as { error: string }).error)
+      : redactHead(raw, 300);
   return { ok: false, status: res.status, error: msg };
 }
 
@@ -111,10 +112,10 @@ export async function gatewayReadLogStream(
     });
     if (!res.ok || !res.body) {
       const raw = await res.text().catch(() => "");
-      let msg = safeHint(raw).slice(0, 300);
+      let msg = redactHead(raw, 300);
       try {
         const j = JSON.parse(raw) as { error?: unknown };
-        if (typeof j.error === "string") msg = j.error;
+        if (typeof j.error === "string") msg = safeHint(j.error);
       } catch {
         /* not JSON */
       }

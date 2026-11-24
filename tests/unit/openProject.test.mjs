@@ -420,6 +420,9 @@ test("open: INV-13: a secret cut by the 500-char hint limit is still redacted", 
   // The value starts at char 486, so a 500-char cut keeps its first 14 chars.
   const body = `{"pad":"${"x".repeat(460)}","access_token":"eyJstraddlesTheCut0123456789abcdef"}`;
   const saved = globalThis.fetch;
+  // Fixed base URL: a developer shell's override must not change the result.
+  const savedBase = process.env.VERSE8_AGENT8_BACKEND_URL;
+  process.env.VERSE8_AGENT8_BACKEND_URL = "http://127.0.0.1:9";
   globalThis.fetch = async () => new Response(body, { status: 500 });
   try {
     const r = await grantCloneAccess("someone/cut", "test-token-xyz");
@@ -428,6 +431,8 @@ test("open: INV-13: a secret cut by the 500-char hint limit is still redacted", 
     assert.ok(!r.hint.includes("eyJstr"), r.hint);
   } finally {
     globalThis.fetch = saved;
+    if (savedBase === undefined) delete process.env.VERSE8_AGENT8_BACKEND_URL;
+    else process.env.VERSE8_AGENT8_BACKEND_URL = savedBase;
   }
 });
 

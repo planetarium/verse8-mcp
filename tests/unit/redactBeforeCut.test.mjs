@@ -8,15 +8,33 @@
 //
 // Runs against dist/ with globalThis.fetch stubbed.
 
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 
-import { v8Request, getVerse, verifyToken } from "../../dist/api/v8MemeApi.js";
+import { v8Request, getVerse, verifyToken, deviceToken } from "../../dist/api/v8MemeApi.js";
+import { redactHead } from "../../dist/util/redact.js";
+import { runNewProjectStart, _resetNewProjectStateForTests } from "../../dist/tools/newProject.js";
 import { apiFail } from "../../dist/tools/creatorOps.js";
 import { gatewayGet } from "../../dist/api/gameserverGateway.js";
 import { uploadVerseImage } from "../../dist/api/verse8Web.js";
 import { uploadAttachment } from "../../dist/api/agent8Backend.js";
 import { discoverAllProxiedTools, callProxiedTool, resetProxyCaches } from "../../dist/proxy/forward.js";
+
+// Base URLs, proxy allow-lists and tokens come from VERSE8_* env; a developer
+// shell (VERSE8_MCP_PROXIES=none, a staging host) must not change the result.
+const savedEnv = {};
+before(() => {
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith("VERSE8_")) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+});
+after(() => {
+  for (const k of Object.keys(process.env)) if (k.startsWith("VERSE8_")) delete process.env[k];
+  Object.assign(process.env, savedEnv);
+});
 
 const SECRET = "eyJstraddlesTheCut0123456789abcdef";
 const LEAKED_HEAD = SECRET.slice(0, 6);
@@ -29,6 +47,14 @@ function straddling(cut) {
   const body = `${prefix}${pad}${key}${SECRET}"}`;
   assert.equal(body.indexOf(SECRET), cut - 14);
   return body;
+}
+
+/** `fields` plus a pad and an access_token whose value starts 14 chars before `cut` once serialized. */
+function straddlingObject(cut, fields) {
+  const probe = JSON.stringify({ ...fields, pad: "", access_token: SECRET }).indexOf(SECRET);
+  const obj = { ...fields, pad: "x".repeat(cut - 14 - probe), access_token: SECRET };
+  assert.equal(JSON.stringify(obj).indexOf(SECRET), cut - 14);
+  return obj;
 }
 
 async function withFetch(handler, fn) {
@@ -94,7 +120,60 @@ test("INV-13: attachment upload — the 200-char hint carries no part of the sec
   });
 });
 
+test("INV-13: redactHead redacts before it cuts", () => {
+  const body = straddling(500);
+  assert.ok(body.slice(0, 500).includes(LEAKED_HEAD), "fixture straddles the cut");
+  const out = redactHead(body, 500);
+  assert.ok(!out.includes(LEAKED_HEAD), out);
+  assert.ok(out.length <= 500);
+});
+
+test("INV-13: new project — a 2xx startcall body that fails the shape check is redacted before the cut", async () => {
+  // No template.name → the hint quotes the serialized body, cut to 500.
+  process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+  try {
+    const cases = [
+      // whole body serialized → `startcall response missing template.name`
+      ["missing template.name", straddlingObject(500, {})],
+      // only `template` serialized → `startcall template missing githubRepo or path`
+      ["template missing githubRepo/path", { template: straddlingObject(500, { name: "t" }) }],
+    ];
+    for (const [label, payload] of cases) {
+      _resetNewProjectStateForTests();
+      await withFetch(async () => new Response(JSON.stringify(payload), { status: 200 }), async () => {
+        const r = await runNewProjectStart({ userRequest: "a game" });
+        assert.equal(r.ok, false, label);
+        assert.equal(r.error, "startcall_failed", label);
+        assert.ok(!r.hint.includes(LEAKED_HEAD), `${label}: ${r.hint}`);
+      });
+    }
+  } finally {
+    delete process.env.VERSE8_ACCESS_TOKEN;
+  }
+});
+
+test("INV-13: backend error strings picked out of a JSON body are redacted in the client", async () => {
+  const pat = "glpat-leakInErrorField0123456789";
+  await withFetch(async () => new Response(JSON.stringify({ error: `denied for ${pat}` }), { status: 403 }), async () => {
+    const r = await gatewayGet("verse", "/db/collections", "t");
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 403);
+    assert.ok(!r.error.includes(pat), r.error);
+    assert.match(r.error, /^denied for glpat-\*\*\*$/);
+  });
+  await withFetch(
+    async () => new Response(JSON.stringify({ error: "access_denied", error_description: `bad ${pat}` }), { status: 400 }),
+    async () => {
+      const r = await deviceToken("dc");
+      assert.equal(r.ok, false);
+      assert.equal(r.error.error, "access_denied");
+      assert.ok(!r.error.error_description.includes(pat), r.error.error_description);
+    },
+  );
+});
+
 test("INV-13: proxied tool call — the 500-char hint carries no part of the secret", async () => {
+  process.env.VERSE8_MCP_PROXIES = "all";
   resetProxyCaches();
   const rpc = async (_url, init) => {
     const msg = JSON.parse(init.body);
@@ -123,5 +202,6 @@ test("INV-13: proxied tool call — the 500-char hint carries no part of the sec
     });
   } finally {
     resetProxyCaches();
+    delete process.env.VERSE8_MCP_PROXIES;
   }
 });

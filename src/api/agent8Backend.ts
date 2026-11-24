@@ -14,7 +14,7 @@
  */
 
 import { parseOverrideHost } from "../util/hostAllowlist.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint } from "../util/redact.js";
 
 const DEFAULT_AGENT8_BACKEND_URL = "https://agent8-backend.verse8.io";
 
@@ -362,7 +362,7 @@ export async function uploadAttachment(
         ok: false,
         error: "upload_response_malformed",
         status: res.status,
-        hint: `expected {success,url} JSON; got: ${safeHint(raw).slice(0, 200)}`,
+        hint: `expected {success,url} JSON; got: ${redactHead(raw, 200)}`,
       };
     }
     return { ok: true, url: data.url, status: res.status };
@@ -373,8 +373,7 @@ export async function uploadAttachment(
     ok: false,
     error: code,
     status: res.status,
-    // INV-13: redact before the cut.
-    hint: safeHint(raw).slice(0, 200) || `HTTP ${res.status}`,
+    hint: redactHead(raw, 200) || `HTTP ${res.status}`,
   };
 }
 

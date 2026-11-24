@@ -27,6 +27,24 @@ export interface ToolResultLike {
 
 const nowMs = Date.now;
 
+/**
+ * A local tool fails with `ok: false`. A proxied call is `{ok: true, result}`
+ * once the upstream answered, and the upstream tool itself failed when that
+ * MCP `result` has `isError: true` — its content goes to the host as a
+ * failure, so it is redacted like one.
+ */
+function isFailedResult(rec: unknown): boolean {
+  if (!rec || typeof rec !== "object") return false;
+  const r = rec as { ok?: unknown; result?: unknown };
+  if (r.ok === false) return true;
+  return (
+    r.ok === true &&
+    !!r.result &&
+    typeof r.result === "object" &&
+    (r.result as { isError?: unknown }).isError === true
+  );
+}
+
 export async function dispatchTool<T extends ToolResultLike | unknown>(
   name: string,
   runner: (ctx: DispatchContext) => Promise<T>,
@@ -45,14 +63,11 @@ export async function dispatchTool<T extends ToolResultLike | unknown>(
     const result = await runner(ctx);
     const durationMs = nowMs() - ctx.startedAt;
     let rec = result as ToolResultLike | undefined;
-    const ok =
-      rec && typeof rec === "object" && typeof rec.ok === "boolean"
-        ? rec.ok !== false
-        : true;
+    const ok = !isFailedResult(rec);
     // INV-13: Failure results carry no known secret shape. Hints quote
     // backend bodies, git stderr and URLs from many call sites; redacting
-    // here, where every local tool result leaves for the host, covers them
-    // all. Success results are the tool's real output (asset URLs with a
+    // here, where every tool result leaves for the host, covers them all.
+    // Success results are the tool's real output (asset URLs with a
     // `?token=` query, for one) and pass through untouched.
     if (!ok) rec = redactValue(rec);
     appendAuditLine({

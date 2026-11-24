@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { gatewayGet } from "../api/gameserverGateway.js";
 import { getVerse } from "../api/v8MemeApi.js";
-import { safeErrorHint } from "../util/redact.js";
+import { redactHead, safeErrorHint } from "../util/redact.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
 /**
@@ -137,7 +137,7 @@ export async function runDeployStatus(
       };
     }
     const error = verse.status === 401 ? "unauthorized" : verse.status === 403 ? "forbidden" : "upstream_error";
-    return { ok: false, error, status: verse.status, hint: `GET /v1/verse/verseId failed: HTTP ${verse.status} ${verse.body.slice(0, 200)}` };
+    return { ok: false, error, status: verse.status, hint: `GET /v1/verse/verseId failed: HTTP ${verse.status} ${redactHead(verse.body, 200)}` };
   }
 
   const v = verse.data;
