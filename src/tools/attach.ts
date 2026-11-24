@@ -27,12 +27,15 @@ import {
 } from "../resources/pluginGate.js";
 import {
   writeSkillFiles,
-  removeDirIfEmpty,
-  writeFileAtomic,
   type SkillFileChange,
   type SkillWriteResult,
 } from "./skillWriter.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import {
+  isPathInside,
+  projectWriter,
+  type ProjectWriter,
+} from "../util/projectWrite.js";
 import {
   AGENTS_MD_TEMPLATE,
   AGENTS_MD_TEMPLATE_HAS_CATALOG_MARKER,
@@ -258,34 +261,41 @@ export function applyAttachmentArtifacts(
   // plugins whose `requiresPackage` the project's package.json satisfies.
   const selection = selectProjectSkills(listSkillResources(), projectDir, vendorPluginsRoot());
   const journal = new RollbackJournal();
+  // INV-14: Attach writes never leave the project folder
+  const writer = projectWriter(projectDir);
+  // A core.hooksPath outside the project is the user's own git setting, so
+  // writes there are confined to that folder instead of the project.
+  const hooksWriter = isPathInside(projectDir, hooksDir)
+    ? writer
+    : projectWriter(hooksDir);
 
   try {
     // Step 1 — hooks.
-    const preCommitHook = writeHook(hooksDir, "pre-commit", PRE_COMMIT_SCRIPT);
+    const preCommitHook = writeHook(hooksWriter, hooksDir, "pre-commit", PRE_COMMIT_SCRIPT);
     if (preCommitHook === "created") {
       const p = path.join(hooksDir, "pre-commit");
-      journal.record(() => fs.rmSync(p, { force: true }));
+      journal.record(() => hooksWriter.removeFile(p));
     }
-    const commitMsgHook = writeHook(hooksDir, "commit-msg", COMMIT_MSG_SCRIPT);
+    const commitMsgHook = writeHook(hooksWriter, hooksDir, "commit-msg", COMMIT_MSG_SCRIPT);
     if (commitMsgHook === "created") {
       const p = path.join(hooksDir, "commit-msg");
-      journal.record(() => fs.rmSync(p, { force: true }));
+      journal.record(() => hooksWriter.removeFile(p));
     }
     maybeFail(opts.__failAfter, "hooks");
 
     // Step 2 — AGENTS.md / CLAUDE.md.
     const agentsSnapshot = snapshotAgentsDocs(projectDir);
-    const agentsDoc = writeAgentsDoc(projectDir, opts.overwrite, selection);
+    const agentsDoc = writeAgentsDoc(writer, projectDir, opts.overwrite, selection);
     if (agentsDoc !== "skipped-existing") {
-      journal.record(() => restoreAgentsDocs(projectDir, agentsSnapshot));
+      journal.record(() => restoreAgentsDocs(writer, projectDir, agentsSnapshot));
     }
     maybeFail(opts.__failAfter, "agentsDoc");
 
     // Step 3 — project marker.
     const markerSnapshot = snapshotMarker(projectDir);
-    const projectMarker = ensureProjectMarker(projectDir, opts.projectId);
+    const projectMarker = ensureProjectMarker(writer, projectDir, opts.projectId);
     if (projectMarker === "created") {
-      journal.record(() => restoreMarker(projectDir, markerSnapshot));
+      journal.record(() => restoreMarker(writer, projectDir, markerSnapshot));
     }
     maybeFail(opts.__failAfter, "marker");
 
@@ -299,7 +309,7 @@ export function applyAttachmentArtifacts(
     // throw halfway through (EACCES, ENOSPC, …) still rolls back the skills
     // already written, overwritten or removed.
     const changes: SkillFileChange[] = [];
-    journal.record(() => reverseSkillWrites(skillsRoot, changes, createdDirs));
+    journal.record(() => reverseSkillWrites(writer, skillsRoot, changes, createdDirs));
     const result = writeSkillFiles(projectDir, selection.active, {
       overwriteAll: opts.overwriteAllSkills === true,
       pruneOrphaned: opts.pruneOrphanedSkills === true,
@@ -319,7 +329,7 @@ export function applyAttachmentArtifacts(
       env.status === "added-missing" ||
       env.status === "overwrote"
     ) {
-      journal.record(() => restoreFile(envPath, envSnapshot));
+      journal.record(() => restoreFile(writer, envPath, envSnapshot));
     }
     maybeFail(opts.__failAfter, "env");
 
@@ -328,7 +338,7 @@ export function applyAttachmentArtifacts(
     const gitIgnoreSnapshot = snapshotFile(gitIgnorePath);
     const gitIgnore = ensureVerse8GitIgnore(projectDir);
     if (gitIgnore.status !== "already-present") {
-      journal.record(() => restoreFile(gitIgnorePath, gitIgnoreSnapshot));
+      journal.record(() => restoreFile(writer, gitIgnorePath, gitIgnoreSnapshot));
     }
     maybeFail(opts.__failAfter, "gitIgnore");
 
@@ -338,7 +348,7 @@ export function applyAttachmentArtifacts(
     const claudeGitIgnore = ensureClaudeGitIgnore(projectDir);
     if (claudeGitIgnore.status !== "already-present") {
       journal.record(() =>
-        restoreFile(claudeGitIgnorePath, claudeGitIgnoreSnapshot),
+        restoreFile(writer, claudeGitIgnorePath, claudeGitIgnoreSnapshot),
       );
     }
     maybeFail(opts.__failAfter, "claudeGitIgnore");
@@ -389,13 +399,13 @@ function snapshotFile(p: string): FileSnapshot {
   }
 }
 
-function restoreFile(p: string, snap: FileSnapshot): void {
+function restoreFile(writer: ProjectWriter, p: string, snap: FileSnapshot): void {
   if (snap.existed && typeof snap.content === "string") {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, snap.content, snap.mode ? { mode: snap.mode } : undefined);
+    writer.mkdirp(path.dirname(p));
+    writer.writeFile(p, snap.content, snap.mode ? { mode: snap.mode } : undefined);
   } else {
     try {
-      fs.rmSync(p, { force: true });
+      writer.removeFile(p);
     } catch {
       /* already gone */
     }
@@ -414,9 +424,13 @@ function snapshotAgentsDocs(projectDir: string): AgentsSnapshot {
   };
 }
 
-function restoreAgentsDocs(projectDir: string, snap: AgentsSnapshot): void {
-  restoreFile(path.join(projectDir, "AGENTS.md"), snap.agents);
-  restoreFile(path.join(projectDir, "CLAUDE.md"), snap.claude);
+function restoreAgentsDocs(
+  writer: ProjectWriter,
+  projectDir: string,
+  snap: AgentsSnapshot,
+): void {
+  restoreFile(writer, path.join(projectDir, "AGENTS.md"), snap.agents);
+  restoreFile(writer, path.join(projectDir, "CLAUDE.md"), snap.claude);
 }
 
 interface MarkerSnapshot {
@@ -430,18 +444,15 @@ function snapshotMarker(projectDir: string): MarkerSnapshot {
   return { file, dirExistedBefore: safeIsDir(verse8Dir) };
 }
 
-function restoreMarker(projectDir: string, snap: MarkerSnapshot): void {
+function restoreMarker(
+  writer: ProjectWriter,
+  projectDir: string,
+  snap: MarkerSnapshot,
+): void {
   const verse8Dir = path.join(projectDir, ".verse8");
-  restoreFile(path.join(verse8Dir, "project.json"), snap.file);
+  restoreFile(writer, path.join(verse8Dir, "project.json"), snap.file);
   // If we created .verse8/ AND it's now empty, remove it.
-  if (!snap.dirExistedBefore) {
-    try {
-      const entries = fs.readdirSync(verse8Dir);
-      if (entries.length === 0) fs.rmdirSync(verse8Dir);
-    } catch {
-      /* best-effort */
-    }
-  }
+  if (!snap.dirExistedBefore) writer.removeDirIfEmpty(verse8Dir);
 }
 
 function safeIsDir(p: string): boolean {
@@ -461,6 +472,7 @@ function safeIsDir(p: string): boolean {
  */
 // INV-6: Skills outside the bundle are never touched
 function reverseSkillWrites(
+  writer: ProjectWriter,
   skillsRoot: string,
   changes: SkillFileChange[],
   createdDirs: { claude: boolean; skillsRoot: boolean },
@@ -470,22 +482,23 @@ function reverseSkillWrites(
     const file = path.join(dir, "SKILL.md");
     try {
       if (change.kind === "created") {
-        fs.rmSync(file, { force: true });
-        if (change.dirCreated) removeDirIfEmpty(dir);
+        writer.removeFile(file);
+        if (change.dirCreated) writer.removeDirIfEmpty(dir);
       } else {
         // overwritten / removed: put the previous bytes and mode back.
-        fs.mkdirSync(dir, { recursive: true });
-        writeFileAtomic(file, change.previous.bytes, change.previous.mode);
+        writer.mkdirp(dir);
+        writer.writeFileAtomic(file, change.previous.bytes, change.previous.mode);
       }
     } catch {
       /* best-effort */
     }
   }
-  if (createdDirs.skillsRoot) removeDirIfEmpty(skillsRoot);
-  if (createdDirs.claude) removeDirIfEmpty(path.dirname(skillsRoot));
+  if (createdDirs.skillsRoot) writer.removeDirIfEmpty(skillsRoot);
+  if (createdDirs.claude) writer.removeDirIfEmpty(path.dirname(skillsRoot));
 }
 
 function writeAgentsDoc(
+  writer: ProjectWriter,
   projectDir: string,
   overwrite: boolean,
   selection: ProjectSkillSelection,
@@ -511,8 +524,12 @@ function writeAgentsDoc(
   const rendered = AGENTS_MD_TEMPLATE.replace("{{SKILLS_CATALOG}}", () =>
     instructions ? `${catalog}\n${instructions}` : catalog,
   );
-  fs.writeFileSync(agentsPath, rendered);
-  fs.writeFileSync(claudePath, rendered);
+  // Both checked before either is written, so a refused CLAUDE.md does not
+  // leave a half-updated pair behind.
+  writer.assertInside(agentsPath);
+  writer.assertInside(claudePath);
+  writer.writeFile(agentsPath, rendered);
+  writer.writeFile(claudePath, rendered);
   return existsAny ? "overwritten" : "created";
 }
 
@@ -543,6 +560,7 @@ async function resolveWalletAddress(projectDir: string): Promise<string | null> 
 
 // INV-2: `.verse8/project.json` carries no secrets
 function ensureProjectMarker(
+  writer: ProjectWriter,
   projectDir: string,
   projectId: string | undefined,
 ): "created" | "already-present" {
@@ -553,12 +571,13 @@ function ensureProjectMarker(
   } catch {
     // missing — create
   }
-  fs.mkdirSync(verse8Dir, { recursive: true });
+  writer.assertInside(markerPath);
+  writer.mkdirp(verse8Dir);
   const payload = {
     version: 1,
     projectId: projectId ?? "attached",
     attachedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(markerPath, JSON.stringify(payload, null, 2) + "\n");
+  writer.writeFile(markerPath, JSON.stringify(payload, null, 2) + "\n");
   return "created";
 }

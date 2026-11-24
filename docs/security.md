@@ -4,6 +4,8 @@
 
 - **Path-traversal rejection** — `projectDir` / `targetDir`은 MCP dispatch 경계에서 zod-refined됩니다. `..`, NUL, symlinked parent는 파일시스템 접근 전에 `invalid_input` / `invalid_parent`로 거부됩니다.
 
+- **Attach stays inside the project** — links in the project (committed in a cloned repo, or made by hand) cannot redirect attach writes outside the project folder or into `.git/`; attach fails with `attach_failed` instead (INV-14).
+
 - **Clone-command safety** — `git clone`은 항상 `execFileSync` argv-array 형태로 실행됩니다. GitLab PAT는 `parseCloneCommand`로 파싱되며 절대 셸에 보간되지 않습니다.
 
 - **Host allow-list** — 모든 env-driven base URL은 `*.verse8.io` + loopback에 대해 caller별 정책 predicate로 검증됩니다. 단일 진입점 `parseOverrideHost` (low-level URL parser)만 공유하고, 정책 결정 (auth / proxy / web-editor)은 caller 별로 분리되어 있습니다.
@@ -40,6 +42,7 @@ When you change or move a tagged test, move its tag with it. A new invariant tak
 | INV-11 | **Tool discovery is token-gated, not cwd-gated.** With a token, `verse8_checkpoint`, `verse8_preview` and proxy tools are listed; the project is re-validated at call time |
 | INV-12 | **The plugin package gate fails closed.** A vendored plugin with a malformed `requiresPackage`, a missing or unparseable `plugin.json`, or non-empty `tags` is inactive, and a missing `package.json` is an empty dependency set. A scope nobody can read never degrades into "every project" |
 | INV-13 | **Failure results carry no known secret shape.** `dispatchTool` runs every failed tool result through `redactValue` before it reaches the host: `ok: false`, and a proxied result whose upstream answer has `isError: true`. Success results pass through untouched. Backend text shortened for a hint (error bodies, error strings, serialized 2xx bodies that failed a shape check) goes through `redactHead`, which redacts before it cuts, and a token grant that succeeded without a clone URL reports key names only, never the body |
+| INV-14 | **Attach writes never leave the project folder.** Every write, mkdir, delete and rename that `applyAttachmentArtifacts` makes (hooks, `AGENTS.md`/`CLAUDE.md`, `.verse8/`, `.claude/skills/`, `.env`, both `.gitignore`s, and their rollback) goes through `util/projectWrite.ts`. It refuses a target when any existing component is a link that resolves outside the project, a dangling link, or a link from the working tree into `.git/`, and attach then fails with `attach_failed` naming the link and where it points. Links that stay inside the project are allowed. A unit test fails when one of those source files calls a mutating `fs` function directly. The one exception is an absolute `core.hooksPath` outside the project: it is the user's own git setting, and hook writes are confined to that folder instead |
 | INV-15 | **Git URLs in tool results carry no credentials.** A clone URL from the backend and the origin URL read from a local repo have their userinfo removed where they are read (`stripUrlCredentials`), so `gitUrl` and `project.gitlabRemote` never carry the project token. The `git clone` command that does carry it stays internal |
 | MCP-UP-1 | **`verse8_upload_asset` talks only to the allow-listed backend.** The URL comes from `getAgent8BackendBaseUrl()` gated by `isAllowedAgent8BackendBase` |
 | MCP-UP-2 | **`cdnPath` traversal is rejected before the network.** `..`, a leading `/`, empty segments, NUL, and a `filename` containing path separators |

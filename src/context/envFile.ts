@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { atomicWriteFileSync } from "../util/atomicWrite.js";
+import { projectWriter } from "../util/projectWrite.js";
 
 /**
  * Maintain the `<projectDir>/.env` file that the verse8 runtime loads.
@@ -102,8 +102,8 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function writeAtomic(filePath: string, body: string): void {
-  atomicWriteFileSync(filePath, body);
+function writeAtomic(projectDir: string, filePath: string, body: string): void {
+  projectWriter(projectDir).writeFileAtomic(filePath, body);
 }
 
 function loadRaw(envPath: string): string {
@@ -148,7 +148,7 @@ export function ensureVerse8EnvFile(
       [ACCOUNT_KEY, account],
       [VERSE_KEY, verse],
     ]);
-    writeAtomic(envPath, body);
+    writeAtomic(projectDir, envPath, body);
     return { status: "overwrote", account, verse, path: envPath };
   }
 
@@ -190,7 +190,7 @@ export function ensureVerse8EnvFile(
   if (!existingAccount) updates.push([ACCOUNT_KEY, account]);
   if (!existingVerse) updates.push([VERSE_KEY, verse]);
   const body = upsertEnvLines(raw, updates);
-  writeAtomic(envPath, body);
+  writeAtomic(projectDir, envPath, body);
 
   return {
     status: raw.trim().length === 0 ? "created" : "added-missing",

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSafeSkillName, type SkillResource } from "../resources/skills.js";
+import { projectWriter, type ProjectWriter } from "../util/projectWrite.js";
 
 /**
  * Hash-fingerprint-based writer for project-scoped skill files.
@@ -162,8 +163,9 @@ export function writeSkillFiles(
     deactivated: [],
   };
 
+  const writer = projectWriter(projectDir);
   const skillsRoot = path.join(projectDir, ".claude", "skills");
-  fs.mkdirSync(skillsRoot, { recursive: true });
+  writer.mkdirp(skillsRoot);
 
   const bundledNames = new Set(skills.map((s) => s.name));
 
@@ -202,11 +204,11 @@ export function writeSkillFiles(
       // The directory may already exist without a SKILL.md — e.g. a retired
       // skill whose folder kept the user's notes. Then it is not ours.
       const dirCreated = !fs.existsSync(destDir);
-      fs.mkdirSync(destDir, { recursive: true });
+      writer.mkdirp(destDir);
       try {
-        writeFileAtomic(destPath, finalBytes);
+        writer.writeFileAtomic(destPath, finalBytes);
       } catch (e) {
-        if (dirCreated) removeDirIfEmpty(destDir);
+        if (dirCreated) writer.removeDirIfEmpty(destDir);
         throw e;
       }
       result.created.push(skill.name);
@@ -217,7 +219,7 @@ export function writeSkillFiles(
 
     // Dest exists. Four sub-cases.
     if (opts.overwriteAll) {
-      writeFileAtomic(destPath, finalBytes, dest.mode);
+      writer.writeFileAtomic(destPath, finalBytes, dest.mode);
       result.updated.push(skill.name);
       opts.onChange?.({ kind: "overwritten", name: skill.name, previous: dest });
       continue;
@@ -248,7 +250,7 @@ export function writeSkillFiles(
     }
 
     // Source changed; our previous write is still intact; safe to overwrite.
-    writeFileAtomic(destPath, finalBytes, dest.mode);
+    writer.writeFileAtomic(destPath, finalBytes, dest.mode);
     result.updated.push(skill.name);
     opts.onChange?.({ kind: "overwritten", name: skill.name, previous: dest });
   }
@@ -259,7 +261,7 @@ export function writeSkillFiles(
     const previous = snapshotFile(path.join(skillsRoot, name, "SKILL.md"));
     if (!previous) continue; // never installed
     if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-written or user-edited
-    if (removeOwnSkillFile(skillsRoot, name)) {
+    if (removeOwnSkillFile(writer, skillsRoot, name)) {
       result.deactivated.push(name);
       opts.onChange?.({ kind: "removed", name, previous });
     }
@@ -285,7 +287,7 @@ export function writeSkillFiles(
       const previous = snapshotFile(path.join(skillsRoot, entry.name, "SKILL.md"));
       if (!previous) continue; // no SKILL.md in the dir, leave it alone
       if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-edited or user-owned
-      if (removeOwnSkillFile(skillsRoot, entry.name)) {
+      if (removeOwnSkillFile(writer, skillsRoot, entry.name)) {
         result.pruned.push(entry.name);
         opts.onChange?.({ kind: "removed", name: entry.name, previous });
       }
@@ -300,14 +302,18 @@ export function writeSkillFiles(
  * skill directory — and the directory only if that leaves it empty, so
  * anything the user added next to it survives. False when nothing was removed.
  */
-function removeOwnSkillFile(skillsRoot: string, name: string): boolean {
+function removeOwnSkillFile(
+  writer: ProjectWriter,
+  skillsRoot: string,
+  name: string,
+): boolean {
   const dir = path.join(skillsRoot, name);
   try {
-    fs.rmSync(path.join(dir, "SKILL.md"), { force: true });
+    writer.removeFile(path.join(dir, "SKILL.md"));
   } catch {
     return false;
   }
-  removeDirIfEmpty(dir);
+  writer.removeDirIfEmpty(dir);
   return true;
 }
 
@@ -319,33 +325,5 @@ export function snapshotFile(p: string): FileSnapshot | null {
     return { bytes: fs.readFileSync(p), mode: stat.mode & 0o7777 };
   } catch {
     return null;
-  }
-}
-
-/**
- * Write via a sibling temp file and rename, so a failure (EACCES, ENOSPC, …)
- * leaves the destination either untouched or fully written, never partial.
- * `mode` carries over the permission bits of the file being replaced.
- */
-export function writeFileAtomic(p: string, data: string | Buffer, mode?: number): void {
-  const tmp = path.join(
-    path.dirname(p),
-    `.${path.basename(p)}.verse8-tmp-${process.pid}-${Math.random().toString(36).slice(2)}`,
-  );
-  try {
-    fs.writeFileSync(tmp, data, mode === undefined ? undefined : { mode });
-    if (mode !== undefined) fs.chmodSync(tmp, mode);
-    fs.renameSync(tmp, p);
-  } catch (e) {
-    fs.rmSync(tmp, { force: true });
-    throw e;
-  }
-}
-
-export function removeDirIfEmpty(dir: string): void {
-  try {
-    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
-  } catch {
-    /* best-effort */
   }
 }

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { projectWriter, type ProjectWriter } from "../util/projectWrite.js";
 
 /**
  * Maintain `<projectDir>/.verse8/.gitignore` so verse8 runtime artifacts
@@ -35,6 +36,7 @@ export interface EnsureGitIgnoreResult {
 
 export function ensureVerse8GitIgnore(projectDir: string): EnsureGitIgnoreResult {
   return ensureManagedGitIgnore({
+    writer: projectWriter(projectDir),
     targetDir: path.join(projectDir, ".verse8"),
     entries: REQUIRED_ENTRIES,
   });
@@ -53,12 +55,14 @@ const CLAUDE_REQUIRED_ENTRIES = ["skills/"];
  */
 export function ensureClaudeGitIgnore(projectDir: string): EnsureGitIgnoreResult {
   return ensureManagedGitIgnore({
+    writer: projectWriter(projectDir),
     targetDir: path.join(projectDir, ".claude"),
     entries: CLAUDE_REQUIRED_ENTRIES,
   });
 }
 
 function ensureManagedGitIgnore(args: {
+  writer: ProjectWriter;
   targetDir: string;
   entries: readonly string[];
 }): EnsureGitIgnoreResult {
@@ -85,7 +89,7 @@ function ensureManagedGitIgnore(args: {
     return { status: "already-present", path: target };
   }
 
-  fs.mkdirSync(args.targetDir, { recursive: true });
+  args.writer.mkdirp(args.targetDir);
 
   let body: string;
   if (!exists) {
@@ -100,6 +104,6 @@ function ensureManagedGitIgnore(args: {
       "\n";
   }
 
-  fs.writeFileSync(target, body, { mode: 0o644 });
+  args.writer.writeFile(target, body, { mode: 0o644 });
   return { status: exists ? "updated" : "created", path: target };
 }
