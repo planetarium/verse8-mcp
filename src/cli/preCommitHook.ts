@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { extractHost } from "../context/verseProject.js";
+// INV-15: the hook's stderr reaches the agent through `git commit` output.
+import { stripUrlCredentials } from "../util/redact.js";
 
 /**
  * `verse8-mcp hook pre-commit` — validates the current repo's origin host is
@@ -27,7 +29,7 @@ export function runPreCommitHook(cwd: string = process.cwd()): number {
   }
 
   process.stderr.write(
-    `[verse8 pre-commit] origin host must be gitlab.verse8.io (got: ${host ?? "<unparsable>"} from ${origin})\n` +
+    `[verse8 pre-commit] origin host must be gitlab.verse8.io (got: ${host ?? "<unparsable>"} from ${stripUrlCredentials(origin) ?? "<unparsable>"})\n` +
       `[verse8 pre-commit] commit rejected — verse8 projects must push to gitlab.verse8.io.\n`,
   );
   return 1;

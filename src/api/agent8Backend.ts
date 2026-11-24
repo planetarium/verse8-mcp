@@ -14,7 +14,7 @@
  */
 
 import { parseOverrideHost } from "../util/hostAllowlist.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint } from "../util/redact.js";
 
 const DEFAULT_AGENT8_BACKEND_URL = "https://agent8-backend.verse8.io";
 
@@ -172,9 +172,11 @@ async function postJson<T>(
     if (data !== undefined) {
       return { ok: true, data, status: res.status };
     }
-    return { ok: false, status: res.status, body: raw };
+    return { ok: false, status: res.status, body: safeHint(raw) };
   }
-  return { ok: false, status: res.status, body: raw };
+  // INV-13: redact the whole body here: callers cut it to 500 chars for a
+  // hint, and a JSON shape cut before its closing quote no longer matches.
+  return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
 async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
@@ -193,9 +195,9 @@ async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
     if (data !== undefined) {
       return { ok: true, data, status: res.status };
     }
-    return { ok: false, status: res.status, body: raw };
+    return { ok: false, status: res.status, body: safeHint(raw) };
   }
-  return { ok: false, status: res.status, body: raw };
+  return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
 /**
@@ -360,7 +362,7 @@ export async function uploadAttachment(
         ok: false,
         error: "upload_response_malformed",
         status: res.status,
-        hint: safeHint(`expected {success,url} JSON; got: ${raw.slice(0, 200)}`),
+        hint: `expected {success,url} JSON; got: ${redactHead(raw, 200)}`,
       };
     }
     return { ok: true, url: data.url, status: res.status };
@@ -371,7 +373,7 @@ export async function uploadAttachment(
     ok: false,
     error: code,
     status: res.status,
-    hint: safeHint(raw.slice(0, 200) || `HTTP ${res.status}`),
+    hint: redactHead(raw, 200) || `HTTP ${res.status}`,
   };
 }
 

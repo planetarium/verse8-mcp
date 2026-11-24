@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { createServer } from "../../dist/server.js";
+import { dispatchTool } from "../../dist/util/toolDispatch.js";
 
 function getHandler(server, methodName) {
   const map = server._requestHandlers;
@@ -155,6 +156,29 @@ test("AC-OBSERVABILITY-1: verse8_bootstrap dispatch emits exactly one audit line
     assert.ok(typeof lines[0].correlationId === "string");
     assert.equal(lines[0].outcome, "ok");
     assert.match(lines[0].projectDirDigest, /^[0-9a-f]{12}$/);
+  });
+});
+
+test("dispatch: INV-13: failure results are redacted at the boundary, success results are not", async () => {
+  await withIsolatedAuditLog(async () => {
+    const failed = await dispatchTool("t", async () => ({
+      ok: false,
+      error: "x_failed",
+      hint: "HTTP 403: denied, credential glpat-boundaryLeak0123 echoed",
+      status: 403,
+      nested: { body: '{"access_token":"eyJnestedLeak"}' },
+    }));
+    const text = JSON.stringify(failed);
+    assert.ok(!text.includes("glpat-boundaryLeak"), text);
+    assert.ok(!text.includes("eyJnestedLeak"), text);
+    assert.equal(failed.status, 403);
+    assert.match(failed.hint, /^HTTP 403: denied, credential glpat-\*\*\* echoed$/);
+
+    // A success value that looks like a secret (e.g. a signed asset URL) is
+    // the tool's real output and passes through untouched.
+    const okValue = { ok: true, url: "https://cdn.example/a.png?token=AbCdEfGhIjKlMnOpQrSt" };
+    const passed = await dispatchTool("t", async () => okValue);
+    assert.equal(passed, okValue);
   });
 });
 

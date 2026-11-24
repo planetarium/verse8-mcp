@@ -13,7 +13,7 @@
  */
 
 import { parseOverrideHost } from "../util/hostAllowlist.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint } from "../util/redact.js";
 import { tolerantJsonParse } from "./agent8Backend.js";
 
 const DEFAULT_WEB_BASE = "https://verse8.io";
@@ -82,7 +82,7 @@ function classify(status: number): "unauthorized" | "forbidden" | "bad_request" 
 
 function failFromResponse(status: number, raw: string): MediaUploadResult {
   const data = tolerantJsonParse<{ error?: string }>(raw);
-  const msg = data && typeof data.error === "string" ? data.error : raw.slice(0, 200);
+  const msg = data && typeof data.error === "string" ? data.error : redactHead(raw, 200);
   return {
     ok: false,
     error: classify(status),
@@ -124,7 +124,7 @@ export async function uploadVerseImage(input: {
       ok: false,
       error: "upload_response_malformed",
       status: res.status,
-      hint: safeHint(`expected {publicUrl} JSON; got: ${raw.slice(0, 200)}`),
+      hint: `expected {publicUrl} JSON; got: ${redactHead(raw, 200)}`,
     };
   }
   return { ok: true, url: data.publicUrl };
@@ -167,7 +167,7 @@ export async function uploadVerseVideo(input: {
       ok: false,
       error: "upload_response_malformed",
       status: res.status,
-      hint: safeHint(`expected {uploadUrl, publicUrl} JSON; got: ${raw.slice(0, 200)}`),
+      hint: `expected {uploadUrl, publicUrl} JSON; got: ${redactHead(raw, 200)}`,
     };
   }
   // The presigned URL is signed for Content-Type + Content-Length; no token is sent.
@@ -192,7 +192,7 @@ export async function uploadVerseVideo(input: {
       ok: false,
       error: "upload_failed",
       status: put.status,
-      hint: safeHint(`presigned PUT HTTP ${put.status}: ${putRaw.slice(0, 200)}`),
+      hint: `presigned PUT HTTP ${put.status}: ${redactHead(putRaw, 200)}`,
     };
   }
   return { ok: true, url: data.publicUrl };

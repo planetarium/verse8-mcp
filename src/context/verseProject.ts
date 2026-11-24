@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { stripUrlCredentials } from "../util/redact.js";
 
 export interface VerseProjectDetection {
   isVerse: boolean;
@@ -61,11 +62,15 @@ export function detectVerseProject(cwd: string): VerseProjectDetection {
     return { isVerse: false };
   }
 
+  // INV-15: a clone made with a project token keeps it in origin
+  // (`https://oauth2:<PAT>@…`). Drop it here, where the URL is read, so every
+  // tool that reports `gitlabRemote` gets the clean value.
+  const remote =
+    typeof projectJson.gitlabRemote === "string" ? projectJson.gitlabRemote : originUrl;
   return {
     isVerse: true,
     projectId: typeof projectJson.projectId === "string" ? projectJson.projectId : undefined,
-    gitlabRemote:
-      typeof projectJson.gitlabRemote === "string" ? projectJson.gitlabRemote : originUrl,
+    gitlabRemote: stripUrlCredentials(remote) ?? undefined,
   };
 }
 

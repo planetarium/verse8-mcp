@@ -155,6 +155,47 @@ test("dispatch: every secret shape from SECRET_SHAPES is scrubbed by safeHint+js
   }
 });
 
+test("dispatch: INV-13: a proxied tool whose upstream answers isError:true is redacted like a local failure", async () => {
+  const { resetProxyCaches } = await import("../../dist/proxy/forward.js");
+  const PAT = "glpat-leakFromUpstreamTool0123456789";
+  const saved = {};
+  for (const k of Object.keys(process.env)) if (k.startsWith("VERSE8_")) { saved[k] = process.env[k]; delete process.env[k]; }
+  process.env.VERSE8_MCP_PROXIES = "all"; // independent of the developer's shell
+  process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const msg = JSON.parse(init.body);
+    const json = (result) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }), {
+        status: 200,
+        headers: { "content-type": "application/json", "mcp-session-id": "s1" },
+      });
+    if (msg.method === "initialize") return json({});
+    if (msg.method === "notifications/initialized") return new Response("", { status: 202 });
+    if (msg.method === "tools/list") return json({ tools: [{ name: "leaky_upstream_tool", inputSchema: { type: "object" } }] });
+    return json({
+      content: [{ type: "text", text: `generation failed: {"access_token":"eyJupstreamLeak"} via ${PAT}` }],
+      isError: true,
+    });
+  };
+  resetProxyCaches();
+  try {
+    const server = createServer();
+    const call = getHandler(server, "tools/call");
+    const r = await call({ method: "tools/call", params: { name: "leaky_upstream_tool", arguments: {} } }, {});
+    assert.equal(r.isError, true);
+    const text = r.content[0].text;
+    assert.ok(!text.includes(PAT), text);
+    assert.ok(!text.includes("eyJupstreamLeak"), text);
+    assert.match(text, /^generation failed: .*glpat-\*\*\*$/);
+  } finally {
+    globalThis.fetch = savedFetch;
+    resetProxyCaches();
+    for (const k of Object.keys(process.env)) if (k.startsWith("VERSE8_")) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+});
+
 test("dispatch: a rejected tokenized URL never reaches the next checkpoint commit message", async () => {
   // Every tool call is recorded and verse8_checkpoint folds the calls of the
   // same cwd into its (pushed) commit message. A verse8_open_project call

@@ -400,6 +400,36 @@ test("confirm tolerates snake_case response shape (clone_command, git_url)", asy
   }
 });
 
+test("confirm: clone URL userinfo is stripped from the returned gitUrl", async () => {
+  // --oauth-git-url: gitUrl in the real https://oauth2:<PAT>@ shape, while the
+  // clone command still points at the local fixture, so confirm succeeds.
+  const handle = await startMock([
+    "--fixed-project-path=smoke-user/verse8-smoke-bundle",
+    "--oauth-git-url",
+  ]);
+  try {
+    process.env.VERSE8_AGENT8_BACKEND_URL = `http://127.0.0.1:${handle.port}`;
+    process.env.VERSE8_ACCESS_TOKEN = "test-token-xyz";
+
+    const r = await runNewProjectConfirm({
+      templateName: "basic-vite-react",
+      repo: "planetarium/agent8-templates",
+      path: "basic-vite-react",
+      title: "Oauth",
+      projectRepo: "oauth",
+      targetDir: mkTmpCwd(),
+      projectPath: "smoke-user/verse8-smoke-bundle",
+    });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.gitUrl, "https://gitlab.verse8.io/smoke-user/verse8-smoke-bundle.git");
+    assert.ok(!JSON.stringify(r).includes("glpat-"), JSON.stringify(r));
+  } finally {
+    await stopMock(handle);
+    delete process.env.VERSE8_AGENT8_BACKEND_URL;
+    delete process.env.VERSE8_ACCESS_TOKEN;
+  }
+});
+
 test("confirm synthesizes cloneCommand from gitUrl when backend omits it", async () => {
   // Reproduces the real-world retry path: when POST /api/gitlab/project-
   // access-token is called for a project whose PAT was already granted,
@@ -464,6 +494,10 @@ test("confirm: when backend omits BOTH cloneCommand and gitUrl → token_grant_f
       /Observed top-level keys:/,
       `hint should surface observed keys for debugging, got: ${r.hint}`,
     );
+    // INV-13: the 2xx body carries the freshly minted token; only key names
+    // may reach the hint.
+    assert.match(r.hint, /Observed top-level keys: token,/);
+    assert.ok(!JSON.stringify(r).includes("glpat-smoke"), r.hint);
   } finally {
     await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;

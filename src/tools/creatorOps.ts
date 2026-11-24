@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint } from "../util/redact.js";
 
 /**
  * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop):
@@ -18,7 +18,7 @@ export function opFail(error: string, hint: string, extras: Record<string, unkno
 
 /** Map a non-2xx v8-meme-api answer to an error envelope. */
 export function apiFail(what: string, r: { status: number; body: string }): OpFail {
-  let message = r.body.slice(0, 300);
+  let message = redactHead(r.body, 300);
   try {
     const j = JSON.parse(r.body) as { message?: unknown; error?: unknown };
     const m = Array.isArray(j.message) ? j.message.join("; ") : j.message ?? j.error;

@@ -100,27 +100,67 @@ export function safeHint(input: string): string {
 }
 
 /**
+ * INV-13: redact, then cut to `max` chars — never the other way round. A
+ * JSON-keyed shape cut before its closing quote (`"access_token":"eyJ…`) no
+ * longer matches its pattern, so redacting the cut text leaks the head of
+ * the value. Use this wherever a backend body or a serialized response is
+ * shortened for a hint.
+ */
+export function redactHead(input: string, max: number): string {
+  if (typeof input !== "string") return input;
+  return safeHint(input).slice(0, max);
+}
+
+/**
+ * INV-15: drop userinfo (a token in `https://oauth2:<PAT>@host/…`) from a git
+ * URL. scp-style `git@host:path` carries only a user name and is returned
+ * as is. `null` for an empty or unparseable URL.
+ */
+export function stripUrlCredentials(url: string | null | undefined): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[^@\s/:]+@[^:\s/]+:/.test(trimmed)) return trimmed;
+  try {
+    const u = new URL(trimmed);
+    u.username = "";
+    u.password = "";
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `safeHint` for structured values (tool-call inputs / outputs): every string
  * inside is redacted, and so are the JSON-keyed shapes (`"access_token": …`),
  * which only match with their key. Returns a redacted copy; never throws.
+ *
+ * Strings are redacted one by one first: a JSON body quoted inside a string
+ * (a hint carrying a backend response) is escaped once the whole value is
+ * serialized (`\"access_token\":…`), and the keyed shapes no longer match.
  */
 export function redactValue<T>(value: T): T {
   if (value === undefined || value === null) return value;
   if (typeof value === "string") return safeHint(value) as unknown as T;
   if (typeof value !== "object") return value;
+  const strings = redactStrings(value);
   try {
-    const json = JSON.stringify(value);
-    if (json === undefined) return value;
+    const json = JSON.stringify(strings);
+    if (json === undefined) return strings as T;
     return JSON.parse(safeHint(json)) as T;
   } catch {
-    return redactStrings(value) as T;
+    return strings as T;
   }
 }
 
 function redactStrings(value: unknown): unknown {
   if (typeof value === "string") return safeHint(value);
   if (Array.isArray(value)) return value.map(redactStrings);
-  if (value && typeof value === "object") {
+  // Plain objects only: a Date or other class instance is left for the JSON
+  // pass, which serializes it the way the envelope will.
+  const proto = value && typeof value === "object" ? Object.getPrototypeOf(value) : undefined;
+  if (proto === Object.prototype || proto === null) {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       out[k] = redactStrings(v);

@@ -9,7 +9,7 @@ import {
 } from "../api/agent8Backend.js";
 import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
-import { safeHint } from "../util/redact.js";
+import { redactHead, safeHint, stripUrlCredentials } from "../util/redact.js";
 import { CREDIT_RECHARGE_URL } from "../constants.js";
 
 /**
@@ -28,7 +28,7 @@ export function creditError(
   return {
     ok: false,
     error: "insufficient_credits",
-    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${body.slice(0, 500)})`,
+    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${redactHead(body, 500)})`,
     status,
   };
 }
@@ -75,7 +75,15 @@ function isTokenLimitExceeded(body: string): boolean {
 export type GrantCloneAccessResult =
   | {
       ok: true;
+      /**
+       * Internal: carries the project token (the clone URL's userinfo). Pass
+       * it to `cloneAndAttach` only; never put it in a tool result.
+       */
       cloneCommand: string;
+      /**
+       * The backend's clone URL with userinfo removed, safe to return to the
+       * agent. `null` when the backend sent none or it does not parse.
+       */
       gitUrl: string | null;
       tokenExpiresAt?: string;
     }
@@ -91,7 +99,8 @@ export type GrantCloneAccessResult =
  * GET (existence check) then POST /api/gitlab/project-access-token for
  * `projectPath`, and resolve a usable `git clone` command from the response.
  * Backend errors (including a 403/404 for a project the user does not own)
- * are returned with their HTTP status and body head untouched.
+ * are returned with their HTTP status and body head; only known secret
+ * shapes in the body are redacted.
  */
 export async function grantCloneAccess(
   projectPath: string,
@@ -105,7 +114,7 @@ export async function grantCloneAccess(
     return {
       ok: false,
       error: "token_check_failed",
-      hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${check.body.slice(0, 500)}`,
+      hint: `GET /api/gitlab/project-access-token HTTP ${check.status}: ${redactHead(check.body, 500)}`,
       status: check.status,
     };
   }
@@ -119,7 +128,7 @@ export async function grantCloneAccess(
     if (isCreditInsufficientError(created.status, created.body)) {
       return creditError(created.status, created.body);
     }
-    const base = `POST /api/gitlab/project-access-token HTTP ${created.status}: ${created.body.slice(0, 500)}`;
+    const base = `POST /api/gitlab/project-access-token HTTP ${created.status}: ${redactHead(created.body, 500)}`;
     return {
       ok: false,
       error: "token_grant_failed",
@@ -173,12 +182,13 @@ export async function grantCloneAccess(
     cloneCommand = `git clone -b develop ${rawGitUrl} ${synthesizedSlug}`;
   } else {
     // Still no URL anywhere — surface the available keys in the hint so a
-    // follow-up session can narrow the schema drift without having to log
-    // the full body separately.
+    // follow-up session can narrow the schema drift. Key names only: this is
+    // a successful grant, so the body holds the token that was just minted.
+    // INV-13: no body values in this hint.
     return {
       ok: false,
       error: "token_grant_failed",
-      hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: response body carries neither cloneCommand/clone_command nor gitUrl/git_url at any known path. Observed top-level keys: ${describeKeys(created.data)}. Body head: ${JSON.stringify(created.data).slice(0, 500)}`,
+      hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: response body carries neither cloneCommand/clone_command nor gitUrl/git_url at any known path. Observed top-level keys: ${describeKeys(created.data)}.`,
       status: created.status,
     };
   }
@@ -186,7 +196,8 @@ export async function grantCloneAccess(
   return {
     ok: true,
     cloneCommand,
-    gitUrl: rawGitUrl ?? null,
+    // INV-15: the clone URL's userinfo is the project token.
+    gitUrl: stripUrlCredentials(rawGitUrl),
     tokenExpiresAt: rawExpiresAt ?? undefined,
   };
 }
