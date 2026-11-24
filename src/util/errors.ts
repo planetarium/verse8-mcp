@@ -76,7 +76,6 @@ export const ERROR_CODES = [
   "read_failed",
   "upstream_unreachable",
   "upstream_error",
-  "not_yet_available",
   // Deploy (verse8_deploy / verse8_upload_thumbnail)
   "missing_account_env",
   "verse_owned_by_other",

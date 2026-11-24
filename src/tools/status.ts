@@ -215,7 +215,7 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
   return {
     ok: false,
     error: "token_invalid",
-    hint: "token rejected by /v1/auth/verify; re-login via verse8_login_start + verse8_login_complete",
+    hint: `token rejected by /v1/auth/verify. To log in again: ${LOGIN_HINT}`,
     status: resp.status,
     project,
     workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),

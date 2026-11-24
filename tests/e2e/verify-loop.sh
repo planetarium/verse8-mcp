@@ -233,43 +233,6 @@ for line in sys.stdin:
   fi
 }
 
-# --- TEST 7: stub_new_project (current backend returns 404) ---
-t_stub_new_project() {
-  local dir="$TMPROOT/stubnew"
-  mkdir -p "$dir"
-  local response errcode
-  response=$(
-    (
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"verse8_new_project","arguments":{"gameType":"platformer","title":"e2e-stub","preset":"basic"}}}'
-      sleep 5
-    ) | (cd "$dir" && node "$DIST" serve 2>/dev/null)
-  )
-  errcode=$(printf '%s\n' "$response" | python3 -c "
-import json, sys
-for line in sys.stdin:
-    line = line.strip()
-    if not line.startswith('{'): continue
-    try:
-        m = json.loads(line)
-        if m.get('id') == 2:
-            content = m.get('result', {}).get('content', [])
-            if content:
-                txt = content[0].get('text', '')
-                try:
-                    d = json.loads(txt)
-                    print(d.get('error', 'none'))
-                except: pass
-    except: pass
-" | head -n1)
-  if [ "$errcode" = "not_yet_available" ]; then
-    ok "stub_new_project"
-  else
-    bad "stub_new_project" "expected 'not_yet_available', got: $errcode"
-  fi
-}
-
 # --- TEST 8: cwd-post-clone regression (known v1 limitation) ---
 t_cwd_post_clone_regression() {
   # Simulate case 2 post-clone scenario: MCP server spawned in parent dir, project cloned into child.
@@ -353,7 +316,6 @@ t_base_tools
 t_verse_project_tools
 t_checkpoint_local
 t_image_proxy_live
-t_stub_new_project
 t_cwd_post_clone_regression
 t_checkpoint_with_projectdir
 

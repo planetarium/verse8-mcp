@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { projectWriter } from "../util/projectWrite.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 /**
  * Maintain the `<projectDir>/.env` file that the verse8 runtime loads.
@@ -131,7 +132,7 @@ export function ensureVerse8EnvFile(
   if (!walletAddress) {
     return {
       status: "skipped-not-logged-in",
-      hint: "No walletAddress available (token missing or verify failed). Log in via verse8_login_start + verse8_login_complete, then re-run verse8_attach.",
+      hint: `No walletAddress available (token missing or verify failed). To log in: ${LOGIN_HINT}; then re-run verse8_attach.`,
     };
   }
 

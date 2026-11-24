@@ -23,11 +23,15 @@ function tsFiles(dir) {
   });
 }
 
+function parse(file) {
+  return ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+}
+
 /** Every string literal and template-literal chunk in src/ — comments excluded. */
 function sourceStrings() {
   const out = [];
   for (const file of tsFiles(path.join(REPO_ROOT, "src"))) {
-    const sf = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const sf = parse(file);
     const visit = (node) => {
       if (
         ts.isStringLiteral(node) ||
@@ -57,6 +61,37 @@ test("runtime strings in src/: no pointers to files or scripts inside the verse8
     }
     if (/\bbash scripts\b|\bnpm run (sync|check|test)\b/.test(text)) bad.push(`${where}: ${text.slice(0, 80)}`);
   }
+  assert.deepEqual(bad, []);
+});
+
+// Every place that returns `not_logged_in` — `{ error: "not_logged_in", hint }`
+// or `fail(…, "not_logged_in", hint)` — must pass LOGIN_HINT, not its own text.
+test("not_logged_in results in src/: every hint is LOGIN_HINT", () => {
+  const sites = [];
+  const bad = [];
+  for (const file of tsFiles(path.join(REPO_ROOT, "src"))) {
+    const sf = parse(file);
+    const visit = (node) => {
+      if (ts.isStringLiteral(node) && node.text === "not_logged_in") {
+        const p = node.parent;
+        const where = `${path.relative(REPO_ROOT, file)}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+        let hint;
+        if (ts.isPropertyAssignment(p) && p.name.getText(sf) === "error" && ts.isObjectLiteralExpression(p.parent)) {
+          hint = p.parent.properties.find((q) => ts.isPropertyAssignment(q) && q.name.getText(sf) === "hint");
+          hint = hint ? hint.initializer.getText(sf) : "<no hint>";
+        } else if (ts.isCallExpression(p) && p.arguments.includes(node)) {
+          hint = p.arguments.slice(p.arguments.indexOf(node) + 1).map((a) => a.getText(sf)).join(", ") || "<no hint>";
+        }
+        if (hint !== undefined) {
+          sites.push(where);
+          if (!/\bLOGIN_HINT\b/.test(hint)) bad.push(`${where}: ${hint.slice(0, 80)}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  assert.ok(sites.length >= 12, `only ${sites.length} not_logged_in sites found`);
   assert.deepEqual(bad, []);
 });
 

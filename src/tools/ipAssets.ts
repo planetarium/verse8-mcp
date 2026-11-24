@@ -7,6 +7,7 @@ import { IpAssetError } from "../util/ipAssetHttp.js";
 import { loadToken } from "../context/token.js";
 import { atomicWriteFileSync } from "../util/atomicWrite.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 export const ipAssetsInputSchema = z.object({
   pool: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,127}$/),
@@ -144,7 +145,7 @@ async function saveResults(results: Record<string, unknown>[], projectDir: strin
 export async function runIpAssets(input: Input, cwd = process.cwd()) {
   const projectDir = path.resolve(input.projectDir ?? cwd);
   const source = loadToken(projectDir);
-  if (!source) return { ok: false, error: "not_logged_in", hint: "Use verse8_login_start and verse8_login_complete." };
+  if (!source) return { ok: false, error: "not_logged_in", hint: LOGIN_HINT };
   const isMessage = input.method.startsWith("message/");
   if ((isMessage && !input.text) || (!isMessage && (!input.taskId || input.text || input.contextId || input.messageId))) {
     return { ok: false, error: "invalid_input", hint: "Messages require text; task operations require taskId only." };

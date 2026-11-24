@@ -5,6 +5,9 @@
  * repo paths (tests/unit/runtimeHints.test.mjs checks this).
  */
 
-/** Hint for every `not_logged_in` result. Same order as the verse8-login skill. */
+/**
+ * Hint for every `not_logged_in` result, and the "how to log in" part of
+ * every rejected-token hint. Same order as the verse8-login skill.
+ */
 export const LOGIN_HINT =
   "call verse8_login_start, show verification_uri_complete and user_code to the user, wait for them to approve in the browser, then call verse8_login_complete with the same device_code";

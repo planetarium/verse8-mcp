@@ -31,6 +31,8 @@ If you did not produce any change this turn (pure reading, debugging, explanatio
 | `model` | recommended | Your model id, e.g. `claude-opus-4-7`. |
 | `provider` | recommended | `anthropic`, `openai`, `google-vertex`, etc. |
 | `mcpServers` | recommended | Names of MCP servers whose tools you invoked, e.g. `["image"]`. Omit if you used none. |
+| `problemStatement` | recommended | One or two sentences on what was wrong or missing, in the user's terms. Lands as `<problemStatement>`; the hook warns when it is missing. |
+| `workSummary` | recommended | One or two sentences on what you changed. Lands as `<workSummary>`; the hook warns when it is missing. |
 | `reasoning` | optional | One short paragraph summarizing your reasoning. Skip if you didn't reason. |
 | `toolCalls` | optional | List of `{ name, status, input?, output? }`. Tool names only is fine; `input`/`output` are optional (truncated past 4 KB). Omit entirely to let verse8-mcp auto-fill from its own log — but that log only covers verse8-mcp tools, so host Read/Write/Bash calls will be missing unless you pass them. |
 | `files` | optional | Explicit staging list. Omit to stage everything (`git add -A`). |
@@ -50,7 +52,7 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 <subject = first line of userPrompt>
 
 <V8AgentMessage>
-{"messageId":"msg_ext_…","status":"completed","mcpServers":[…]}
+{"messageId":"msg_ext_…","status":"completed","mcpServers":[…],"problemStatement":"…","workSummary":"…"}
 </V8AgentMessage>
 <V8UserMessage>
 [Model: …]
@@ -60,6 +62,8 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 <userPrompt verbatim>
 </V8UserMessage>
 <V8AssistantMessage>
+<problemStatement id="prs_ext_…" status="completed">`…`</problemStatement>    (warns if missing)
+<workSummary id="wsm_ext_…" status="completed">`…`</workSummary>             (warns if missing)
 <reasoning id="prt_ext_r…" status="completed">`…`</reasoning>    (optional)
 <toolCall id="prt_ext_t…" name="…" status="…">`{…}`</toolCall>
 …

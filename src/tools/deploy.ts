@@ -1055,7 +1055,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", "Verse8 token rejected. Re-run verse8_login_start.", { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. To log in again: ${LOGIN_HINT}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,
