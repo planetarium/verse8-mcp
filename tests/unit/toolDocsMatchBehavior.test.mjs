@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createServer } from "../../dist/server.js";
+import { parseV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
 import { AGENTS_MD_TEMPLATE } from "../../dist/prompts/agentsMdTemplate.js";
 import { getNewProjectBootstrapPrompt } from "../../dist/prompts/newProjectBootstrap.js";
 
@@ -48,4 +52,40 @@ test("AGENTS.md commit policy: format drift is rejected, missing narrative only 
   assert.doesNotMatch(AGENTS_MD_TEMPLATE, /warnings on\s+stderr if your commit drifts from the format/);
   assert.match(AGENTS_MD_TEMPLATE, /drifts from\s+the format is rejected/);
   assert.match(AGENTS_MD_TEMPLATE, /missing narrative is accepted with warnings/);
+});
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const CORE_SKILLS = fs
+  .readdirSync(path.join(REPO_ROOT, "skills"))
+  .map((name) => path.join("skills", name, "SKILL.md"))
+  .filter((rel) => fs.existsSync(path.join(REPO_ROOT, rel)));
+
+// The verse8-commit skill is installed into game projects, which have no copy
+// of this repo — so the example lives in the doc and must stay parseable.
+test("verse8-commit skill: the full example is a V8 message the hook accepts without warnings", () => {
+  const doc = fs.readFileSync(path.join(REPO_ROOT, "skills", "verse8-commit", "SKILL.md"), "utf8");
+  const m = doc.match(/## Full example[\s\S]*?```text\r?\n([\s\S]*?)\r?\n```/);
+  assert.ok(m, "no ```text block under '## Full example'");
+  const parsed = parseV8CommitMessage(m[1]);
+  assert.equal(parsed.valid, true, JSON.stringify(parsed.issues));
+  assert.deepEqual(parsed.warnings, []);
+});
+
+// Core skills, AGENTS.md and the new-project prompt are read by agents inside
+// a game project. A path into this repo (src/format/…, scripts/…) is a file
+// that agent cannot open.
+test("installed docs: no references to files inside the verse8-mcp repo", () => {
+  const docs = [
+    ["AGENTS.md template", AGENTS_MD_TEMPLATE],
+    ["new-project prompt", getNewProjectBootstrapPrompt().messages[0].content.text],
+    ...CORE_SKILLS.map((rel) => [rel, fs.readFileSync(path.join(REPO_ROOT, rel), "utf8")]),
+  ];
+  assert.ok(CORE_SKILLS.length >= 3);
+  const bad = [];
+  for (const [name, text] of docs) {
+    for (const [, ref] of text.matchAll(/(?<![\w./-])((?:src|tests|docs|scripts|hooks|sample)\/[\w.-]+(?:\/[\w.-]+)*)/g)) {
+      if (ref.startsWith("sample/") || fs.existsSync(path.join(REPO_ROOT, ref))) bad.push(`${name}: ${ref}`);
+    }
+  }
+  assert.deepEqual(bad, []);
 });

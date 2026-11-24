@@ -108,7 +108,7 @@ MUST use for state-changing operations:
 
 | Intent | Use | Do NOT use |
 |--------|-----|------------|
-| Log in to Verse8 | \`verse8_login_start\` → \`verse8_login_complete\` | \`bash scripts/verse8-login.sh\` unless MCP is unavailable |
+| Log in to Verse8 | \`verse8_login_start\` → \`verse8_login_complete\` | — |
 | Check current profile / token | \`verse8_status\` | — |
 | Commit + push changes | **\`verse8_checkpoint\`** | Native \`git commit\` via Bash |
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |

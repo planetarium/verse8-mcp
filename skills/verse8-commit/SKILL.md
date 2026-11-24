@@ -66,18 +66,46 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 </V8AssistantMessage>
 ```
 
-See `src/format/v8CommitMessage.ts` for the exact grammar and `tests/unit/v8CommitMessage.test.mjs` for worked examples.
+What the hook checks — a commit fails if any of these is missing:
+
+- A non-empty first line (the subject).
+- A `<V8AgentMessage>` block whose body is JSON with a `messageId` and a string `status`.
+- A `<V8UserMessage>` block with a user prompt after the `[Model: …]` / `[Provider: …]` lines.
+- A `<V8AssistantMessage>` block (its children are optional).
+
+A commit that passes but has no `<problemStatement>` / `<workSummary>` inside `<V8AssistantMessage>` lands with a warning.
+
+## Full example
+
+A complete message that the hook accepts with no warnings, as `verse8_checkpoint` builds it (the `*_ext_…` ids are minted per commit):
+
+```text
+make the jump higher
+
+<V8AgentMessage>
+{"messageId":"msg_ext_49a1a4199214525a7f166a","status":"completed","mcpServers":[],"problemStatement":"Players could not reach the second platform.","workSummary":"Raised JUMP_VELOCITY from 8 to 11 in src/player.ts."}
+</V8AgentMessage>
+<V8UserMessage>
+[Model: claude-opus-4-7]
+
+[Provider: anthropic]
+
+make the jump higher
+</V8UserMessage>
+<V8AssistantMessage>
+<problemStatement id="prs_ext_3800f0d73f77f3fd4e88cc" status="completed">`Players could not reach the second platform.`</problemStatement>
+
+<workSummary id="wsm_ext_45a1188f790464f69f8e53" status="completed">`Raised JUMP_VELOCITY from 8 to 11 in src/player.ts.`</workSummary>
+
+<reasoning id="prt_ext_8f695e4502bc0c897728ba" status="completed">`Raised the jump impulse; gravity is unchanged.`</reasoning>
+
+<toolCall id="prt_ext_141e702385718b3037d4e1" name="edit" status="completed">`{"input":{"filePath":"src/player.ts"}}`</toolCall>
+</V8AssistantMessage>
+```
 
 ## If the commit-msg hook rejects or warns
 
-The `commit-msg` git hook (installed by `verse8_attach`, which `verse8_new_project_confirm` runs after cloning) runs `parseV8CommitMessage` and acts on the result in two ways:
+The `commit-msg` git hook (installed by `verse8_attach`, which `verse8_new_project_confirm` runs after cloning) runs `verse8-mcp hook commit-msg` and acts on the result in two ways:
 
 - **Format drift — rejected.** A message that is not valid V8 format makes the hook exit 1 and the commit does not land. Commit through `verse8_checkpoint` instead of a hand-written `git commit`. Merge / Revert subjects and `VERSE8_ALLOW_NONCOMPLIANT=1` are the only exceptions.
 - **Missing narrative — warned.** A valid commit without `<problemStatement>` / `<workSummary>` lands, and the hook prints `⚠` lines to stderr. Read the warnings, pass the missing field next turn, move on.
-
-## Reference
-
-- Builder/parser: `src/format/v8CommitMessage.ts`
-- Hook: `src/cli/commitMsgHook.ts` + `hooks/commit-msg`
-- Standalone CLI: `scripts/v8-commit-message.js` (takes JSON stdin, prints message)
-- Example messages: `tests/unit/v8CommitMessage.test.mjs`
