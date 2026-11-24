@@ -80,6 +80,18 @@ changed files, so the caller retries with `files`.
 `VERSE8_CHECKPOINT_REQUIRE_FILES=1` makes `false` the default on that
 machine; an explicit `stageAll` wins. The default is unchanged (`git add -A`).
 
+### Added — `verse8_deploy` can build from a clean checkout of HEAD (#41)
+
+`buildFrom: "head"` builds and uploads from a temporary checkout of the
+committed `HEAD`, so uncommitted edits (another session's included) stay out
+of the deployed build. Untracked local files the deploy reads (`.env*`,
+`.agent8.lock`, `.crossramp`, `.secret`, `.deployed`) are copied in, and the
+checkout is removed afterwards. It is slower (dependencies install from
+scratch). The default `"workingTree"` is unchanged but now warns with the
+paths that are not in the deployed commit. Both modes record in `playUrl`
+the `HEAD` read right after the checkpoint, not a commit made during the
+build.
+
 ### Added — `verse8-analytics` skill (#45)
 
 A bundled skill, copied into projects on attach, that shows how a game sends
