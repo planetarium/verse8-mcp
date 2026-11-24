@@ -45,7 +45,7 @@ async function main(): Promise<void> {
       `usage:\n` +
       `  verse8-mcp serve                    (default — start stdio MCP server)\n` +
       `  verse8-mcp hook pre-commit          (git hook: origin host validator)\n` +
-      `  verse8-mcp hook commit-msg <file>   (git hook: V8 commit-format validator, warn-only)\n`,
+      `  verse8-mcp hook commit-msg <file>   (git hook: V8 commit-format validator, rejects drift)\n`,
   );
   process.exit(2);
 }
