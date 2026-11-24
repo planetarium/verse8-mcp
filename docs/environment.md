@@ -17,7 +17,6 @@
 | `VERSE8_PROXY_REQUEST_TIMEOUT_MS` | `120000` (120초) | 업스트림 MCP 프록시 요청의 최소 타임아웃 (ms). 모든 서비스의 타임아웃이 이 값 이하로 내려가지 않도록 보장합니다. |
 | `XDG_CONFIG_HOME` | `~/.config` | 토큰 파일 부모 디렉터리 (`verse8/token`, 모드 `0600`). |
 | `XDG_STATE_HOME` | `~/.local/state` | 감사 로그 부모 디렉터리 (`VERSE8_AUDIT_LOG_PATH` 참조). |
-| `VERSE8_STUB_PROJECTS=1` | _(미설정)_ | 라이브 `POST /v1/projects` 호출 건너뜀 (개발 / CI). |
 
 Each URL override is checked against its service’s host allowlist. The IP asset endpoints accept HTTPS on `verse8.io`, its subdomains, loopback, or exactly `vicoop-router.fly.dev`. Both must be configured. An invalid or missing value stops the request before token exchange.
 

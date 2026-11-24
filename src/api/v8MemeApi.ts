@@ -47,23 +47,6 @@ export interface VerifyResponse {
   [k: string]: unknown;
 }
 
-export interface CreateProjectSuccess {
-  cloneUrl: string;
-  projectId: string;
-  [k: string]: unknown;
-}
-
-export interface CreateProjectNotYetAvailable {
-  error: "not_yet_available";
-  hint: string;
-}
-
-export interface CreateProjectInput {
-  gameType: string;
-  title: string;
-  preset: string;
-}
-
 import { parseOverrideHost } from "../util/hostAllowlist.js";
 import { safeHint } from "../util/redact.js";
 
@@ -96,10 +79,6 @@ function getBaseUrl(): string {
     return DEFAULT_API_BASE;
   }
   return override;
-}
-
-function isStubProjects(): boolean {
-  return process.env.VERSE8_STUB_PROJECTS === "1";
 }
 
 async function postJson<T>(url: string, body: unknown, token?: string): Promise<{ status: number; data: T | null; raw: string }> {
@@ -250,43 +229,6 @@ export async function updateVerse(
   return toVerseResult(
     await postJson<VerseInfo>(`${getBaseUrl()}/v1/verse/update/${encodeURIComponent(verseId)}`, body, token),
   );
-}
-
-export async function createProject(
-  input: CreateProjectInput,
-  token: string,
-): Promise<
-  | { ok: true; project: CreateProjectSuccess }
-  | { ok: false; notYetAvailable: true; hint: string }
-  | { ok: false; status: number; body: string }
-> {
-  if (isStubProjects()) {
-    return {
-      ok: false,
-      notYetAvailable: true,
-      hint: "backend API pending — use gitlab.verse8.io UI to create the repo, then clone locally",
-    };
-  }
-
-  const { status, data, raw } = await postJson<CreateProjectSuccess>(
-    `${getBaseUrl()}/v1/projects`,
-    input,
-    token,
-  );
-
-  if (status === 404 || status === 501) {
-    return {
-      ok: false,
-      notYetAvailable: true,
-      hint: "backend API pending — use gitlab.verse8.io UI to create the repo, then clone locally",
-    };
-  }
-
-  if (status >= 200 && status < 300 && data && typeof data.cloneUrl === "string" && typeof data.projectId === "string") {
-    return { ok: true, project: data };
-  }
-
-  return { ok: false, status, body: safeHint(raw) };
 }
 
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
