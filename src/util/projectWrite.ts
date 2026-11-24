@@ -18,7 +18,8 @@ import { atomicWriteFileSync } from "./atomicWrite.js";
  *     location inside the root. Links are followed hop by hop, so a dangling
  *     link is judged by where it points: one aimed inside the root is
  *     allowed (writing through it creates that file), one aimed outside is
- *     refused, however many links it goes through;
+ *     refused, however many links it goes through. On Windows the target
+ *     is also judged as text-folded, and both readings must pass;
  *   - a link outside `.git/` that leads into the root's real `.git/` folder
  *     is refused, so a working-tree path cannot rewrite git internals.
  *
@@ -79,40 +80,109 @@ function relIsInside(rel: string): boolean {
 
 const MAX_LINK_HOPS = 40;
 
+/** Which OS's path rules apply; injectable so tests can run the win32 rules anywhere. */
+export type PathPlatform = "win32" | "posix";
+
+/** The one place the host platform is read for link resolution. */
+export function hostPathPlatform(): PathPlatform {
+  return process.platform === "win32" ? "win32" : "posix";
+}
+
 /**
- * Where `p` really leads, following every link hop by hop even when the
- * end of the chain does not exist (`realpath` gives up there). Throws after
- * `MAX_LINK_HOPS` links.
+ * Every place `p` may really lead to, following links hop by hop even when
+ * the end of the chain does not exist (`realpath` gives up there). Throws
+ * after `MAX_LINK_HOPS` links. A caller allows `p` only when every
+ * candidate is acceptable.
  *
- * The path is walked one component at a time the way the kernel does, never
- * folded as a string first: `..` steps up from the real location reached so
- * far, so in `sub/../x` with `sub → ..` it leaves the folder `sub` points
- * at, not the folder `sub` sits in. (`path.resolve("…/sub/../x")` would
- * drop `sub` before it is followed and judge a different place than the
- * one the write lands in.) Missing components are taken as plain names.
+ * A dangling link's target is walked one component at a time as a POSIX
+ * kernel does, never folded as a string first: `..` steps up from the real
+ * location reached so far, so in `sub/../x` with `sub → ..` it leaves the
+ * folder `sub` points at, not the folder `sub` sits in. Missing components
+ * are taken as plain names.
+ *
+ * On win32 it is not established whether a relative link target's `..` is
+ * applied after following the links before it or folded as text first, so
+ * both readings are returned and both must pass.
  */
-export function resolveLoose(p: string, budget = { hops: MAX_LINK_HOPS }): string {
+export function resolveCandidates(
+  p: string,
+  platform: PathPlatform = hostPathPlatform(),
+): string[] {
   try {
-    return fs.realpathSync.native(p); // everything exists: the OS answer
+    return [fs.realpathSync.native(p)]; // everything exists: the OS answer
   } catch {
     /* something on the way is missing or dangling — walk it */
   }
-  const start = path.isAbsolute(p) ? path.parse(p).root : fs.realpathSync.native(process.cwd());
-  return walkComponents(start, splitComponents(p), budget, p);
+  const walked = resolveWalk(p, platform, false);
+  if (platform !== "win32") return [walked];
+  const folded = resolveWalk(p, platform, true);
+  return folded === walked ? [walked] : [walked, folded];
 }
 
-function splitComponents(p: string): string[] {
+/** The POSIX-walk reading only (see `resolveCandidates`). */
+export function resolveLoose(p: string, platform: PathPlatform = hostPathPlatform()): string {
+  return resolveCandidates(p, platform)[0];
+}
+
+function resolveWalk(p: string, platform: PathPlatform, foldTargets: boolean): string {
+  const ctx = { hops: MAX_LINK_HOPS, platform, foldTargets, original: p };
+  const start = path.isAbsolute(p) ? path.parse(p).root : fs.realpathSync.native(process.cwd());
   const rest = path.isAbsolute(p) ? p.slice(path.parse(p).root.length) : p;
-  return rest.split(process.platform === "win32" ? /[\\/]/ : "/");
+  return walkComponents(start, splitComponents(rest, platform), ctx);
+}
+
+function splitComponents(rest: string, platform: PathPlatform): string[] {
+  return rest.split(platform === "win32" ? /[\\/]/ : "/");
+}
+
+/**
+ * Where a link's target starts and the components to walk from there.
+ *
+ * - relative: from the link's own real folder;
+ * - absolute: from the target's root. On win32 a root without a drive
+ *   (`\Project\x`) is on the link's drive, not the process's current one;
+ *   `\\?\` / `\??\` prefixes are dropped (`\\?\UNC\srv\sh` is `\\srv\sh`),
+ *   and a UNC root (`\\srv\sh\`) is kept whole;
+ * - drive-relative (`C:x`, relative to that drive's unknown current folder)
+ *   is refused.
+ */
+export function linkTargetStart(
+  target: string,
+  linkRealDir: string,
+  platform: PathPlatform = hostPathPlatform(),
+): { start: string; parts: string[] } {
+  if (platform !== "win32") {
+    return target.startsWith("/")
+      ? { start: "/", parts: splitComponents(target.slice(1), platform) }
+      : { start: linkRealDir, parts: splitComponents(target, platform) };
+  }
+  const W = path.win32;
+  let t = target;
+  if (/^\\\\\?\\UNC\\/i.test(t)) t = `\\\\${t.slice(8)}`;
+  else if (/^(\\\\\?\\|\\\?\?\\)/.test(t)) t = t.slice(4);
+  if (/^[A-Za-z]:(?![\\/])/.test(t)) {
+    throw new ProjectWriteError(`link target ${target} is relative to a drive's current folder`);
+  }
+  if (!W.isAbsolute(t)) return { start: linkRealDir, parts: splitComponents(t, platform) };
+  const root = W.parse(t).root;
+  const rest = t.slice(root.length);
+  const hasDriveOrShare = /^[A-Za-z]:/.test(root) || /^[\\/]{2}/.test(root);
+  return {
+    start: hasDriveOrShare ? root : W.parse(linkRealDir).root,
+    parts: splitComponents(rest, platform),
+  };
+}
+
+interface WalkContext {
+  hops: number;
+  platform: PathPlatform;
+  /** Fold each link target as text before walking it (the other win32 reading). */
+  foldTargets: boolean;
+  original: string;
 }
 
 /** Walk `parts` from `start` (already a real path), following links as met. */
-function walkComponents(
-  start: string,
-  parts: string[],
-  budget: { hops: number },
-  original: string,
-): string {
+function walkComponents(start: string, parts: string[], ctx: WalkContext): string {
   let real = start;
   for (const part of parts) {
     if (part === "" || part === ".") continue;
@@ -138,14 +208,21 @@ function walkComponents(
     } catch {
       /* dangling — follow it by hand */
     }
-    if (--budget.hops < 0) {
-      throw new ProjectWriteError(`too many links while resolving ${original}`);
+    if (--ctx.hops < 0) {
+      throw new ProjectWriteError(`too many links while resolving ${ctx.original}`);
     }
-    const target = fs.readlinkSync(next);
-    // A relative target starts in the link's own (real) folder.
-    real = path.isAbsolute(target)
-      ? walkComponents(path.parse(target).root, splitComponents(target), budget, original)
-      : walkComponents(real, splitComponents(target), budget, original);
+    const { start: from, parts: targetParts } = linkTargetStart(
+      fs.readlinkSync(next),
+      real,
+      ctx.platform,
+    );
+    if (ctx.foldTargets) {
+      const folded = path.resolve(from, ...targetParts.filter((s) => s !== ""));
+      const root = path.parse(folded).root;
+      real = walkComponents(root, splitComponents(folded.slice(root.length), ctx.platform), ctx);
+    } else {
+      real = walkComponents(from, targetParts, ctx);
+    }
   }
   return real;
 }
@@ -159,7 +236,11 @@ function exists(p: string): boolean {
   }
 }
 
-export function projectWriter(rootDir: string): ProjectWriter {
+export function projectWriter(
+  rootDir: string,
+  opts: { platform?: PathPlatform } = {},
+): ProjectWriter {
+  const platform = opts.platform ?? hostPathPlatform();
   const root = path.resolve(rootDir);
   const show = (p: string): string => {
     const rel = path.relative(root, p);
@@ -176,7 +257,7 @@ export function projectWriter(rootDir: string): ProjectWriter {
   function check(target: string): string {
     // Folding `target` here is safe: the operation then uses this same
     // folded string, so what is checked is what the kernel resolves. Only
-    // link targets (read from disk) must not be folded — see resolveLoose.
+    // link targets (read from disk) must not be folded — see resolveCandidates.
     const abs = path.resolve(target);
     const rel = path.relative(root, abs);
     if (!relIsInside(rel)) {
@@ -185,11 +266,11 @@ export function projectWriter(rootDir: string): ProjectWriter {
       );
     }
     const segs = rel === "" ? [] : rel.split(path.sep);
-    const realRoot = resolveLoose(root);
+    const realRoot = resolveLoose(root, platform);
     const lexGit = path.join(root, ".git");
     // The real .git folder: `.git` may itself be a link (to a folder inside
     // the project or elsewhere), and its metadata is protected either way.
-    const realGit = resolveLoose(lexGit);
+    const realGits = resolveCandidates(lexGit, platform);
 
     let cur = root;
     for (const seg of segs) {
@@ -201,13 +282,16 @@ export function projectWriter(rootDir: string): ProjectWriter {
         break; // missing — nothing below it exists either
       }
       if (!st.isSymbolicLink()) continue;
-      const resolved = resolveLoose(cur);
-      const where = exists(cur) ? resolved : `${resolved} (missing)`;
-      if (!isPathInside(realRoot, resolved)) {
-        return refuse(abs, `${show(cur)} is a link to ${where}, which is outside the project folder`);
-      }
-      if (isPathInside(realGit, resolved) && !isPathInside(lexGit, cur)) {
-        return refuse(abs, `${show(cur)} is a link to ${where}, inside the project's .git folder`);
+      const missing = exists(cur) ? "" : " (missing)";
+      // Every reading must pass (two on win32, see resolveCandidates).
+      for (const resolved of resolveCandidates(cur, platform)) {
+        const where = `${resolved}${missing}`;
+        if (!isPathInside(realRoot, resolved)) {
+          return refuse(abs, `${show(cur)} is a link to ${where}, which is outside the project folder`);
+        }
+        if (realGits.some((g) => isPathInside(g, resolved)) && !isPathInside(lexGit, cur)) {
+          return refuse(abs, `${show(cur)} is a link to ${where}, inside the project's .git folder`);
+        }
       }
     }
     return abs;

@@ -35,6 +35,7 @@ import { isSafeAbsPath } from "../util/safePath.js";
 import {
   isPathInside,
   projectWriter,
+  resolveCandidates,
   resolveLoose,
   type ProjectWriter,
 } from "../util/projectWrite.js";
@@ -400,8 +401,11 @@ function pickHooksWriter(
     return { hooksWriter: projectWriter(hooksDir), hooksWriteDir: hooksDir };
   }
   if (isPathInside(path.join(projectDir, ".git"), hooksDir)) {
-    const realHooks = resolveLoose(hooksDir);
-    if (!isPathInside(resolveLoose(projectDir), realHooks)) {
+    // Two readings (win32) that disagree fall through to the project
+    // writer, which refuses whichever of them leads outside.
+    const readings = resolveCandidates(hooksDir);
+    const realHooks = readings[0];
+    if (readings.length === 1 && !isPathInside(resolveLoose(projectDir), realHooks)) {
       return { hooksWriter: projectWriter(realHooks), hooksWriteDir: realHooks };
     }
   }

@@ -10,6 +10,9 @@ import ts from "typescript";
 import { applyAttachmentArtifacts } from "../../dist/tools/attach.js";
 import { cloneAndAttach } from "../../dist/tools/projectClone.js";
 import { addHashMarker, writeSkillFiles } from "../../dist/tools/skillWriter.js";
+import * as projectWrite from "../../dist/util/projectWrite.js";
+
+const { projectWriter } = projectWrite;
 
 // Attach writes into a project the user (or a cloned repo) controls. A link
 // in it must not turn an attach write into a write outside the project.
@@ -430,13 +433,67 @@ for (const [label, subTarget, depth] of [
         return;
       }
       assert.throws(() => attach(project), /AGENTS\.md is a link to .*outside the project folder/);
+      // Where the kernel would put it: `sub` leads to <base>/d0, `..` to <base>.
       assert.equal(fs.existsSync(path.join(base, "planted")), false);
-      assert.equal(fs.existsSync(path.join(path.dirname(project), "planted")), false);
     } finally {
       cleanup(base);
     }
   });
 }
+
+// Readings that disagree: sub → a/b, AGENTS.md → sub/../../x. Walking the
+// links first (POSIX) lands in <project>/x; folding the target as text
+// first lands in <base>/x, outside. win32 checks both and refuses; POSIX
+// keeps the walk. The platform is injected so Linux CI runs the win32 rule.
+// INV-14: Attach writes never leave the project folder
+test("projectWriter: win32 refuses when either reading of a dangling link is outside; POSIX follows the walk", (t) => {
+  for (const platform of ["win32", "posix"]) {
+    const { base, project } = setupNested(0);
+    try {
+      fs.mkdirSync(path.join(project, "a", "b"), { recursive: true });
+      if (
+        !tryLinkFile("a/b", path.join(project, "sub"), "dir") ||
+        !tryLinkFile("sub/../../x", path.join(project, "AGENTS.md"))
+      ) {
+        t.skip("file symlinks need privilege on this Windows host");
+        return;
+      }
+      const w = projectWriter(project, { platform });
+      if (platform === "win32") {
+        assert.throws(() => w.writeFile(path.join(project, "AGENTS.md"), "x"), /AGENTS\.md is a link to .*outside the project folder/);
+        assert.equal(fs.existsSync(path.join(base, "x")), false);
+        assert.equal(fs.existsSync(path.join(project, "x")), false);
+      } else if (!isWin) {
+        // Only where the host kernel itself walks POSIX-style.
+        w.writeFile(path.join(project, "AGENTS.md"), "x");
+        assert.equal(fs.readFileSync(path.join(project, "x"), "utf8"), "x");
+        assert.equal(fs.existsSync(path.join(base, "x")), false);
+      }
+    } finally {
+      cleanup(base);
+    }
+  }
+});
+
+test("linkTargetStart: win32 roots — a drive-less target is on the link's drive; \\\\?\\ and UNC forms keep their root", () => {
+  const lts = (tgt) => projectWrite.linkTargetStart(tgt, "D:\\work\\proj", "win32");
+  assert.deepEqual(lts("\\Project\\x"), { start: "D:\\", parts: ["Project", "x"] });
+  assert.deepEqual(lts("/Project/x"), { start: "D:\\", parts: ["Project", "x"] });
+  assert.deepEqual(lts("C:\\a\\b"), { start: "C:\\", parts: ["a", "b"] });
+  assert.deepEqual(lts("\\\\?\\C:\\a\\b"), { start: "C:\\", parts: ["a", "b"] });
+  assert.deepEqual(lts("\\??\\C:\\a"), { start: "C:\\", parts: ["a"] });
+  assert.deepEqual(lts("\\\\srv\\share\\a"), { start: "\\\\srv\\share\\", parts: ["a"] });
+  assert.deepEqual(lts("\\\\?\\UNC\\srv\\share\\a"), { start: "\\\\srv\\share\\", parts: ["a"] });
+  assert.deepEqual(lts("..\\x"), { start: "D:\\work\\proj", parts: ["..", "x"] });
+  assert.throws(() => lts("C:x"), /relative to a drive's current folder/);
+});
+
+test("linkTargetStart: posix — absolute from /, relative from the link's folder, backslash is a plain character", () => {
+  const lts = (tgt) => projectWrite.linkTargetStart(tgt, "/w/proj", "posix");
+  assert.deepEqual(lts("/a/b"), { start: "/", parts: ["a", "b"] });
+  assert.deepEqual(lts("../x"), { start: "/w/proj", parts: ["..", "x"] });
+  assert.deepEqual(lts("a\\b"), { start: "/w/proj", parts: ["a\\b"] });
+});
 
 // INV-14: Attach writes never leave the project folder
 test("attach: a dangling CLAUDE.md → s/../hooks/x with s → .git/info is refused (lands in .git)", (t) => {
