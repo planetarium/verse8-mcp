@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import { appendAuditLine, projectDirDigest } from "./auditLog.js";
-import { safeErrorHint } from "./redact.js";
+import { redactValue, safeErrorHint } from "./redact.js";
 
 /**
  * Correlation-id + duration + audit sink wrapper for MCP tool handlers
@@ -44,11 +44,17 @@ export async function dispatchTool<T extends ToolResultLike | unknown>(
   try {
     const result = await runner(ctx);
     const durationMs = nowMs() - ctx.startedAt;
-    const rec = result as ToolResultLike | undefined;
+    let rec = result as ToolResultLike | undefined;
     const ok =
       rec && typeof rec === "object" && typeof rec.ok === "boolean"
         ? rec.ok !== false
         : true;
+    // INV-13: Failure results carry no known secret shape. Hints quote
+    // backend bodies, git stderr and URLs from many call sites; redacting
+    // here, where every local tool result leaves for the host, covers them
+    // all. Success results are the tool's real output (asset URLs with a
+    // `?token=` query, for one) and pass through untouched.
+    if (!ok) rec = redactValue(rec);
     appendAuditLine({
       ts: new Date(ctx.startedAt).toISOString(),
       tool: name,
@@ -59,7 +65,7 @@ export async function dispatchTool<T extends ToolResultLike | unknown>(
       error: ok ? undefined : (rec as { error?: string })?.error,
       hint: ok ? undefined : (rec as { hint?: string })?.hint,
     });
-    return result;
+    return rec as T;
   } catch (e) {
     const durationMs = nowMs() - ctx.startedAt;
     appendAuditLine({

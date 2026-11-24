@@ -91,7 +91,8 @@ export type GrantCloneAccessResult =
  * GET (existence check) then POST /api/gitlab/project-access-token for
  * `projectPath`, and resolve a usable `git clone` command from the response.
  * Backend errors (including a 403/404 for a project the user does not own)
- * are returned with their HTTP status and body head untouched.
+ * are returned with their HTTP status and body head; only known secret
+ * shapes in the body are redacted.
  */
 export async function grantCloneAccess(
   projectPath: string,
@@ -173,12 +174,13 @@ export async function grantCloneAccess(
     cloneCommand = `git clone -b develop ${rawGitUrl} ${synthesizedSlug}`;
   } else {
     // Still no URL anywhere — surface the available keys in the hint so a
-    // follow-up session can narrow the schema drift without having to log
-    // the full body separately.
+    // follow-up session can narrow the schema drift. Key names only: this is
+    // a successful grant, so the body holds the token that was just minted.
+    // INV-13: no body values in this hint.
     return {
       ok: false,
       error: "token_grant_failed",
-      hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: response body carries neither cloneCommand/clone_command nor gitUrl/git_url at any known path. Observed top-level keys: ${describeKeys(created.data)}. Body head: ${JSON.stringify(created.data).slice(0, 500)}`,
+      hint: `POST /api/gitlab/project-access-token HTTP ${created.status}: response body carries neither cloneCommand/clone_command nor gitUrl/git_url at any known path. Observed top-level keys: ${describeKeys(created.data)}.`,
       status: created.status,
     };
   }

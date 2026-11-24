@@ -24,6 +24,8 @@ import {
   runOpenProject,
   _resetOpenProjectStateForTests,
 } from "../../dist/tools/openProject.js";
+import { grantCloneAccess } from "../../dist/tools/projectClone.js";
+import { createServer } from "../../dist/server.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -384,6 +386,49 @@ test("open: project the caller does not own → backend status + body passed thr
     assert.match(r.hint, /PERMISSION_DENIED/);
     assert.ok(!fs.existsSync(path.join(targetDir, "their-game")));
   });
+});
+
+test("open: INV-13: secret-shaped values in a backend error body never reach the tool result", async () => {
+  // Through the real tools/call handler, so the dispatch boundary is covered.
+  await withMock(["--deny-token=403", "--secret-in-error"], async () => {
+    const server = createServer();
+    const call = server._requestHandlers.get("tools/call");
+    assert.ok(call, "no tools/call handler");
+    const result = await call(
+      {
+        method: "tools/call",
+        params: { name: "verse8_open_project", arguments: { project: "someone-else/leaky", targetDir: mkTmp() } },
+      },
+      {},
+    );
+    assert.equal(result.isError, true);
+    const text = result.content[0].text;
+    assert.ok(!text.includes("glpat-leakFromBackendBody"), text);
+    assert.ok(!text.includes("eyJleakedAccessTokenValue"), text);
+    // Status and the rest of the backend message stay visible.
+    const r = JSON.parse(text);
+    assert.equal(r.error, "token_check_failed");
+    assert.equal(r.status, 403);
+    assert.match(r.hint, /HTTP 403: .*Access denied: You are not the owner of this project/);
+    assert.match(r.hint, /upstream rejected credential glpat-\*\*\*/);
+  });
+});
+
+test("open: INV-13: a secret cut by the 500-char hint limit is still redacted", async () => {
+  // Redacting after the cut would miss "access_token":"… — its closing quote
+  // is past the limit — and leak the head of the value.
+  // The value starts at char 486, so a 500-char cut keeps its first 14 chars.
+  const body = `{"pad":"${"x".repeat(460)}","access_token":"eyJstraddlesTheCut0123456789abcdef"}`;
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => new Response(body, { status: 500 });
+  try {
+    const r = await grantCloneAccess("someone/cut", "test-token-xyz");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "token_check_failed");
+    assert.ok(!r.hint.includes("eyJstr"), r.hint);
+  } finally {
+    globalThis.fetch = saved;
+  }
 });
 
 test("open: not_logged_in without a token", async () => {

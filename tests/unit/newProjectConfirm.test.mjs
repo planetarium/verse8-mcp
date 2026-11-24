@@ -464,6 +464,10 @@ test("confirm: when backend omits BOTH cloneCommand and gitUrl → token_grant_f
       /Observed top-level keys:/,
       `hint should surface observed keys for debugging, got: ${r.hint}`,
     );
+    // INV-13: the 2xx body carries the freshly minted token; only key names
+    // may reach the hint.
+    assert.match(r.hint, /Observed top-level keys: token,/);
+    assert.ok(!JSON.stringify(r).includes("glpat-smoke"), r.hint);
   } finally {
     await stopMock(handle);
     delete process.env.VERSE8_AGENT8_BACKEND_URL;

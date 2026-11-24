@@ -1,6 +1,6 @@
 # 보안 자세 (Security posture)
 
-- **Trust-boundary redaction** — 모든 MCP 응답 envelope (tool, resource, prompt)이 `util/redact.ts`를 통과합니다. `glpat-*`, `Bearer <token>`, `oauth2:<secret>@…` URL, `access_token / refresh_token / device_code` JSON 필드를 포함한 throw된 에러도 호스트 LLM에 그대로 도달하지 않습니다.
+- **Trust-boundary redaction** — failed tool results, thrown errors, and resource/prompt error envelopes pass through `util/redact.ts` before they reach the host LLM, so `glpat-*`, `Bearer <token>`, `oauth2:<secret>@…` URLs and `access_token / refresh_token / device_code` JSON fields never reach it verbatim (INV-13). Successful tool results are the tool's real output and are not rewritten; tools keep secrets out of them themselves (e.g. `gitUrl` has its userinfo removed).
 
 - **Path-traversal rejection** — `projectDir` / `targetDir`은 MCP dispatch 경계에서 zod-refined됩니다. `..`, NUL, symlinked parent는 파일시스템 접근 전에 `invalid_input` / `invalid_parent`로 거부됩니다.
 
@@ -39,6 +39,7 @@ When you change or move a tagged test, move its tag with it. A new invariant tak
 | INV-10 | **Proxy session retry is single-shot.** On session expiry the cache is evicted and the call reinitialized and retried once; two consecutive failures surface as-is |
 | INV-11 | **Tool discovery is token-gated, not cwd-gated.** With a token, `verse8_checkpoint`, `verse8_preview` and proxy tools are listed; the project is re-validated at call time |
 | INV-12 | **The plugin package gate fails closed.** A vendored plugin with a malformed `requiresPackage`, a missing or unparseable `plugin.json`, or non-empty `tags` is inactive, and a missing `package.json` is an empty dependency set. A scope nobody can read never degrades into "every project" |
+| INV-13 | **Failure results carry no known secret shape.** `dispatchTool` runs every failed local tool result through `redactValue` before it reaches the host; success results pass through untouched. Backend error bodies are redacted whole before callers cut them for a hint, and a token grant that succeeded without a clone URL reports key names only, never the body |
 | MCP-UP-1 | **`verse8_upload_asset` talks only to the allow-listed backend.** The URL comes from `getAgent8BackendBaseUrl()` gated by `isAllowedAgent8BackendBase` |
 | MCP-UP-2 | **`cdnPath` traversal is rejected before the network.** `..`, a leading `/`, empty segments, NUL, and a `filename` containing path separators |
 | MCP-UP-3 | **`ATTACHMENT_EXTS` is the pre-network extension gate.** Kept in sync by hand with `planetarium/agent8-backend/src/config/constants.ts` |

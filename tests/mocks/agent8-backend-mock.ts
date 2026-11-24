@@ -33,6 +33,10 @@
  *                                 fixture, so the clone still succeeds.
  *   --token-limit                 Answer POST project-access-token with the
  *                                 backend's 400 TOKEN_LIMIT_EXCEEDED body.
+ *   --secret-in-error             Add secret-shaped values (a glpat-… PAT and
+ *                                 an "access_token" field) to the
+ *                                 --deny-token body, as if the backend echoed
+ *                                 an upstream error verbatim.
  *   --state-dir=<abs-path>        Write the port / call-log files below
  *                                 here instead of /tmp (lets test files that
  *                                 run in parallel keep separate mocks).
@@ -82,11 +86,18 @@ const snakeCaseKeys = hasFlag("snake-case");
 // Answers both project-access-token routes with this HTTP status and the
 // backend's owner-check body — simulates opening someone else's project.
 const denyTokenStatus = flagValue("deny-token");
-const DENY_TOKEN_BODY = {
+const DENY_TOKEN_BODY: Record<string, unknown> = {
   success: false,
   message: "Access denied: You are not the owner of this project",
   error: "PERMISSION_DENIED",
 };
+// Secret values the tests look for; a redacted result carries none of them.
+const LEAKED_PAT = "glpat-leakFromBackendBody0123456789";
+const LEAKED_ACCESS_TOKEN = "eyJleakedAccessTokenValue0123";
+if (hasFlag("secret-in-error")) {
+  DENY_TOKEN_BODY.detail = `upstream rejected credential ${LEAKED_PAT}`;
+  DENY_TOKEN_BODY.access_token = LEAKED_ACCESS_TOKEN;
+}
 const oauthGitUrl = hasFlag("oauth-git-url");
 const tokenLimit = hasFlag("token-limit");
 const TOKEN_LIMIT_BODY = {

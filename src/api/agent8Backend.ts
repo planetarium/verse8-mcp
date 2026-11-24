@@ -172,9 +172,11 @@ async function postJson<T>(
     if (data !== undefined) {
       return { ok: true, data, status: res.status };
     }
-    return { ok: false, status: res.status, body: raw };
+    return { ok: false, status: res.status, body: safeHint(raw) };
   }
-  return { ok: false, status: res.status, body: raw };
+  // INV-13: redact the whole body here: callers cut it to 500 chars for a
+  // hint, and a JSON shape cut before its closing quote no longer matches.
+  return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
 async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
@@ -193,9 +195,9 @@ async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
     if (data !== undefined) {
       return { ok: true, data, status: res.status };
     }
-    return { ok: false, status: res.status, body: raw };
+    return { ok: false, status: res.status, body: safeHint(raw) };
   }
-  return { ok: false, status: res.status, body: raw };
+  return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
 /**
