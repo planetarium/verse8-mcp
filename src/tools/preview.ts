@@ -94,7 +94,7 @@ export const previewInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "If true, skip the checkpoint step and just probe / start the preview. Use when the user explicitly asked to 'open the preview again' without code changes.",
+        "If true, skip the checkpoint step and just probe / start the preview. Preflight (install, plus gameserver build + preview deploy) still runs — pass `skipPreflight: true` as well to skip it. Use when the user explicitly asked to 'open the preview again' without code changes.",
       ),
     readinessTimeoutMs: z
       .number()

@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installed by verse8_new_project. Validates the proposed commit message
-# against the V8 format (warn-only). The heavy lifting is in the verse8-mcp
+# Installed by verse8_attach. Validates the proposed commit message against
+# the V8 format: format drift is rejected (exit 1), missing narrative only
+# warns. The heavy lifting is in the verse8-mcp
 # binary so the logic stays in one place.
 exec verse8-mcp hook commit-msg "$@"

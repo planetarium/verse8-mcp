@@ -66,15 +66,18 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 </V8AssistantMessage>
 ```
 
-See `sample/match-three-game` in the repo for real container-generated commits, and `src/format/v8CommitMessage.ts` for the exact grammar.
+See `src/format/v8CommitMessage.ts` for the exact grammar and `tests/unit/v8CommitMessage.test.mjs` for worked examples.
 
-## If the commit-msg hook warns
+## If the commit-msg hook rejects or warns
 
-The `commit-msg` git hook (installed by `verse8_new_project`) runs `parseV8CommitMessage` and prints `⚠` lines to stderr for any drift. It does **not** block the commit; the checkpoint still lands. Read the warnings, fix the missing field next turn, move on.
+The `commit-msg` git hook (installed by `verse8_attach`, which `verse8_new_project_confirm` runs after cloning) runs `parseV8CommitMessage` and acts on the result in two ways:
+
+- **Format drift — rejected.** A message that is not valid V8 format makes the hook exit 1 and the commit does not land. Commit through `verse8_checkpoint` instead of a hand-written `git commit`. Merge / Revert subjects and `VERSE8_ALLOW_NONCOMPLIANT=1` are the only exceptions.
+- **Missing narrative — warned.** A valid commit without `<problemStatement>` / `<workSummary>` lands, and the hook prints `⚠` lines to stderr. Read the warnings, pass the missing field next turn, move on.
 
 ## Reference
 
 - Builder/parser: `src/format/v8CommitMessage.ts`
 - Hook: `src/cli/commitMsgHook.ts` + `hooks/commit-msg`
 - Standalone CLI: `scripts/v8-commit-message.js` (takes JSON stdin, prints message)
-- Example commits: `sample/match-three-game/` git history
+- Example messages: `tests/unit/v8CommitMessage.test.mjs`
