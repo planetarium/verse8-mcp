@@ -11,6 +11,12 @@ import * as path from "node:path";
 
 export interface AtomicWriteOptions {
   mode?: number;
+  /**
+   * chmod the temp file to `mode` before the rename, so the result carries
+   * exactly those bits rather than `mode & ~umask` (used to put a replaced
+   * file's permissions back).
+   */
+  exactMode?: boolean;
 }
 
 export function atomicWriteFileSync(
@@ -28,6 +34,7 @@ export function atomicWriteFileSync(
     opts.mode !== undefined ? { mode: opts.mode } : {};
   try {
     fs.writeFileSync(tmp, body, writeOpts);
+    if (opts.exactMode && opts.mode !== undefined) fs.chmodSync(tmp, opts.mode);
     fs.renameSync(tmp, filePath);
   } catch (e) {
     try {

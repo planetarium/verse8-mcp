@@ -27,6 +27,7 @@ import {
 } from "../resources/pluginGate.js";
 import {
   writeSkillFiles,
+  snapshotFile as snapshotFileBytes,
   type SkillFileChange,
   type SkillWriteResult,
 } from "./skillWriter.js";
@@ -34,6 +35,7 @@ import { isSafeAbsPath } from "../util/safePath.js";
 import {
   isPathInside,
   projectWriter,
+  resolveLoose,
   type ProjectWriter,
 } from "../util/projectWrite.js";
 import {
@@ -263,23 +265,29 @@ export function applyAttachmentArtifacts(
   const journal = new RollbackJournal();
   // INV-14: Attach writes never leave the project folder
   const writer = projectWriter(projectDir);
-  // A core.hooksPath outside the project is the user's own git setting, so
-  // writes there are confined to that folder instead of the project.
-  const hooksWriter = isPathInside(projectDir, hooksDir)
-    ? writer
-    : projectWriter(hooksDir);
+  let preCommitHook: "created" | "already-present" = "already-present";
+  let commitMsgHook: "created" | "already-present" = "already-present";
+  const { hooksWriter, hooksWriteDir } = pickHooksWriter(projectDir, hooksDir, writer);
 
   try {
-    // Step 1 — hooks.
-    const preCommitHook = writeHook(hooksWriter, hooksDir, "pre-commit", PRE_COMMIT_SCRIPT);
-    if (preCommitHook === "created") {
-      const p = path.join(hooksDir, "pre-commit");
-      journal.record(() => hooksWriter.removeFile(p));
-    }
-    const commitMsgHook = writeHook(hooksWriter, hooksDir, "commit-msg", COMMIT_MSG_SCRIPT);
-    if (commitMsgHook === "created") {
-      const p = path.join(hooksDir, "commit-msg");
-      journal.record(() => hooksWriter.removeFile(p));
+    // Step 1 — hooks. A hook this run replaces gets its bytes and mode back
+    // on rollback; one it created is removed.
+    for (const [name, script] of [
+      ["pre-commit", PRE_COMMIT_SCRIPT],
+      ["commit-msg", COMMIT_MSG_SCRIPT],
+    ] as const) {
+      const p = path.join(hooksWriteDir, name);
+      const before = snapshotFileBytes(p);
+      const status = writeHook(hooksWriter, hooksWriteDir, name, script);
+      if (name === "pre-commit") preCommitHook = status;
+      else commitMsgHook = status;
+      if (status === "created") {
+        journal.record(() =>
+          before
+            ? hooksWriter.writeFileAtomic(p, before.bytes, before.mode)
+            : hooksWriter.removeFile(p),
+        );
+      }
     }
     maybeFail(opts.__failAfter, "hooks");
 
@@ -368,6 +376,36 @@ export function applyAttachmentArtifacts(
     journal.rollback();
     throw e;
   }
+}
+
+/**
+ * Which writer the hooks go through, and the folder to write them in.
+ *
+ * - Hooks folder inside the working tree (default `.git/hooks`, or a
+ *   relative `core.hooksPath` that stays in the project): the project writer,
+ *   so a working-tree link out of the project is refused.
+ * - Hooks folder under `<project>/.git` whose real location is elsewhere
+ *   (`.git` or `.git/hooks` is a link): git cannot commit a `.git` entry, so
+ *   no clone produces this; it is the user's own setup, like `core.hooksPath`.
+ *   Writes go to that real folder, confined to it.
+ * - `core.hooksPath` outside the project (absolute or relative): the user's
+ *   own git setting; writes are confined to that folder.
+ */
+function pickHooksWriter(
+  projectDir: string,
+  hooksDir: string,
+  writer: ProjectWriter,
+): { hooksWriter: ProjectWriter; hooksWriteDir: string } {
+  if (!isPathInside(projectDir, hooksDir)) {
+    return { hooksWriter: projectWriter(hooksDir), hooksWriteDir: hooksDir };
+  }
+  if (isPathInside(path.join(projectDir, ".git"), hooksDir)) {
+    const realHooks = resolveLoose(hooksDir);
+    if (!isPathInside(resolveLoose(projectDir), realHooks)) {
+      return { hooksWriter: projectWriter(realHooks), hooksWriteDir: realHooks };
+    }
+  }
+  return { hooksWriter: writer, hooksWriteDir: hooksDir };
 }
 
 function maybeFail(

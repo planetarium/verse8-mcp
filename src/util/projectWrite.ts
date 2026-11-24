@@ -1,6 +1,6 @@
-import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { atomicWriteFileSync } from "./atomicWrite.js";
 
 /**
  * Filesystem writes confined to one folder (the project being attached).
@@ -14,14 +14,20 @@ import * as path from "node:path";
  *
  *   - the target must sit lexically under the root;
  *   - every existing component from the root down that is a link (symlink
- *     or Windows junction) must resolve to a real location inside the root;
- *   - a dangling link is refused (writing through it would create the file
- *     wherever it points);
- *   - a link outside `.git/` that resolves into the root's `.git/` is
- *     refused, so a working-tree path cannot be used to rewrite git
- *     internals (hooks, config).
+ *     or Windows junction), the target itself included, must lead to a
+ *     location inside the root. Links are followed hop by hop, so a dangling
+ *     link is judged by where it points: one aimed inside the root is
+ *     allowed (writing through it creates that file), one aimed outside is
+ *     refused, however many links it goes through;
+ *   - a link outside `.git/` that leads into the root's real `.git/` folder
+ *     is refused, so a working-tree path cannot rewrite git internals.
  *
- * Links that stay inside the root (e.g. `CLAUDE.md → AGENTS.md`) are allowed.
+ * The final component is checked even for atomic writes and deletes: a
+ * rename would replace the link rather than follow it, but the caller
+ * usually read the old content through that same link first (a snapshot,
+ * an upsert), and writing it back would copy an outside file into the
+ * project.
+ *
  * The check runs immediately before each operation; it does not defend
  * against a concurrent process swapping a link in between.
  */
@@ -36,14 +42,18 @@ export class ProjectWriteError extends Error {
 export interface ProjectWriter {
   /** The folder every operation must stay inside. */
   readonly root: string;
-  /** Throws `ProjectWriteError` when `target` would escape the root. */
+  /**
+   * Throws `ProjectWriteError` when `target`, or a link on the way to it,
+   * leads outside the root. Call it before reading a file whose content
+   * will be written back (a snapshot), so outside content is never copied in.
+   */
   assertInside(target: string): void;
-  /** `fs.writeFileSync`, following a final link only when it stays inside. */
+  /** `fs.writeFileSync`; a final link is followed only when it stays inside. */
   writeFile(target: string, data: string | Buffer, opts?: { mode?: number }): void;
   /**
-   * Write via a sibling temp file and rename, so a failure leaves the
-   * destination untouched or fully written. The rename replaces a final link
-   * rather than following it, so only the parent directory is checked.
+   * Write via a sibling temp file and rename (`util/atomicWrite.ts`), so a
+   * failure leaves the destination untouched or fully written. `mode` is
+   * applied exactly, regardless of the umask.
    */
   writeFileAtomic(target: string, data: string | Buffer, mode?: number): void;
   /** `fs.mkdirSync(dir, { recursive: true })`. */
@@ -67,28 +77,55 @@ function relIsInside(rel: string): boolean {
   return rel !== ".." && !rel.startsWith(`..${path.sep}`);
 }
 
-/** realpath of the nearest existing ancestor, with the missing tail re-joined. */
-function realpathLoose(p: string): string {
-  const tail: string[] = [];
-  let cur = path.resolve(p);
-  for (;;) {
-    try {
-      const real = fs.realpathSync.native(cur);
-      return tail.length === 0 ? real : path.join(real, ...tail.reverse());
-    } catch {
-      const parent = path.dirname(cur);
-      if (parent === cur) return path.resolve(p);
-      tail.push(path.basename(cur));
-      cur = parent;
-    }
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Where `p` really leads, following every link hop by hop even when the
+ * end of the chain does not exist (`realpath` gives up there). Missing
+ * components are joined on lexically. Throws after `MAX_LINK_HOPS` links.
+ */
+export function resolveLoose(p: string, budget = { hops: MAX_LINK_HOPS }): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync.native(abs);
+  } catch {
+    /* something on the way is missing or dangling — walk it */
   }
+  const { root } = path.parse(abs);
+  const parts = abs.slice(root.length).split(path.sep).filter(Boolean);
+  let real = root;
+  for (let i = 0; i < parts.length; i++) {
+    const next = path.join(real, parts[i]);
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(next);
+    } catch {
+      return path.join(next, ...parts.slice(i + 1)); // missing from here on
+    }
+    if (!st.isSymbolicLink()) {
+      real = fs.realpathSync.native(next);
+      continue;
+    }
+    try {
+      real = fs.realpathSync.native(next);
+      continue;
+    } catch {
+      /* dangling — follow it by hand */
+    }
+    if (--budget.hops < 0) {
+      throw new ProjectWriteError(`too many links while resolving ${abs}`);
+    }
+    real = resolveLoose(path.resolve(real, fs.readlinkSync(next)), budget);
+  }
+  return real;
 }
 
-function readLinkText(p: string): string {
+function exists(p: string): boolean {
   try {
-    return fs.readlinkSync(p);
+    fs.statSync(p);
+    return true;
   } catch {
-    return "<unreadable>";
+    return false;
   }
 }
 
@@ -106,7 +143,7 @@ export function projectWriter(rootDir: string): ProjectWriter {
   };
 
   // INV-14: Attach writes never leave the project folder
-  function check(target: string, opts: { followFinal: boolean }): string {
+  function check(target: string): string {
     const abs = path.resolve(target);
     const rel = path.relative(root, abs);
     if (!relIsInside(rel)) {
@@ -115,13 +152,14 @@ export function projectWriter(rootDir: string): ProjectWriter {
       );
     }
     const segs = rel === "" ? [] : rel.split(path.sep);
-    const walk = opts.followFinal ? segs : segs.slice(0, -1);
-    const realRoot = realpathLoose(root);
-    const realGit = path.join(realRoot, ".git");
+    const realRoot = resolveLoose(root);
     const lexGit = path.join(root, ".git");
+    // The real .git folder: `.git` may itself be a link (to a folder inside
+    // the project or elsewhere), and its metadata is protected either way.
+    const realGit = resolveLoose(lexGit);
 
     let cur = root;
-    for (const seg of walk) {
+    for (const seg of segs) {
       cur = path.join(cur, seg);
       let st: fs.Stats;
       try {
@@ -130,26 +168,13 @@ export function projectWriter(rootDir: string): ProjectWriter {
         break; // missing — nothing below it exists either
       }
       if (!st.isSymbolicLink()) continue;
-      let resolved: string;
-      try {
-        resolved = fs.realpathSync.native(cur);
-      } catch {
-        return refuse(
-          abs,
-          `${show(cur)} is a link to ${readLinkText(cur)}, which does not exist`,
-        );
-      }
+      const resolved = resolveLoose(cur);
+      const where = exists(cur) ? resolved : `${resolved} (missing)`;
       if (!isPathInside(realRoot, resolved)) {
-        return refuse(
-          abs,
-          `${show(cur)} is a link to ${resolved}, which is outside the project folder`,
-        );
+        return refuse(abs, `${show(cur)} is a link to ${where}, which is outside the project folder`);
       }
       if (isPathInside(realGit, resolved) && !isPathInside(lexGit, cur)) {
-        return refuse(
-          abs,
-          `${show(cur)} is a link to ${resolved}, inside the project's .git folder`,
-        );
+        return refuse(abs, `${show(cur)} is a link to ${where}, inside the project's .git folder`);
       }
     }
     return abs;
@@ -158,46 +183,34 @@ export function projectWriter(rootDir: string): ProjectWriter {
   return {
     root,
     assertInside(target) {
-      check(target, { followFinal: true });
+      check(target);
     },
     writeFile(target, data, opts) {
-      const p = check(target, { followFinal: true });
+      const p = check(target);
       fs.writeFileSync(p, data, opts?.mode === undefined ? undefined : { mode: opts.mode });
     },
     writeFileAtomic(target, data, mode) {
-      const p = check(target, { followFinal: false });
-      const tmp = path.join(
-        path.dirname(p),
-        `.${path.basename(p)}.verse8-tmp-${process.pid}-${randomBytes(4).toString("hex")}`,
-      );
-      try {
-        fs.writeFileSync(tmp, data, mode === undefined ? undefined : { mode });
-        if (mode !== undefined) fs.chmodSync(tmp, mode);
-        fs.renameSync(tmp, p);
-      } catch (e) {
-        fs.rmSync(tmp, { force: true });
-        throw e;
-      }
+      const p = check(target);
+      atomicWriteFileSync(p, data, mode === undefined ? {} : { mode, exactMode: true });
     },
     mkdirp(dir) {
-      const p = check(dir, { followFinal: true });
+      const p = check(dir);
       fs.mkdirSync(p, { recursive: true });
     },
     removeFile(target) {
-      // rm on a link removes the link itself, so the final component is not followed.
-      const p = check(target, { followFinal: false });
+      const p = check(target);
       fs.rmSync(p, { force: true });
     },
     removeDirIfEmpty(dir) {
       try {
-        const p = check(dir, { followFinal: true });
+        const p = check(dir);
         if (fs.readdirSync(p).length === 0) fs.rmdirSync(p);
       } catch {
         /* best-effort */
       }
     },
     chmod(target, mode) {
-      const p = check(target, { followFinal: true });
+      const p = check(target);
       fs.chmodSync(p, mode);
     },
   };

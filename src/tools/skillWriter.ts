@@ -198,6 +198,9 @@ export function writeSkillFiles(
     const sourceHash = computeSkillHash(sourceBody);
     const finalBytes = `${sourceBody.replace(/\s+$/, "")}\n\n${MARKER_PREFIX}${sourceHash}${MARKER_SUFFIX}\n`;
 
+    // Before the snapshot: a SKILL.md linked outside must not have its
+    // content read and later written back (rollback) as a project file.
+    writer.assertInside(destPath);
     const dest = snapshotFile(destPath);
 
     if (!dest) {
@@ -258,6 +261,8 @@ export function writeSkillFiles(
   // INV-6: Skills outside the bundle are never touched
   for (const name of opts.retire ?? []) {
     if (bundledNames.has(name) || !isSafeSkillName(name)) continue;
+    // A skill reached through a link outside is not ours to remove.
+    if (!isInside(writer, path.join(skillsRoot, name, "SKILL.md"))) continue;
     const previous = snapshotFile(path.join(skillsRoot, name, "SKILL.md"));
     if (!previous) continue; // never installed
     if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-written or user-edited
@@ -284,6 +289,7 @@ export function writeSkillFiles(
       // i.e. dirs that contain a SKILL.md with our marker (proving we were
       // the ones who created it). A user-created skill dir has no marker
       // and survives even under pruneOrphaned.
+      if (!isInside(writer, path.join(skillsRoot, entry.name, "SKILL.md"))) continue;
       const previous = snapshotFile(path.join(skillsRoot, entry.name, "SKILL.md"));
       if (!previous) continue; // no SKILL.md in the dir, leave it alone
       if (!destIsUnedited(previous.bytes.toString("utf8"))) continue; // user-edited or user-owned
@@ -315,6 +321,15 @@ function removeOwnSkillFile(
   }
   writer.removeDirIfEmpty(dir);
   return true;
+}
+
+function isInside(writer: ProjectWriter, p: string): boolean {
+  try {
+    writer.assertInside(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Bytes + mode of a regular file, or null when it is missing or not a file. */

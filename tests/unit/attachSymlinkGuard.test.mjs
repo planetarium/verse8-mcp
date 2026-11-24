@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import ts from "typescript";
 import { applyAttachmentArtifacts } from "../../dist/tools/attach.js";
 import { cloneAndAttach } from "../../dist/tools/projectClone.js";
-import { addHashMarker } from "../../dist/tools/skillWriter.js";
+import { addHashMarker, writeSkillFiles } from "../../dist/tools/skillWriter.js";
 
 // Attach writes into a project the user (or a cloned repo) controls. A link
 // in it must not turn an attach write into a write outside the project.
@@ -132,7 +132,7 @@ test("attach: .verse8 linked outside is refused before project.json is written",
 });
 
 // INV-14: Attach writes never leave the project folder
-test("attach: AGENTS.md as a dangling link is refused and nothing appears where it points", (t) => {
+test("attach: AGENTS.md as a dangling link out of the project is refused and nothing appears where it points", (t) => {
   const { base, project, outside } = setup();
   try {
     const target = path.join(outside, "planted.md");
@@ -140,7 +140,7 @@ test("attach: AGENTS.md as a dangling link is refused and nothing appears where 
       t.skip("file symlinks need privilege on this Windows host");
       return;
     }
-    assert.throws(() => attach(project), /AGENTS\.md is a link to .*which does not exist/);
+    assert.throws(() => attach(project), /AGENTS\.md is a link to .*\(missing\), which is outside the project folder/);
     assert.equal(fs.existsSync(target), false);
     // Rolled back: the hooks written in step 1 are gone again.
     assert.equal(fs.existsSync(path.join(project, ".git", "hooks", "pre-commit")), false);
@@ -237,6 +237,262 @@ test("clone then attach: a repo with a committed .claude/skills link out of the 
     else process.env.VERSE8_API_URL = prevApi;
     cleanup(base);
   }
+});
+
+const WALLET = "0x1111111111111111111111111111111111111111";
+const gitIn = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+
+let bundledName;
+/** A skill name this attach installs (read from a scratch attach). */
+function bundledSkill() {
+  if (bundledName) return bundledName;
+  const { base, project } = setup();
+  try {
+    bundledName = attach(project).skills.created[0];
+    assert.ok(bundledName, "the bundle installs at least one skill");
+    return bundledName;
+  } finally {
+    cleanup(base);
+  }
+}
+
+// --- content read through a link must not be copied into the project ---
+
+// INV-14: Attach writes never leave the project folder
+test("attach: .env linked to an outside file is refused and the outside content is not copied into the project", (t) => {
+  const { base, project, outside } = setup();
+  try {
+    const target = path.join(outside, "secrets.env");
+    fs.writeFileSync(target, "OUTSIDE_SECRET=1\n");
+    if (!tryLinkFile(target, path.join(project, ".env"))) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    assert.throws(
+      () => attach(project, { walletAddress: WALLET }),
+      /\.env is a link to .*outside the project folder/,
+    );
+    assert.equal(fs.lstatSync(path.join(project, ".env")).isSymbolicLink(), true, ".env is still the link");
+    assert.equal(fs.readFileSync(target, "utf8"), "OUTSIDE_SECRET=1\n");
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: .env linked outside that already holds both keys is left alone (already-present)", (t) => {
+  const { base, project, outside } = setup();
+  try {
+    const target = path.join(outside, "shared.env");
+    const body = `VITE_AGENT8_ACCOUNT=${WALLET}\nVITE_AGENT8_VERSE=${WALLET}-1\n`;
+    fs.writeFileSync(target, body);
+    if (!tryLinkFile(target, path.join(project, ".env"))) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    const r = attach(project, { walletAddress: WALLET });
+    assert.equal(r.env.status, "already-present");
+    assert.equal(fs.lstatSync(path.join(project, ".env")).isSymbolicLink(), true);
+    assert.equal(fs.readFileSync(target, "utf8"), body);
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: a bundled SKILL.md linked outside, with overwriteAllSkills and a later failure, never becomes a copy of the outside file", (t) => {
+  const name = bundledSkill();
+  const { base, project, outside } = setup();
+  try {
+    const target = path.join(outside, "notes.md");
+    fs.writeFileSync(target, "OUTSIDE NOTES\n");
+    const dir = path.join(project, ".claude", "skills", name);
+    fs.mkdirSync(dir, { recursive: true });
+    if (!tryLinkFile(target, path.join(dir, "SKILL.md"))) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    assert.throws(() => attach(project, { overwriteAllSkills: true, __failAfter: "env" }));
+    const skill = path.join(dir, "SKILL.md");
+    assert.equal(fs.lstatSync(skill).isSymbolicLink(), true, "SKILL.md is still the link, not a regular copy");
+    assert.equal(fs.readFileSync(target, "utf8"), "OUTSIDE NOTES\n");
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("writeSkillFiles: retire and prune skip a skill folder linked outside and leave its SKILL.md there", () => {
+  const { base, project, outside } = setup();
+  try {
+    const signed = addHashMarker("# gone\n");
+    for (const n of ["retired-one", "orphan-one"]) {
+      fs.mkdirSync(path.join(outside, n));
+      fs.writeFileSync(path.join(outside, n, "SKILL.md"), signed);
+    }
+    const skills = path.join(project, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    linkDir(path.join(outside, "retired-one"), path.join(skills, "retired-one"));
+    linkDir(path.join(outside, "orphan-one"), path.join(skills, "orphan-one"));
+
+    const r = writeSkillFiles(project, [], { overwriteAll: false, pruneOrphaned: true, retire: ["retired-one"] });
+    assert.deepEqual(r.deactivated, []);
+    assert.deepEqual(r.pruned, []);
+    for (const n of ["retired-one", "orphan-one"]) {
+      assert.equal(fs.readFileSync(path.join(outside, n, "SKILL.md"), "utf8"), signed);
+    }
+  } finally {
+    cleanup(base);
+  }
+});
+
+// --- rollback puts back what was there ---
+
+// INV-14: Attach writes never leave the project folder
+test("attach: a user's own hook is restored, bytes and mode, when a later step fails", () => {
+  const { base, project } = setup();
+  try {
+    const hook = path.join(project, ".git", "hooks", "pre-commit");
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, "#!/bin/sh\necho mine\n", { mode: 0o700 });
+    fs.chmodSync(hook, 0o700);
+    assert.throws(() => attach(project, { __failAfter: "agentsDoc" }), /__failAfter:agentsDoc/);
+    assert.equal(fs.readFileSync(hook, "utf8"), "#!/bin/sh\necho mine\n");
+    if (!isWin) assert.equal(fs.statSync(hook).mode & 0o777, 0o700);
+    assert.equal(fs.existsSync(path.join(project, ".git", "hooks", "commit-msg")), false);
+  } finally {
+    cleanup(base);
+  }
+});
+
+// --- where a link really leads ---
+
+// INV-14: Attach writes never leave the project folder
+test("attach: CLAUDE.md linked to a not-yet-existing AGENTS.md inside the project succeeds", (t) => {
+  const { base, project } = setup();
+  try {
+    if (!tryLinkFile("AGENTS.md", path.join(project, "CLAUDE.md"))) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    const r = attach(project);
+    assert.equal(r.agentsDoc, "created");
+    assert.equal(fs.lstatSync(path.join(project, "CLAUDE.md")).isSymbolicLink(), true);
+    assert.ok(fs.readFileSync(path.join(project, "AGENTS.md"), "utf8").length > 0);
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: a link to a dangling link that points outside is refused", (t) => {
+  const { base, project, outside } = setup();
+  try {
+    const target = path.join(outside, "planted.md");
+    if (!tryLinkFile(target, path.join(project, "mid.md")) || !tryLinkFile("mid.md", path.join(project, "AGENTS.md"))) {
+      t.skip("file symlinks need privilege on this Windows host");
+      return;
+    }
+    assert.throws(() => attach(project), /AGENTS\.md is a link to .*outside the project folder/);
+    assert.equal(fs.existsSync(target), false);
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: .git/hooks linked to an outside folder gets the hooks there (user's own setup)", () => {
+  const { base, project, outside } = setup();
+  try {
+    const hooks = path.join(project, ".git", "hooks");
+    fs.rmSync(hooks, { recursive: true, force: true });
+    linkDir(outside, hooks);
+    const r = attach(project);
+    assert.equal(r.preCommitHook, "created");
+    assert.ok(fs.readFileSync(path.join(outside, "pre-commit"), "utf8").includes("verse8-mcp hook pre-commit"));
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: .git linked to an outside git folder gets the hooks there", () => {
+  const { base, project, outside } = setup();
+  try {
+    const gitdir = path.join(outside, "gitdir");
+    fs.renameSync(path.join(project, ".git"), gitdir);
+    linkDir(gitdir, path.join(project, ".git"));
+    const r = attach(project);
+    assert.equal(r.commitMsgHook, "created");
+    assert.ok(fs.existsSync(path.join(gitdir, "hooks", "commit-msg")));
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: a relative core.hooksPath through a working-tree link out of the project is refused", () => {
+  const { base, project, outside } = setup();
+  try {
+    linkDir(outside, path.join(project, "hooks-link"));
+    gitIn(project, "config", "core.hooksPath", "hooks-link");
+    assert.throws(() => attach(project), /hooks-link is a link to .*outside the project folder/);
+    assert.deepEqual(listTree(outside), []);
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: core.hooksPath outside the project (absolute and relative) gets the hooks only there", () => {
+  for (const relative of [false, true]) {
+    const { base, project } = setup();
+    try {
+      const shared = path.join(base, "shared-hooks");
+      gitIn(project, "config", "core.hooksPath", relative ? "../shared-hooks" : shared);
+      const r = attach(project);
+      assert.equal(r.preCommitHook, "created");
+      assert.deepEqual(listTree(shared), ["commit-msg", "pre-commit"]);
+      assert.equal(fs.existsSync(path.join(project, ".git", "hooks", "pre-commit")), false);
+    } finally {
+      cleanup(base);
+    }
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: .git/hooks linked to another folder inside .git is allowed", () => {
+  const { base, project } = setup();
+  try {
+    const other = path.join(project, ".git", "other-hooks");
+    fs.mkdirSync(other);
+    fs.rmSync(path.join(project, ".git", "hooks"), { recursive: true, force: true });
+    linkDir(other, path.join(project, ".git", "hooks"));
+    attach(project);
+    assert.ok(fs.existsSync(path.join(other, "pre-commit")));
+  } finally {
+    cleanup(base);
+  }
+});
+
+// INV-14: Attach writes never leave the project folder
+test("attach: with .git linked to a folder inside the project, a working-tree link into that folder is refused", () => {
+  const { base, project } = setup();
+  try {
+    const store = path.join(project, "gitstore");
+    fs.renameSync(path.join(project, ".git"), store);
+    linkDir(store, path.join(project, ".git"));
+    linkDir(store, path.join(project, ".claude"));
+    assert.throws(() => attach(project), /\.claude is a link to .*inside the project's \.git folder/);
+    assert.equal(fs.existsSync(path.join(store, "skills")), false);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("unit tests run with the developer's global and system git config switched off", () => {
+  assert.equal(process.env.GIT_CONFIG_NOSYSTEM, "1", "run via `npm run test:unit` (preloads tests/setup/isolateGit.cjs)");
+  assert.equal(fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, "utf8"), "");
 });
 
 // Every write on the attach path goes through util/projectWrite.ts. A bare
