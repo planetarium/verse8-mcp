@@ -82,7 +82,8 @@ function classify(status: number): "unauthorized" | "forbidden" | "bad_request" 
 
 function failFromResponse(status: number, raw: string): MediaUploadResult {
   const data = tolerantJsonParse<{ error?: string }>(raw);
-  const msg = data && typeof data.error === "string" ? data.error : raw.slice(0, 200);
+  // INV-13: redact before the cut.
+  const msg = data && typeof data.error === "string" ? data.error : safeHint(raw).slice(0, 200);
   return {
     ok: false,
     error: classify(status),
@@ -124,7 +125,7 @@ export async function uploadVerseImage(input: {
       ok: false,
       error: "upload_response_malformed",
       status: res.status,
-      hint: safeHint(`expected {publicUrl} JSON; got: ${raw.slice(0, 200)}`),
+      hint: `expected {publicUrl} JSON; got: ${safeHint(raw).slice(0, 200)}`,
     };
   }
   return { ok: true, url: data.publicUrl };
@@ -167,7 +168,7 @@ export async function uploadVerseVideo(input: {
       ok: false,
       error: "upload_response_malformed",
       status: res.status,
-      hint: safeHint(`expected {uploadUrl, publicUrl} JSON; got: ${raw.slice(0, 200)}`),
+      hint: `expected {uploadUrl, publicUrl} JSON; got: ${safeHint(raw).slice(0, 200)}`,
     };
   }
   // The presigned URL is signed for Content-Type + Content-Length; no token is sent.
@@ -192,7 +193,7 @@ export async function uploadVerseVideo(input: {
       ok: false,
       error: "upload_failed",
       status: put.status,
-      hint: safeHint(`presigned PUT HTTP ${put.status}: ${putRaw.slice(0, 200)}`),
+      hint: `presigned PUT HTTP ${put.status}: ${safeHint(putRaw).slice(0, 200)}`,
     };
   }
   return { ok: true, url: data.publicUrl };

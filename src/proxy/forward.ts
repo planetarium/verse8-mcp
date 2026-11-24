@@ -355,7 +355,9 @@ export async function callProxiedTool(
       // Trim and redact via the central registry. The previous inline
       // regex only covered the Bearer header; safeHint catches PATs,
       // oauth2 URLs, and JSON token fields too. (US-M0-6.)
-      hint: safeHint(resp.raw.slice(0, 500)),
+      // INV-13: redact before the cut — a JSON shape cut before its closing
+      // quote no longer matches.
+      hint: safeHint(resp.raw).slice(0, 500),
       serviceKey,
     };
   }

@@ -65,6 +65,7 @@ export interface CreateProjectInput {
 }
 
 import { parseOverrideHost } from "../util/hostAllowlist.js";
+import { safeHint } from "../util/redact.js";
 
 const DEFAULT_API_BASE = "https://v8-meme-api.verse8.io";
 
@@ -143,7 +144,7 @@ export async function deviceAuthorize(): Promise<DeviceAuthorizeResponse> {
     {},
   );
   if (status >= 200 && status < 300 && data) return data;
-  throw new Error(`device/authorize failed: HTTP ${status} ${raw}`);
+  throw new Error(`device/authorize failed: HTTP ${status} ${safeHint(raw)}`);
 }
 
 export async function deviceToken(
@@ -158,7 +159,7 @@ export async function deviceToken(
     return { ok: true, token: data as DeviceTokenSuccess };
   }
 
-  const err = (data && "error" in data ? data : { error: `http_${status}`, error_description: raw }) as DeviceTokenPending;
+  const err = (data && "error" in data ? data : { error: `http_${status}`, error_description: safeHint(raw) }) as DeviceTokenPending;
   return { ok: false, error: err, status };
 }
 
@@ -168,7 +169,7 @@ export async function verifyToken(token: string): Promise<{ ok: true; profile: V
     token,
   );
   if (status === 200 && data) return { ok: true, profile: data };
-  return { ok: false, status, body: raw };
+  return { ok: false, status, body: safeHint(raw) };
 }
 
 /**
@@ -201,7 +202,7 @@ function toVerseResult<T>(r: { status: number; data: T | null; raw: string }): V
   if (r.status >= 200 && r.status < 300 && r.data) {
     return { ok: true, status: r.status, data: r.data };
   }
-  return { ok: false, status: r.status, body: r.raw };
+  return { ok: false, status: r.status, body: safeHint(r.raw) };
 }
 
 /**
@@ -277,7 +278,7 @@ export async function createProject(
     return { ok: true, project: data };
   }
 
-  return { ok: false, status, body: raw };
+  return { ok: false, status, body: safeHint(raw) };
 }
 
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
@@ -317,5 +318,7 @@ export async function v8Request<T>(
     }
     return { ok: true, status: res.status, data };
   }
-  return { ok: false, status: res.status, body: raw };
+  // INV-13: redact the whole body here: callers cut it for a hint, and a JSON
+  // shape cut before its closing quote no longer matches.
+  return { ok: false, status: res.status, body: safeHint(raw) };
 }

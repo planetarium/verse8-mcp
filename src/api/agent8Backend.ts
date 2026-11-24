@@ -362,7 +362,7 @@ export async function uploadAttachment(
         ok: false,
         error: "upload_response_malformed",
         status: res.status,
-        hint: safeHint(`expected {success,url} JSON; got: ${raw.slice(0, 200)}`),
+        hint: `expected {success,url} JSON; got: ${safeHint(raw).slice(0, 200)}`,
       };
     }
     return { ok: true, url: data.url, status: res.status };
@@ -373,7 +373,8 @@ export async function uploadAttachment(
     ok: false,
     error: code,
     status: res.status,
-    hint: safeHint(raw.slice(0, 200) || `HTTP ${res.status}`),
+    // INV-13: redact before the cut.
+    hint: safeHint(raw).slice(0, 200) || `HTTP ${res.status}`,
   };
 }
 
