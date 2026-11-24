@@ -195,19 +195,6 @@ export function _resetOpenProjectStateForTests(): void {
   inFlightOpens.clear();
 }
 
-/** Drop userinfo (the project token) from the clone URL before returning it. */
-function stripCredentials(gitUrl: string | null): string {
-  if (!gitUrl) return "";
-  try {
-    const u = new URL(gitUrl);
-    u.username = "";
-    u.password = "";
-    return u.toString();
-  } catch {
-    return "";
-  }
-}
-
 function targetExists(projectDir: string, projectPath: string): OpenProjectResult {
   // Only a repository ROOT can be attached. `git remote get-url` walks up, so
   // a plain subfolder inside some other clone of the same project would
@@ -283,7 +270,7 @@ export async function runOpenProject(
       ok: true,
       projectDir: cloned.projectDir,
       projectPath,
-      gitUrl: stripCredentials(access.gitUrl),
+      gitUrl: access.gitUrl ?? "",
       branch: cloned.branch,
       tokenExpiresAt: access.tokenExpiresAt,
       webEditor: { url: buildWebEditorLink(projectPath).url },

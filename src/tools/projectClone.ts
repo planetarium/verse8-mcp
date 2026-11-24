@@ -75,7 +75,15 @@ function isTokenLimitExceeded(body: string): boolean {
 export type GrantCloneAccessResult =
   | {
       ok: true;
+      /**
+       * Internal: carries the project token (the clone URL's userinfo). Pass
+       * it to `cloneAndAttach` only; never put it in a tool result.
+       */
       cloneCommand: string;
+      /**
+       * The backend's clone URL with userinfo removed, safe to return to the
+       * agent. `null` when the backend sent none or it does not parse.
+       */
       gitUrl: string | null;
       tokenExpiresAt?: string;
     }
@@ -188,9 +196,22 @@ export async function grantCloneAccess(
   return {
     ok: true,
     cloneCommand,
-    gitUrl: rawGitUrl ?? null,
+    gitUrl: stripCredentials(rawGitUrl),
     tokenExpiresAt: rawExpiresAt ?? undefined,
   };
+}
+
+/** Drop userinfo (the project token) from a clone URL. */
+function stripCredentials(gitUrl: string | undefined): string | null {
+  if (!gitUrl) return null;
+  try {
+    const u = new URL(gitUrl);
+    u.username = "";
+    u.password = "";
+    return u.toString();
+  } catch {
+    return null;
+  }
 }
 
 export interface CloneAndAttachParams {
