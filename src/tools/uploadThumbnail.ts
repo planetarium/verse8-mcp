@@ -13,6 +13,7 @@ import {
 import { loadToken } from "../context/token.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 /**
  * verse8_upload_thumbnail — upload a verse cover image (png/jpg/gif/webp,
@@ -139,7 +140,7 @@ export async function runUploadThumbnail(
   if (!token) {
     return fail(
       "not_logged_in",
-      "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      LOGIN_HINT,
     );
   }
   const absPath = path.isAbsolute(input.filePath) ? input.filePath : path.resolve(cwd, input.filePath);

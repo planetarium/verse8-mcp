@@ -9,6 +9,7 @@ import {
 import { loadToken } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 import { redactHead } from "../util/redact.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import {
   checkCloneTargetLocal,
   cloneAndAttach,
@@ -186,7 +187,7 @@ export async function runNewProjectStart(
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
     };
   }
 
@@ -297,7 +298,7 @@ export async function runNewProjectConfirm(
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
     };
   }
 

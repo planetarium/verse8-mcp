@@ -6,6 +6,7 @@ import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
 import { CREDIT_RECHARGE_URL } from "../constants.js";
@@ -182,7 +183,7 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
       project,
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),
     };

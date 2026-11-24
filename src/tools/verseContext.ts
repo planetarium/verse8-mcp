@@ -3,6 +3,7 @@ import { z } from "zod";
 import { readEnvVerse } from "../context/envFile.js";
 import { loadToken } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 /**
  * Shared inputs + resolution for tools that act on "this project's verse":
@@ -43,7 +44,7 @@ export function resolveVerseContext(
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
     };
   }
   const verseId = input.verseId ?? readEnvVerse(projectDir);

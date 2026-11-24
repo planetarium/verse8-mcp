@@ -12,6 +12,7 @@ import { zodToJsonSchema } from "./util/jsonSchema.js";
 import { recordToolCall } from "./util/v8CallLog.js";
 import { redactHead, safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
+import { LOGIN_HINT } from "./util/hints.js";
 import { loadToken } from "./context/token.js";
 import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
@@ -472,7 +473,7 @@ export function createServer(): Server {
         return {
           content: jsonContent({
             error: "not_logged_in",
-            hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+            hint: LOGIN_HINT,
           }),
           isError: true,
         };
