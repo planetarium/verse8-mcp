@@ -1115,7 +1115,7 @@ export async function runDeploy(
       imageUrl: input.thumbnailPath ? `<upload:${input.thumbnailPath}>` : fields.imageUrl,
       videoUrl: input.videoPath ? `<upload:${input.videoPath}>` : fields.videoUrl,
     };
-    const playUrl = buildPlayUrl(verseId, "<HEAD after checkpoint>", projectPath, Date.now());
+    const playUrl = buildPlayUrl(verseId, "<checkpoint commit>", projectPath, Date.now());
     return {
       ok: true,
       dryRun: true,
@@ -1128,7 +1128,7 @@ export async function runDeploy(
         ...(input.thumbnailPath ? [`upload thumbnail ${input.thumbnailPath}`] : []),
         ...(input.videoPath ? [`upload video ${input.videoPath}`] : []),
         input.buildFrom === "head"
-          ? "git worktree add --detach <tmp> <HEAD after checkpoint> (clean checkout; the steps below run there)"
+          ? "git worktree add --detach <tmp> <checkpoint commit> (clean checkout; the steps below run there; the commit is HEAD when there is nothing to commit)"
           : "rm -rf dist",
         ...steps.map((s) => s.command),
         mode === "first" ? "POST /v1/verse/create" : `POST /v1/verse/update/${verseId}`,
