@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { REPO_ROOT, repoPathRefs } from "./_repoPaths.mjs";
 
 import { createServer } from "../../dist/server.js";
 import { parseV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
@@ -54,7 +54,6 @@ test("AGENTS.md commit policy: format drift is rejected, missing narrative only 
   assert.match(AGENTS_MD_TEMPLATE, /missing narrative is accepted with warnings/);
 });
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CORE_SKILLS = fs
   .readdirSync(path.join(REPO_ROOT, "skills"))
   .map((name) => path.join("skills", name, "SKILL.md"))
@@ -81,11 +80,13 @@ test("installed docs: no references to files inside the verse8-mcp repo", () => 
     ...CORE_SKILLS.map((rel) => [rel, fs.readFileSync(path.join(REPO_ROOT, rel), "utf8")]),
   ];
   assert.ok(CORE_SKILLS.length >= 3);
+  // The checker itself: a sentence-ending dot must not hide a repo path,
+  // and a game-project path is not a repo path.
+  assert.deepEqual(repoPathRefs("See src/server.ts. Or scripts/verse8-login.sh."), ["src/server.ts", "scripts/verse8-login.sh"]);
+  assert.deepEqual(repoPathRefs("Edit src/player.ts and .claude/skills/x/SKILL.md."), []);
   const bad = [];
   for (const [name, text] of docs) {
-    for (const [, ref] of text.matchAll(/(?<![\w./-])((?:src|tests|docs|scripts|hooks|sample)\/[\w.-]+(?:\/[\w.-]+)*)/g)) {
-      if (ref.startsWith("sample/") || fs.existsSync(path.join(REPO_ROOT, ref))) bad.push(`${name}: ${ref}`);
-    }
+    for (const ref of repoPathRefs(text)) bad.push(`${name}: ${ref}`);
   }
   assert.deepEqual(bad, []);
 });

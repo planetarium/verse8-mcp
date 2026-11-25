@@ -116,7 +116,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_login_start",
     description:
-      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_login_start'. Begins Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete and user_code to the user, (2) wait for browser approval, (3) call verse8_login_complete with the same device_code. Do NOT re-call verse8_login_start before completing — each call issues a fresh device_code.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_login_start'. Begins Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete (or verification_uri when it is absent) and user_code to the user, (2) wait for browser approval, (3) call verse8_login_complete with the same device_code. Do NOT re-call verse8_login_start before completing — each call issues a fresh device_code.",
     inputSchema: zodToJsonSchema(loginStartInputSchema),
   },
   {

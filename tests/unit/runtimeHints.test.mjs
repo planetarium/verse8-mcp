@@ -7,14 +7,12 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { createServer } from "../../dist/server.js";
 import { LOGIN_HINT } from "../../dist/util/hints.js";
 import { runCommitMsgHook } from "../../dist/cli/commitMsgHook.js";
-
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+import { REPO_ROOT, repoPathRefs } from "./_repoPaths.mjs";
 
 function tsFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -53,12 +51,9 @@ function sourceStrings() {
 test("runtime strings in src/: no pointers to files or scripts inside the verse8-mcp repo", () => {
   const strings = sourceStrings();
   assert.ok(strings.length > 1000, `only ${strings.length} strings found`);
-  const repoPath = /(?<![\w./~-])((?:scripts|tests|docs|hooks|sample|skills-vendor)\/[\w.-]+(?:\/[\w.-]+)*|src\/(?:tools|api|util|cli|format|context|prompts|resources|proxy)\/[\w./-]+)/g;
   const bad = [];
   for (const { where, text } of strings) {
-    for (const [, ref] of text.matchAll(repoPath)) {
-      if (ref.startsWith("sample/") || fs.existsSync(path.join(REPO_ROOT, ref))) bad.push(`${where}: ${ref}`);
-    }
+    for (const ref of repoPathRefs(text)) bad.push(`${where}: ${ref}`);
     if (/\bbash scripts\b|\bnpm run (sync|check|test)\b/.test(text)) bad.push(`${where}: ${text.slice(0, 80)}`);
   }
   assert.deepEqual(bad, []);
@@ -137,6 +132,6 @@ test("commit-msg hook rejection: points at verse8_checkpoint and states the form
   }
   assert.equal(code, 1);
   assert.match(err, /verse8_checkpoint/);
-  assert.match(err, /<V8AgentMessage>[\s\S]*<V8UserMessage>[\s\S]*<V8AssistantMessage>/);
+  assert.match(err, /Format:[^\n]*<V8AgentMessage>[\s\S]*<V8UserMessage>[\s\S]*<V8AssistantMessage>/);
   assert.doesNotMatch(err, /scripts\//);
 });

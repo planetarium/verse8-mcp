@@ -25,7 +25,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 ## How login works
 
 1. `verse8_login_start` calls `POST {API}/v1/auth/device/authorize` and returns `verification_uri_complete`, `user_code`, `device_code`, `expires_in`, `interval`.
-2. Show `verification_uri_complete` and `user_code` to the user and ask them to approve in the browser.
+2. Show `verification_uri_complete` (or `verification_uri` when it is absent) and `user_code` to the user and ask them to approve in the browser.
 3. `verse8_login_complete` with the same `device_code` polls `POST {API}/v1/auth/device/token`, starting every 5 seconds and waiting 5 seconds longer each time the server answers `slow_down`. It is safe to call again with the same `device_code` if it times out before the user approves.
 4. On success it writes the returned `access_token` to `${XDG_CONFIG_HOME:-~/.config}/verse8/token` (mode `600`).
 5. Call `verse8_status` to confirm the identity.

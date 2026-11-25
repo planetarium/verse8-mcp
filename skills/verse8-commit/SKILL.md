@@ -74,10 +74,10 @@ What the hook checks — a commit fails if any of these is missing:
 
 - A non-empty first line (the subject).
 - A `<V8AgentMessage>` block whose body is JSON with a `messageId` and a string `status`.
-- A `<V8UserMessage>` block with a user prompt after the `[Model: …]` / `[Provider: …]` lines.
+- A `<V8UserMessage>` block with a non-empty user prompt. The `[Model: …]` / `[Provider: …]` lines are optional.
 - A `<V8AssistantMessage>` block (its children are optional).
 
-A commit that passes but has no `<problemStatement>` / `<workSummary>` inside `<V8AssistantMessage>` lands with a warning.
+A commit that passes lands with a warning for each narrative field (problem statement, work summary) the hook cannot find in any of these places: the `problemStatement` / `workSummary` keys of the `<V8AgentMessage>` JSON, the `<problemStatement>` / `<workSummary>` tags, or the legacy `## Problem` / `## Work` sections.
 
 ## Full example
 

@@ -89,7 +89,8 @@ token-grant — this avoids creating a duplicate timestamped GitLab repo.
 ## Error handling
 
 - \`not_logged_in\` (from start OR confirm): call verse8_login_start, show
-  the verification_uri_complete + user_code, wait for the user to confirm
+  the verification_uri_complete (or verification_uri when it is absent) +
+  user_code, wait for the user to confirm
   in the browser, then call verse8_login_complete with the same device_code.
 - \`tool_renamed\`: you called the deprecated verse8_new_project — use the
   start/confirm tools instead.

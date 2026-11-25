@@ -88,7 +88,7 @@ export function runCommitMsgHook(messageFilePath: string | undefined): number {
     "\n" +
       "[verse8 commit-msg] verse8 projects require the V8 commit format for web/container compatibility.\n" +
       "[verse8 commit-msg] Format: a subject line, then <V8AgentMessage> (JSON with messageId + status),\n" +
-      "  <V8UserMessage> ([Model: …] / [Provider: …] lines + the user prompt) and <V8AssistantMessage>.\n" +
+      "  <V8UserMessage> (the user prompt; [Model: …] / [Provider: …] lines optional) and <V8AssistantMessage>.\n" +
       "[verse8 commit-msg] Fix options:\n" +
       "  1. Use the verse8_checkpoint MCP tool — it builds the format deterministically.\n" +
       "     (pass: userPrompt, model, provider, problemStatement, workSummary)\n" +

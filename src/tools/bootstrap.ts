@@ -87,7 +87,7 @@ export function computeBootstrapWorkflow(params: {
         reason:
           "Workspace is a verse8 project but no access token was found. Login is required before attach / checkpoint / preview.",
         instructions:
-          `Call verse8_login_start with no arguments FIRST. Display the returned verification_uri_complete + user_code to the user, wait for browser approval, then call verse8_login_complete. After login, re-call verse8_bootstrap to get the next routing step.${echo}`,
+          `Call verse8_login_start with no arguments FIRST. Display the returned verification_uri_complete (or verification_uri when it is absent) + user_code to the user, wait for browser approval, then call verse8_login_complete. After login, re-call verse8_bootstrap to get the next routing step.${echo}`,
       };
     }
     if (workspaceMode === "attached") {
