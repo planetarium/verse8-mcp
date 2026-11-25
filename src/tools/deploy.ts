@@ -1258,7 +1258,7 @@ export async function runDeploy(
     return fail(
       "publish",
       code,
-      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. Fix the publish fields and run verse8_deploy again — the rebuild re-uploads the same sha.`,
+      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. ${status === 401 ? `${rejectedTokenHintForLastLoad()}, then` : "Fix the publish fields and"} run verse8_deploy again — the rebuild re-uploads the same sha.`,
       { status, playUrl, filesLive: true, steps: completed, publishBody },
     );
   }
