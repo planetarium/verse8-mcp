@@ -326,8 +326,9 @@ function classifyUploadStatus(
  *   - Handler 400/500 responses are JSON {success:false, error}.
  *   - Network / JSON-parse failures are mapped to upload_failed.
  *
- * This function does NOT call meme-api's /v1/activity/upload-asset — that
- * bookkeeping endpoint is out of scope for the MCP tool.
+ * This function does NOT call meme-api's /v1/activity/upload-asset; the
+ * batch upload in `verse8_assets` records it once per batch, as the web
+ * editor does (`recordUploadAssetActivity` in v8MemeApi.ts).
  */
 export async function uploadAttachment(
   input: UploadAttachmentInput,
