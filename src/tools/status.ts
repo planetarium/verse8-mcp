@@ -10,7 +10,7 @@ import { LOGIN_HINT } from "../util/hints.js";
 import { isLoopbackPortInUseSync } from "../util/loopback.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
-import { CREDIT_RECHARGE_URL } from "../constants.js";
+import { creditSettingsUrl } from "../api/verse8Web.js";
 import {
   computeBootstrapWorkflow,
   type BootstrapWorkflow,
@@ -185,7 +185,7 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
       profile: resp.profile,
       project,
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: true }),
-      creditRechargeUrl: CREDIT_RECHARGE_URL,
+      creditRechargeUrl: creditSettingsUrl(),
     };
     if (expiresAt) result.tokenExpiresAt = expiresAt;
     if (warnings.length > 0) result.warnings = warnings;

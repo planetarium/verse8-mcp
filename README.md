@@ -104,7 +104,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_vxshop` | VX Shop items: seller status and item list (with purchase limits), sales and revenue; create (hidden by default), edit, archive / restore an item, answer disputes — preview first, then the preview's `planId` to apply (refused if the item changed since); edits keep the current purchase limits. Item images upload to the `vx-shop` category. | Logged in, verse owner, approved seller |
 | `verse8_credits` | Read-only: credit balance (USD) and recent tool-usage charges with the amount actually billed (`GET /v1/credit/user`, `/v1/credit/user/events?eventType=toolUsage`), plus the web settings link where credits are bought. Asset tools that fail for lack of credits get the balance and that link appended. | Logged in |
 | `verse8_deploy` | Publish: checkpoint → media upload → `bun run build --base ./` (+ gameserver build) → `@agent8/deploy --prod` → `POST /v1/verse/create` (first) or `/v1/verse/update/:id` (update). `dryRun: true` previews the mode + publish body. | Logged in |
-| `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. In a MapleStory Universe / Nine Chronicles jam project, each `*_generate` call first asks the jam's credit top-up (`POST /v1/msu/credit/topup` / `/v1/nine-chronicles/credit/topup`, as the web editor does per prompt); the server adds credit only at or below $5 and only for eligible accounts, and the result says so when it did. | Logged in |
+| `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. In a MapleStory Universe / Nine Chronicles jam project, each `*_generate` call first asks the jam's credit top-up (`POST /v1/msu/credit/topup` / `/v1/nine-chronicles/credit/topup`, as the web editor does per prompt); the server adds credit only at or below $5 and only for eligible accounts, and the result says so when it did. Every proxied tool also takes a local `projectDir` (same check as the other tools, never sent upstream) that picks the project for that check; without it the MCP server's cwd is used, so on a host whose server cwd is not the game folder (Claude Desktop, Cursor) a call without `projectDir` gets no jam top-up. | Logged in |
 
 Resources: `verse8://skill/<name>/SKILL.md`.
 
@@ -117,7 +117,7 @@ Resources: `verse8://skill/<name>/SKILL.md`.
 `verse8_new_project_start` / `_confirm` or `verse8_upload_asset` returns `insufficient_credits` (usually HTTP 402) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
 
 - **New account** — credits are not granted at sign-up. Verify a phone number (SMS) on Verse8, then claim the one-time welcome credit.
-- **Existing account** — recharge at <https://verse8.io/settings>. `verse8_status` also returns this link as `creditRechargeUrl`.
+- **Existing account** — recharge at <https://verse8.io/settings> (the web settings page of `VERSE8_WEB_URL` when that is set). `verse8_status` also returns this link as `creditRechargeUrl`, and `verse8_credits` shows the balance and what recent tool calls cost.
 
 Then:
 

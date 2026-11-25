@@ -61,6 +61,7 @@ import {
   discoverImageTools,
   type UpstreamTool,
 } from "./proxy/forward.js";
+import { splitProjectDirArg, withProjectDirParam } from "./proxy/projectDirArg.js";
 import {
   listSkillResources,
   readSkillResource,
@@ -250,11 +251,7 @@ function imageToolToMcpTool(t: UpstreamTool): Tool {
   return {
     name: t.name,
     description: t.description || `Verse8 image MCP: ${t.name}`,
-    inputSchema:
-      (t.inputSchema as Tool["inputSchema"]) ?? {
-        type: "object",
-        additionalProperties: true,
-      },
+    inputSchema: withProjectDirParam(t.inputSchema) as Tool["inputSchema"],
   };
 }
 
@@ -529,12 +526,13 @@ export function createServer(): Server {
       // Jam projects: top up right before credits are spent (the web
       // container does it per prompt). Awaited so the credit is there when
       // the generation runs; it never throws and is silent when refused.
-      const argProjectDir =
-        args && typeof (args as Record<string, unknown>).projectDir === "string"
-          ? ((args as Record<string, unknown>).projectDir as string)
-          : cwd;
+      // projectDir is local only (jam check + call log) and is not forwarded.
+      const split = splitProjectDirArg(match.inputSchema, args);
+      if (!split.ok) {
+        return { content: jsonContent({ error: split.error, hint: split.hint }), isError: true };
+      }
       const topupLine = isAssetGenerationTool(name)
-        ? await topupJamCreditBeforeGeneration(argProjectDir, token)
+        ? await topupJamCreditBeforeGeneration(split.projectDir ?? cwd, token)
         : null;
       const withNotes = async (
         result: { content: any[]; isError?: boolean },
@@ -551,7 +549,7 @@ export function createServer(): Server {
       };
 
       const resp = await dispatchTool(name, () =>
-        callImageTool(name, args ?? {}, token),
+        callImageTool(name, split.forwardArgs, token),
       );
       if (!resp.ok) {
         const status = Number(/^upstream_http_(\d+)$/.exec(resp.error)?.[1] ?? 0);

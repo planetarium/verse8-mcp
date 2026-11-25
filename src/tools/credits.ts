@@ -7,7 +7,7 @@ import {
   requestJamTopup,
   type CreditEvent,
 } from "../api/credit.js";
-import { getVerse8WebBaseUrl } from "../api/verse8Web.js";
+import { creditSettingsUrl } from "../api/verse8Web.js";
 import { resolveJamProject } from "../context/msuProject.js";
 import { loadToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
@@ -40,11 +40,6 @@ export const creditsInputSchema = z
   .strict();
 
 export type CreditsInput = z.infer<typeof creditsInputSchema>;
-
-/** Where the user adds credits — the web settings page opens on its Credit section. */
-export function creditSettingsUrl(): string {
-  return `${getVerse8WebBaseUrl()}/settings`;
-}
 
 export interface ToolCharge {
   tool: string | null;

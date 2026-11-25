@@ -59,6 +59,15 @@ export function getVerse8WebBaseUrl(): string {
   return override.replace(/\/+$/, "");
 }
 
+/**
+ * Where a user adds credits: the web settings page, which opens on its Credit
+ * section. The only place this link is built, so every "out of credits" hint
+ * points at the same environment as the rest of the web calls.
+ */
+export function creditSettingsUrl(): string {
+  return `${getVerse8WebBaseUrl()}/settings`;
+}
+
 export type MediaUploadResult =
   | { ok: true; url: string }
   | {

@@ -10,7 +10,7 @@ import {
 import { verifyToken } from "../api/v8MemeApi.js";
 import { applyAttachmentArtifacts } from "./attach.js";
 import { redactHead, safeHint, stripUrlCredentials } from "../util/redact.js";
-import { CREDIT_RECHARGE_URL } from "../constants.js";
+import { creditSettingsUrl } from "../api/verse8Web.js";
 
 /**
  * Shared "grant a project token → clone → attach" steps.
@@ -28,7 +28,7 @@ export function creditError(
   return {
     ok: false,
     error: "insufficient_credits",
-    hint: `Insufficient credits. Please recharge at ${CREDIT_RECHARGE_URL} before retrying.\n(HTTP ${status}: ${redactHead(body, 500)})`,
+    hint: `Insufficient credits. Please recharge at ${creditSettingsUrl()} before retrying.\n(HTTP ${status}: ${redactHead(body, 500)})`,
     status,
   };
 }

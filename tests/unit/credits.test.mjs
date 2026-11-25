@@ -253,9 +253,22 @@ function platform({ tools, callResult, topup, credits = "30000000" }) {
     if (msg.method === "notifications/initialized") return new Response("", { status: 202 });
     if (msg.method === "tools/list") return rpc({ tools: tools.map((name) => ({ name, inputSchema: { type: "object" } })) });
     order.push(`tools/call:${msg.params.name}`);
+    forwarded.push(msg.params.arguments);
     return rpc(callResult);
   };
-  return { order, route };
+  const forwarded = [];
+  return { order, route, forwarded };
+}
+
+/** Runs `f` with the process cwd set to `dir` (the MCP server's cwd). */
+async function inCwd(dir, f) {
+  const orig = process.cwd();
+  process.chdir(dir);
+  try {
+    return await f();
+  } finally {
+    process.chdir(orig);
+  }
 }
 
 async function callTool(name, args) {
@@ -300,6 +313,91 @@ test("proxied generation that fails for lack of credits gets the balance and the
     assert.equal(r.content.length, 2);
     assert.match(r.content[1].text, /^Not enough Verse8 credits \(balance \$0\.03\)\. Add credits in the browser at https:\/\/verse8\.io\/settings/);
   });
+});
+
+test("proxied *_generate without projectDir: the server's cwd decides the jam top-up", async () => {
+  const dir = verseProject("9C");
+  const p = platform({
+    tools: ["music_generate"],
+    callResult: { content: [{ type: "text", text: "ok" }] },
+    topup: { toppedUp: true, balanceAfter: "10000000000", delta: "10000000000" },
+  });
+  await withApi(p.route, () =>
+    inCwd(dir, async () => {
+      const r = await callTool("music_generate", { prompt: "calm" });
+      assert.deepEqual(p.order, ["/v1/nine-chronicles/credit/topup", "tools/call:music_generate"]);
+      assert.match(r.content.at(-1).text, /^Topped up Nine Chronicles jam credits/);
+    }),
+  );
+});
+
+test("proxied projectDir picks the jam project and is not sent upstream", async () => {
+  const jamDir = verseProject("MSU");
+  const otherCwd = verseProject(null);
+  const p = platform({
+    tools: ["image_asset_generate", "asset_wait"],
+    callResult: { content: [{ type: "text", text: "ok" }] },
+    topup: { toppedUp: false },
+  });
+  await withApi(p.route, () =>
+    inCwd(otherCwd, async () => {
+      await callTool("image_asset_generate", { prompt: "a sword", projectDir: jamDir });
+      await callTool("asset_wait", { jobId: "j1", projectDir: jamDir });
+      assert.deepEqual(p.order, ["/v1/msu/credit/topup", "tools/call:image_asset_generate", "tools/call:asset_wait"]);
+      assert.deepEqual(p.forwarded, [{ prompt: "a sword" }, { jobId: "j1" }]);
+    }),
+  );
+});
+
+test("proxied projectDir gets the same check as local tools; an upstream projectDir is left alone", async () => {
+  const dir = verseProject("MSU");
+  const p = platform({ tools: ["image_asset_generate"], callResult: { content: [{ type: "text", text: "ok" }] }, topup: {} });
+  await withApi(p.route, async () => {
+    const r = await callTool("image_asset_generate", { prompt: "x", projectDir: `${dir}${path.sep}src${path.sep}..` });
+    assert.equal(r.isError, true);
+    assert.equal(JSON.parse(r.content[0].text).error, "invalid_input");
+    assert.deepEqual(p.order, []);
+  });
+
+  const { splitProjectDirArg, withProjectDirParam } = await import("../../dist/proxy/projectDirArg.js");
+  const own = { type: "object", properties: { projectDir: { type: "string", description: "upstream's own" } } };
+  assert.deepEqual(splitProjectDirArg(own, { projectDir: "remote/x" }), {
+    ok: true,
+    projectDir: "remote/x",
+    forwardArgs: { projectDir: "remote/x" },
+  });
+  assert.equal(withProjectDirParam(own).properties.projectDir.description, "upstream's own");
+});
+
+test("proxied tools advertise projectDir with the local tools' description", async () => {
+  const p = platform({ tools: ["image_asset_generate"], callResult: {}, topup: {} });
+  await withApi(p.route, async () => {
+    const { tools } = await createServer()._requestHandlers.get("tools/list")({ method: "tools/list", params: {} }, {});
+    const gen = tools.find((t) => t.name === "image_asset_generate");
+    const local = tools.find((t) => t.name === "verse8_credits");
+    assert.deepEqual(gen.inputSchema.properties.projectDir, local.inputSchema.properties.projectDir);
+    assert.equal(gen.inputSchema.properties.projectDir.description, "Absolute path to the verse8 project. Defaults to the MCP server's cwd.");
+  });
+});
+
+test("every credit hint links the same settings page, following VERSE8_WEB_URL", async () => {
+  const { creditError } = await import("../../dist/tools/projectClone.js");
+  const { runStatus } = await import("../../dist/tools/status.js");
+  const staging = "https://staging.vibe.verse8.io/settings";
+  await withApi(
+    ({ url }) => {
+      if (url.pathname === "/v1/auth/verify") return json(200, { user: "u1" });
+      if (url.pathname === "/v1/credit/user") return json(200, { credits: "0" });
+      return json(200, { events: [] });
+    },
+    async () => {
+      process.env.VERSE8_WEB_URL = "https://staging.vibe.verse8.io";
+      assert.ok(creditError(402, "no credit").hint.includes(staging));
+      assert.equal((await runStatus(os.tmpdir())).creditRechargeUrl, staging);
+      assert.equal((await runCredits({}, os.tmpdir())).settingsUrl, staging);
+      assert.ok((await creditShortfallNote(402, "", TOKEN)).includes(staging));
+    },
+  );
 });
 
 test("verse8_credits is listed once logged in", async () => {
