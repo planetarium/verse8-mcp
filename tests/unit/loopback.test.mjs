@@ -69,10 +69,11 @@ test("loopback: listener only on 127.0.0.1 counts as in use (async and sync)", a
 });
 
 test("loopback: nothing listening counts as not in use (async and sync)", async () => {
-  // Grab a free port, then release it so nothing listens there.
-  const srv = await listen("127.0.0.1");
-  const port = srv.address().port;
-  await close(srv);
-  assert.equal(await isLoopbackPortInUse(port), false);
-  assert.equal(isLoopbackPortInUseSync(port), false);
+  // Port 0 is the one TCP port nothing can listen on (binding 0 means "pick
+  // any port"), so it is closed on every loopback with no race. Releasing a
+  // reserved port instead would let another process take it before the probe.
+  // Connecting to it is refused on Linux (ECONNREFUSED, like any closed port)
+  // and rejected on Windows (EADDRNOTAVAIL); both count as not in use.
+  assert.equal(await isLoopbackPortInUse(0), false);
+  assert.equal(isLoopbackPortInUseSync(0), false);
 });

@@ -225,9 +225,12 @@ const skipNoIpv6 = ipv6Port === null ? "IPv6 loopback (::1) unavailable" : false
 
 test("runPreview: server bound only on ::1 → already_running", { skip: skipNoIpv6 }, async () => {
   const dir = tmpdir();
-  const port = await reserveIpv6Port();
+  // Keep the listener on its kernel-assigned port for the whole test rather
+  // than reserving a port, releasing it and binding again — no other process
+  // can take the port in between.
   const primer = createServer();
-  await new Promise((r) => primer.listen({ port, host: "::1", ipv6Only: true }, r));
+  await new Promise((r) => primer.listen({ port: 0, host: "::1", ipv6Only: true }, r));
+  const port = primer.address().port;
   try {
     const cmd = writeNodeScript(dir, "process.exit(0);\n");
     const result = await runPreview(
@@ -257,6 +260,10 @@ test("runPreview: server bound only on ::1 → already_running", { skip: skipNoI
 
 test("runPreview: dev server binding only ::1 passes the readiness check", { skip: skipNoIpv6 }, async () => {
   const dir = tmpdir();
+  // This case cannot hold the port: runPreview must find it free, spawn the
+  // command, and then see the child bind it, and a held socket cannot be
+  // handed to the spawned command. So it reserves a port and releases it;
+  // another process taking that port in the gap would make this test flaky.
   const port = await reserveIpv6Port();
   try {
     const cmd = writeNodeScript(
