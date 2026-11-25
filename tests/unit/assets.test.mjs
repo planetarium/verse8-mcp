@@ -446,6 +446,75 @@ test("upload: a manifest broken while uploading is not overwritten; the uploaded
   }
 });
 
+test("upload: a file unreadable after its check fails alone; earlier uploads are registered and counted", async () => {
+  const dir = makeAttachedProject();
+  try {
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(2, 2));
+    fs.writeFileSync(path.join(dir, "b.png"), pngBytes(3, 3));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(() =>
+      withFetch(
+        async (url, init) => {
+          // b.png passed its stat; it disappears while a.png uploads.
+          if (String(url).endsWith("/api/upload-attachment")) fs.rmSync(path.join(dir, "b.png"), { force: true });
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }, { path: "b.png" }] }, dir);
+          assert.equal(r.ok, true, JSON.stringify(r));
+          assert.equal(r.added.length, 1);
+          assert.equal(r.failed.length, 1);
+          assert.equal(r.failed[0].path, path.join(dir, "b.png"));
+          assert.equal(r.failed[0].error, "read_failed");
+          assert.equal(r.activityRecorded, true);
+        },
+      ),
+    );
+    const activity = calls.filter((c) => c.url.endsWith("/v1/activity/upload-asset"));
+    assert.equal(activity.length, 1);
+    assert.deepEqual(JSON.parse(activity[0].init.body), { count: 1 });
+    const images = JSON.parse(fs.readFileSync(manifestPath(dir), "utf8")).images;
+    assert.deepEqual(Object.values(images).map((a) => a.metadata.originalName), ["a.png"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("upload: an upload that throws mid-batch fails alone; earlier uploads are registered and counted", async () => {
+  const dir = makeAttachedProject();
+  try {
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    fs.writeFileSync(path.join(dir, "b.png"), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(() =>
+      withFetch(
+        async (url, init) => {
+          if (String(url).endsWith("/api/upload-attachment") && init.body.get("file").name === "b.png") {
+            calls.push({ url: String(url), init });
+            // The connection drops while the answer is read.
+            return new Response(new ReadableStream({ start(c) { c.error(new Error("socket reset")); } }), { status: 200 });
+          }
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }, { path: "b.png" }] }, dir);
+          assert.equal(r.ok, true, JSON.stringify(r));
+          assert.equal(r.added.length, 1);
+          assert.equal(r.failed.length, 1);
+          assert.equal(r.failed[0].path, path.join(dir, "b.png"));
+          assert.equal(r.failed[0].error, "upload_failed");
+        },
+      ),
+    );
+    const activity = calls.find((c) => c.url.endsWith("/v1/activity/upload-asset"));
+    assert.deepEqual(JSON.parse(activity.init.body), { count: 1 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("add and upload outside a verse8 project write nothing and send nothing", async () => {
   _resetLibraryCacheForTests();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-assets-plain-"));

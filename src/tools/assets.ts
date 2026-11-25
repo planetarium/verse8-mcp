@@ -164,8 +164,10 @@ function readManifest(cwd: string): ManifestRead {
     // be written back into the project.
     projectWriter(cwd).assertInside(file);
   } catch (e) {
-    if (e instanceof ProjectWriteError) return fail("assets_manifest_write_failed", e.message);
-    throw e;
+    // Any failure here is reported, never thrown: this also runs after a
+    // batch uploaded, and a throw would leave those uploads unrecorded.
+    const why = e instanceof ProjectWriteError ? e.message : `cannot check ${MANIFEST_REL}: ${(e as Error).message}`;
+    return fail("assets_manifest_write_failed", why);
   }
   let raw: string;
   let mode: number | undefined;
@@ -341,21 +343,44 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
 
   const uploaded: Array<{ fileName: string; asset: ManifestAsset; path: string }> = [];
   const failed: Array<{ path: string; error: string; hint: string; status?: number }> = [];
+  // A failure past the checks above (a file deleted or unreadable since its
+  // stat, a dropped connection) fails that file only: the loop never throws,
+  // so files already on the CDN still get registered and counted. Bytes are
+  // read one file at a time rather than all up front, so a batch of large
+  // files (verse8_upload_asset has no size cap) is never held in memory at once.
   for (const { file, description } of checked) {
-    const buf = fs.readFileSync(file.absPath);
-    const resp = await uploadAttachment({
-      file: new Blob([buf], { type: file.contentType }),
-      filename: file.filename,
-      cdnPath: cdn.cdnPath,
-      verse,
-      token,
-    });
+    let buf: Buffer<ArrayBuffer>;
+    try {
+      buf = fs.readFileSync(file.absPath);
+    } catch (e) {
+      failed.push({ path: file.absPath, error: "read_failed", hint: safeHint(`cannot read ${file.absPath}: ${(e as Error).message}`) });
+      continue;
+    }
+    let resp: Awaited<ReturnType<typeof uploadAttachment>>;
+    try {
+      resp = await uploadAttachment({
+        file: new Blob([buf], { type: file.contentType }),
+        filename: file.filename,
+        cdnPath: cdn.cdnPath,
+        verse,
+        token,
+      });
+    } catch (e) {
+      // Whether the bytes reached the CDN is unknown; it is reported as failed.
+      failed.push({ path: file.absPath, error: "upload_failed", hint: safeHint(`upload interrupted: ${(e as Error).message}`) });
+      continue;
+    }
     if (!resp.ok) {
       failed.push({ path: file.absPath, error: resp.error, hint: resp.hint, status: resp.status });
       continue;
     }
     const fileExt = extractExt(file.filename);
-    const dims = IMAGE_EXTS.has(fileExt) ? imageSize(buf) : undefined;
+    let dims: { width: number; height: number } | undefined;
+    try {
+      dims = IMAGE_EXTS.has(fileExt) ? imageSize(buf) : undefined;
+    } catch {
+      dims = undefined; // an odd header must not drop an upload that succeeded
+    }
     // The web's final upload entry: the placeholder's metadata, then the
     // image size and extension, then uploadComplete (ResourcePanel.tsx
     // processFiles + uploadFile).
