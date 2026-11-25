@@ -13,7 +13,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 - User says: "verse8 status" / "who am I on verse8" / "내 verse8 프로필"
 - User says: "verse8 logout"
 - User wants to switch to another Verse8 account → `verse8_logout`, then log in
-- Any Verse8 API call returns **401 Unauthorized** → call `verse8_status`: it reports where the rejected token came from (`tokenSource`) and what to do. Logging in again only helps when the source is `config`. `auth_check_unavailable` from `verse8_status` is not a rejection (the API could not be asked): retry, and do not log out or log in because of it
+- Any Verse8 API call returns **401 Unauthorized** → call `verse8_status`: it reports where the rejected token came from (`tokenSource`) and what to do. Logging in again only helps when the source is `config`. `auth_check_unavailable` from `verse8_status` is not a rejection (the API could not be asked, or answered 403 for the account or from a proxy): follow its `hint` — retry, or show the server's message to the user — and do not log out or log in because of it
 
 ## Tools
 

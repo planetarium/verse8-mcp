@@ -325,23 +325,29 @@ export async function runLogout(
   // called with that projectDir still find a token would be wrong — and it
   // is exactly what happens when a hint's verse8_logout is called without
   // the projectDir the token file is in.
-  const elsewhere: LogoutLeft[] = [];
+  const elsewhere: Array<{ kept: LogoutLeft; hint: string }> = [];
   for (const dir of listProjectDirsWithUsedToken()) {
     if (path.resolve(dir) === path.resolve(projectDir)) continue;
     const other = inspectProjectToken(dir);
-    const live =
-      other.state === "usable" || (other.state === "refused" && UNVERIFIED_REFUSALS.has(other.reason));
-    if (!live) {
+    const scope = `this call handled projectDir ${JSON.stringify(projectDir)} only, and this server has used this token file for projectDir ${JSON.stringify(dir)}`;
+    let kept: LogoutLeft;
+    let hint: string;
+    if (other.state === "usable") {
+      // Still in use there, and a logout for that folder would delete it.
+      kept = { source: "project", path: other.path, reason: `not deleted: ${scope}` };
+      hint = `Logout is not complete: tools called with another projectDir still find the project token file ${other.path}. ${logoutCallHint(other.path)} to delete it too.`;
+    } else if (other.state === "refused" && UNVERIFIED_REFUSALS.has(other.reason)) {
+      // Could not be checked: not in use right now, and verse8_logout would
+      // not delete it either, so do not send the caller back to this tool.
+      const why = refusedProjectTokenHint({ path: other.path, reason: other.reason });
+      kept = { source: "project", path: other.path, reason: `not deleted and not checked: ${why} (${scope})` };
+      hint = `Logout is not complete: the project token file ${other.path} is still on disk and could not be checked. ${why} It is not in use right now but may be used again once the check works, and verse8_logout does not delete a file it cannot check. Ask the user to delete that file.`;
+    } else {
       forgetProjectDirWithUsedToken(dir);
       continue;
     }
-    const kept: LogoutLeft = {
-      source: "project",
-      path: other.path,
-      reason: `not deleted: this call handled projectDir ${JSON.stringify(projectDir)} only, and this server has used this token file for projectDir ${JSON.stringify(dir)}`,
-    };
     left.push(kept);
-    elsewhere.push(kept);
+    elsewhere.push({ kept, hint });
   }
 
   const envToken = process.env.VERSE8_ACCESS_TOKEN;
@@ -388,12 +394,9 @@ export async function runLogout(
       `Logout is not complete: ${kept.path} is still on disk (${kept.reason}). It is not in use right now but may be used again later. Ask the user to delete that file.`,
     );
   }
-  if (elsewhere.length > 0 && elsewhere[0].path) {
-    const kept = elsewhere[0];
-    return incomplete(
-      { source: kept.source, path: kept.path },
-      `Logout is not complete: tools called with another projectDir still find the project token file ${kept.path}. ${logoutCallHint(elsewhere[0].path)} to delete it too.`,
-    );
+  if (elsewhere.length > 0) {
+    const { kept, hint } = elsewhere[0];
+    return incomplete({ source: kept.source, path: kept.path }, hint);
   }
 
   return {

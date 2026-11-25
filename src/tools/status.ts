@@ -13,7 +13,7 @@ import {
 import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { isSafeAbsPath } from "../util/safePath.js";
-import { safeErrorHint } from "../util/redact.js";
+import { redactHead, safeErrorHint } from "../util/redact.js";
 import { LOGIN_HINT } from "../util/hints.js";
 import { isLoopbackPortInUseSync } from "../util/loopback.js";
 import { resetProxyCaches } from "../proxy/forward.js";
@@ -226,7 +226,7 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
   }
   const tokenSource = tokenSourceInfo(where.source, where);
 
-  // A token is rejected only when the server says so (401 / 403). Anything
+  // A token is rejected only when the server says so (401). Anything
   // else — a 5xx, a gateway page, an unreachable host — says nothing about
   // the token, so it must not lead to "log out" / "remove the env var".
   const unavailable = (what: string, status?: number): StatusResult => ({
@@ -246,7 +246,16 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
   } catch (e) {
     return unavailable(`the Verse8 API could not be reached (${safeErrorHint(e)})`);
   }
-  if (!resp.ok && resp.status !== 401 && resp.status !== 403) {
+  // 401 is the only answer the verify endpoint gives for a bad token. A 403
+  // is about the account (restricted) or comes from a proxy in front of the
+  // API; clearing or replacing the token does not help with either.
+  if (!resp.ok && resp.status === 403) {
+    return unavailable(
+      `GET /v1/auth/verify answered HTTP 403 (${redactHead(resp.body, 200)}), which refuses the request or the account, not the token — show this message to the user`,
+      403,
+    );
+  }
+  if (!resp.ok && resp.status !== 401) {
     return unavailable(`GET /v1/auth/verify answered HTTP ${resp.status}`, resp.status);
   }
   if (resp.ok) {

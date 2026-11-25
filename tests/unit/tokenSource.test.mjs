@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "../../dist/server.js";
 import { loadToken, resolveToken } from "../../dist/context/token.js";
 import { ensureVerse8GitIgnore } from "../../dist/context/gitIgnore.js";
-import { runPreCommitHook } from "../../dist/cli/preCommitHook.js";
+import { runPreCommitHook, UNSTAGE_TOKEN_COMMAND } from "../../dist/cli/preCommitHook.js";
 import { isNeverCommitFile, listChangedFiles, unstageNeverCommitFiles } from "../../dist/tools/checkpoint.js";
 
 const GOOD = "good-token-value-0123456789";
@@ -125,6 +125,25 @@ async function call(name, args = {}) {
 
 function git(cwd, ...args) {
   execFileSync("git", args, { cwd, stdio: "ignore" });
+}
+
+function commit(cwd) {
+  git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--no-verify", "-m", "x");
+}
+
+/** Run the pre-commit hook for `cwd`; returns its exit code and what it wrote to stderr. */
+function runHook(cwd) {
+  const writes = [];
+  const orig = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    return { code: runPreCommitHook(cwd), out: writes.join("") };
+  } finally {
+    process.stderr.write = orig;
+  }
 }
 
 test("stale env token: status names the env var, and removing it lets the saved login through", async () => {
@@ -322,11 +341,40 @@ test("verse8_status: a 503 from the verify call is not a rejected token", async 
     assert.match(status.hint, /NOT rejected/);
     assert.doesNotMatch(status.hint, /verse8_logout|remove \(or update\)|verse8_login_start/);
 
-    // A real rejection still is one, for 401 and for 403.
-    for (const code of [401, 403]) {
-      mock.knobs.verifyStatus = code;
-      assert.equal((await call("verse8_status")).error, "token_invalid", `HTTP ${code}`);
-    }
+    // A 403 is about the account or a proxy in front of the API, not the
+    // token: the verify endpoint answers 401 for every token problem.
+    mock.knobs.verifyStatus = 403;
+    const forbidden = await call("verse8_status");
+    assert.equal(forbidden.error, "auth_check_unavailable");
+    assert.equal(forbidden.status, 403);
+    assert.match(forbidden.hint, /upstream unavailable/, "the server's own message is shown");
+    assert.doesNotMatch(forbidden.hint, /verse8_logout|remove \(or update\)|verse8_login_start/);
+
+    // A real rejection still is one.
+    mock.knobs.verifyStatus = 401;
+    assert.equal((await call("verse8_status")).error, "token_invalid");
+  });
+});
+
+test("verse8_logout: a token file in another folder that can no longer be checked is reported as unchecked, not as deletable", async () => {
+  await withIsolatedLogin(async ({ outside }) => {
+    const projectToken = path.join(outside, ".verse8", "token");
+    writeToken(projectToken, GOOD);
+    // The server uses it for that folder…
+    assert.equal((await call("verse8_status", { projectDir: outside })).ok, true);
+    // …and then git stops answering there.
+    git(outside, "init", "-q");
+    fs.writeFileSync(path.join(outside, ".git", "HEAD"), "garbage\n");
+
+    const out = await call("verse8_logout");
+    assert.equal(out.error, "logout_incomplete");
+    assert.deepEqual(out.tokenSource, { source: "project", path: projectToken });
+    assert.match(out.hint, /still on disk and could not be checked/);
+    assert.match(out.hint, /Ask the user to delete that file/);
+    // verse8_logout would not delete it either, so the hint must not send the caller back to it.
+    assert.doesNotMatch(out.hint, /to delete it too|Call verse8_logout/);
+    assert.match(out.left[0].reason, /not deleted and not checked/);
+    assert.equal(fs.existsSync(projectToken), true);
   });
 });
 
@@ -615,12 +663,15 @@ test("the managed .verse8/.gitignore keeps a hand-placed project token out of `g
   await withIsolatedLogin(async ({ project }) => {
     git(project, "init", "-q");
     writeToken(path.join(project, ".verse8", "token"), GOOD);
+    // Only `.verse8/token` is ours to hide: a file of that name further down stays visible to git.
+    fs.mkdirSync(path.join(project, ".verse8", "notes"));
+    fs.writeFileSync(path.join(project, ".verse8", "notes", "token"), "not a login");
     fs.writeFileSync(path.join(project, "game.js"), "play()");
     ensureVerse8GitIgnore(project);
 
     git(project, "add", "-A");
     const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: project, encoding: "utf8" });
-    assert.deepEqual(staged.split("\n").filter(Boolean).sort(), [".verse8/.gitignore", "game.js"]);
+    assert.deepEqual(staged.split("\n").filter(Boolean).sort(), [".verse8/.gitignore", ".verse8/notes/token", "game.js"]);
     assert.equal(resolveToken(project).source, "project", "and so the token stays usable");
   });
 });
@@ -654,30 +705,108 @@ test("the pre-commit hook rejects a commit that adds a project token, and lets i
     fs.writeFileSync(path.join(project, "game.js"), "play()");
     git(project, "add", "game.js");
 
-    const run = () => {
-      const writes = [];
-      const orig = process.stderr.write;
-      process.stderr.write = (chunk) => {
-        writes.push(String(chunk));
-        return true;
-      };
-      try {
-        return { code: runPreCommitHook(project), out: writes.join("") };
-      } finally {
-        process.stderr.write = orig;
-      }
-    };
-    assert.equal(run().code, 0, "nothing but game.js staged");
+    const run = () => runHook(project);
+    assert.equal(run().code, 0, "nothing but game.js staged (no commit yet)");
 
     git(project, "add", "-f", "games/demo/.verse8/token");
     const rejected = run();
     assert.equal(rejected.code, 1);
-    assert.match(rejected.out, /games\/demo\/\.verse8\/token is a Verse8 login token/);
+    assert.match(rejected.out, /a Verse8 login token must not be committed\. Staged: "games\/demo\/\.verse8\/token"/);
     assert.ok(!rejected.out.includes(GOOD));
 
-    git(project, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "x");
+    commit(project);
     git(project, "rm", "-q", "--cached", "games/demo/.verse8/token");
     assert.equal(run().code, 0, "a staged removal passes");
+    commit(project);
+
+    // With commits in place: a token added again, in another letter case,
+    // and with an inherited variable that would read the pathspec literally.
+    const blob = execFileSync("git", ["hash-object", "-w", "game.js"], { cwd: project, encoding: "utf8" }).trim();
+    git(project, "update-index", "--add", "--cacheinfo", `100644,${blob},games/demo/.verse8/Token`);
+    const savedLiteral = process.env.GIT_LITERAL_PATHSPECS;
+    process.env.GIT_LITERAL_PATHSPECS = "1";
+    try {
+      assert.equal(run().code, 1);
+    } finally {
+      if (savedLiteral === undefined) delete process.env.GIT_LITERAL_PATHSPECS;
+      else process.env.GIT_LITERAL_PATHSPECS = savedLiteral;
+    }
+  });
+});
+
+// A name that comes from the repository must never become part of a command
+// the user is told to run.
+
+// INV-16: The project token file is never read through a link or from git
+test("the pre-commit hook's unstage command is fixed text, works, and never carries a staged path", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    git(project, "remote", "add", "origin", "https://gitlab.verse8.io/u/demo.git");
+    // A folder name a clone could carry: pasted inside double quotes, `$(…)` would run.
+    const evil = "games/$(touch pwned)/.verse8/token";
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: project, input: "x", encoding: "utf8" }).trim();
+    git(project, "update-index", "--add", "--cacheinfo", `100644,${blob},${evil}`);
+    git(project, "update-index", "--add", "--cacheinfo", `100644,${blob},.verse8/token`);
+
+    const rejected = runHook(project);
+    assert.equal(rejected.code, 1);
+    const [diagnostic, command] = rejected.out.trimEnd().split("\n");
+    assert.ok(diagnostic.includes(JSON.stringify(evil)), diagnostic); // shown as quoted data
+    assert.equal(command, `[verse8 pre-commit] unstage it with: ${UNSTAGE_TOKEN_COMMAND}`);
+    assert.ok(!command.includes("$("), command);
+    assert.ok(!UNSTAGE_TOKEN_COMMAND.includes("'"), "single quotes do not quote in cmd.exe");
+
+    // The command does what it says: both token entries leave the index.
+    const pathspec = UNSTAGE_TOKEN_COMMAND.match(/"([^"]+)"$/)[1];
+    git(project, "rm", "-q", "--cached", "--", pathspec);
+    assert.equal(runHook(project).code, 0);
+  });
+});
+
+// The hook must only stop commits that carry a token.
+
+// INV-16: The project token file is never read through a link or from git
+test("the pre-commit hook lets a token-free commit through whatever its size and whatever diff settings say", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    git(project, "remote", "add", "origin", "https://gitlab.verse8.io/u/demo.git");
+    fs.writeFileSync(path.join(project, "game.js"), "play()");
+    git(project, "add", "game.js");
+    commit(project);
+
+    // More than 1 MiB of staged path names (the default output buffer).
+    const blob = execFileSync("git", ["hash-object", "-w", "game.js"], { cwd: project, encoding: "utf8" }).trim();
+    const longName = "d".repeat(200);
+    const entries = Array.from({ length: 6000 }, (_, i) => `100644 ${blob}\tassets/${longName}/${i}.bin\n`).join("");
+    assert.ok(entries.length > 1024 * 1024);
+    execFileSync("git", ["update-index", "--index-info"], { cwd: project, input: entries });
+    assert.deepEqual(runHook(project), { code: 0, out: "" }, "large staged list");
+
+    // A diff setting that makes `git diff` fail outright.
+    git(project, "config", "diff.orderFile", "no-such-order-file");
+    assert.deepEqual(runHook(project), { code: 0, out: "" }, "broken diff.orderFile");
+
+    // The token is still caught in that very repository.
+    git(project, "update-index", "--add", "--cacheinfo", `100644,${blob},.verse8/token`);
+    assert.equal(runHook(project).code, 1);
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("the pre-commit hook rejects, and says why and what to do, when git cannot list the staged files", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    git(project, "remote", "add", "origin", "https://gitlab.verse8.io/u/demo.git");
+    fs.writeFileSync(path.join(project, "game.js"), "play()");
+    git(project, "add", "game.js");
+    commit(project);
+    fs.writeFileSync(path.join(project, ".git", "index"), "this is not a git index");
+
+    const res = runHook(project);
+    assert.equal(res.code, 1);
+    assert.match(res.out, /git could not say whether a Verse8 login token/);
+    assert.match(res.out, /run `git status`/);
+    assert.doesNotMatch(res.out, /no-verify/);
   });
 });
 

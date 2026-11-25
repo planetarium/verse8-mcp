@@ -17,8 +17,10 @@ import { projectWriter, type ProjectWriter } from "../util/projectWrite.js";
 
 const REQUIRED_ENTRIES = [
   // INV-16: a hand-placed project token must not ride along with `git add
-  // -A`; once tracked it is public and the token lookup refuses it.
-  "token",
+  // -A`; once tracked it is public and the token lookup refuses it. The
+  // leading slash anchors it to `.verse8/token`: a file named `token`
+  // deeper down (`.verse8/ip-assets/…/token`, say) is none of our business.
+  "/token",
   "ip-assets/",
   "preview.log",
   "mcp.log",

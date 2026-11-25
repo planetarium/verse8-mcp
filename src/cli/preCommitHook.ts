@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { PROJECT_TOKEN_REL_PATH } from "../context/token.js";
 import { extractHost } from "../context/verseProject.js";
+import { gitEnvInsideHook } from "../util/gitEnv.js";
 // INV-15: the hook's stderr reaches the agent through `git commit` output.
 import { stripUrlCredentials } from "../util/redact.js";
 
@@ -14,30 +15,66 @@ import { stripUrlCredentials } from "../util/redact.js";
  * INV-16: The project token file is never read through a link or from git
  */
 function rejectStagedProjectToken(cwd: string): number {
-  let staged: string[];
+  let tokens: string[];
   try {
-    staged = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=d", "-z"], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-      .split("\0")
-      .filter((p) => p.length > 0);
+    tokens = stagedProjectTokens(cwd);
   } catch (e) {
-    process.stderr.write(`[verse8 pre-commit] unable to list staged files: ${(e as Error).message}\n`);
+    const err = e as Error & { stderr?: string | Buffer };
+    const detail = (err.stderr?.toString().trim().split(/\r?\n/)[0] || err.message).slice(0, 300);
+    process.stderr.write(
+      `[verse8 pre-commit] commit rejected — git could not say whether a Verse8 login token (${PROJECT_TOKEN_REL_PATH}) is staged: ${detail}\n` +
+        `[verse8 pre-commit] run \`git status\` to see the git error, fix it, and commit again.\n`,
+    );
     return 1;
   }
-  // Any depth (a project nested in a larger repo) and any letter case.
-  const tokens = staged.filter((p) => {
-    const lower = p.toLowerCase();
-    return lower === PROJECT_TOKEN_REL_PATH || lower.endsWith(`/${PROJECT_TOKEN_REL_PATH}`);
-  });
   if (tokens.length === 0) return 0;
+  // The paths come from the repository (a clone can carry any folder name),
+  // so they are shown as quoted data only. The command below is a fixed
+  // string: a path pasted into a shell command could carry `$(…)`.
   process.stderr.write(
-    `[verse8 pre-commit] commit rejected — ${tokens.join(", ")} is a Verse8 login token and must not be committed.\n` +
-      `[verse8 pre-commit] unstage it with: git rm --cached ${tokens.map((t) => `"${t}"`).join(" ")}\n`,
+    `[verse8 pre-commit] commit rejected — a Verse8 login token must not be committed. Staged: ${tokens.map((t) => JSON.stringify(t)).join(", ")}\n` +
+      `[verse8 pre-commit] unstage it with: ${UNSTAGE_TOKEN_COMMAND}\n`,
   );
   return 1;
+}
+
+/** Any depth (a project nested in a larger repo) and any letter case, from the top of the work tree. */
+const TOKEN_PATHSPEC = `:(top,icase,glob)**/${PROJECT_TOKEN_REL_PATH}`;
+
+/** Fixed text — no staged path is ever put into it. Double quotes work in sh, PowerShell and cmd. */
+export const UNSTAGE_TOKEN_COMMAND = `git rm --cached -- "${TOKEN_PATHSPEC}"`;
+
+function gitInHook(cwd: string, args: string[]): string {
+  return execFileSync("git", ["--no-literal-pathspecs", ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: gitEnvInsideHook(),
+  });
+}
+
+/**
+ * Staged project token files that this commit adds or changes (a staged
+ * removal is not listed). git does the path matching, so the output holds
+ * token paths only however many files are staged, and plumbing commands
+ * are used so that `diff.*` settings (a `diff.orderFile` that points
+ * nowhere, an external diff) cannot make the listing fail or differ.
+ * Throws when git cannot answer.
+ */
+function stagedProjectTokens(cwd: string): string[] {
+  let hasHead = true;
+  try {
+    gitInHook(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  } catch (e) {
+    // Exit 1 = no commit yet (the first commit of a repository).
+    if ((e as { status?: number | null }).status !== 1) throw e;
+    hasHead = false;
+  }
+  const out = hasHead
+    ? gitInHook(cwd, ["diff-index", "--cached", "--name-only", "--diff-filter=d", "-z", "HEAD", "--", TOKEN_PATHSPEC])
+    : // Nothing committed yet: every index entry is an addition.
+      gitInHook(cwd, ["ls-files", "--cached", "-z", "--", TOKEN_PATHSPEC]);
+  return out.split("\0").filter((p) => p.length > 0);
 }
 
 /**

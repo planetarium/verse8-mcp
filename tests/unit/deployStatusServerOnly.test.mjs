@@ -154,6 +154,10 @@ test("runDeployStatus: 401 from the verse API → unauthorized", async () => {
     const r = await runDeployStatus({ projectDir: dir }, dir);
     assert.equal(r.ok, false);
     assert.equal(r.error, "unauthorized");
+    // The hint says where the rejected token came from (here: the env var),
+    // not just "log in again".
+    assert.match(r.hint, /VERSE8_ACCESS_TOKEN environment variable/);
+    assert.match(r.hint, /logging in again does not replace it/);
   });
 });
 

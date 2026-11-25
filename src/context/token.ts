@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { sanitizeChildEnv } from "../util/childEnv.js";
+import { gitEnvFromScratch } from "../util/gitEnv.js";
 import { LOGIN_HINT } from "../util/hints.js";
 
 /**
@@ -48,7 +48,9 @@ function warnOnLooseTokenMode(p: string): void {
     warnedPaths.add(p);
     process.stderr.write(
       `[verse8-token] WARNING: ${p} mode is 0${mode.toString(8)}; expected 0600. ` +
-        `Tighten with: chmod 600 "${p}"\n`,
+        // No ready-made command here: the path comes from the project
+        // folder, and a name with `$(…)` in a pasted command would run.
+        `Make it readable by its owner only (chmod 600 on that file).\n`,
     );
   }
 }
@@ -124,18 +126,13 @@ function nearestGitEntryDir(start: string): string | null {
 }
 
 /**
- * Env for the tracked-file check. Every inherited `GIT_*` variable is
- * dropped by one rule rather than a list: they can point git at another
- * repository or index (`GIT_DIR`, `GIT_INDEX_FILE`), change how the
- * pathspec is read (`GIT_LITERAL_PATHSPECS`), or inject config
- * (`GIT_CONFIG_*`), and each of those can turn "tracked" into "untracked".
- * If git then cannot work at all, the check fails and the file is refused.
+ * Env for the tracked-file check: no inherited `GIT_*` variable at all
+ * (gitEnvFromScratch), since each of them can turn "tracked" into
+ * "untracked". If git then cannot work, the check fails and the file is
+ * refused.
  */
 function gitCheckEnv(ceiling: string | null): NodeJS.ProcessEnv {
-  const env = sanitizeChildEnv();
-  for (const key of Object.keys(env)) {
-    if (/^GIT_/i.test(key)) delete env[key];
-  }
+  const env = gitEnvFromScratch();
   // Stop repository discovery at the nearest `.git`: when that one is
   // damaged, git must fail instead of silently answering for a repository
   // further up, where this file is merely "untracked".
