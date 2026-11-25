@@ -2,6 +2,7 @@ import type {
   GetPromptResult,
   Prompt,
 } from "@modelcontextprotocol/sdk/types.js";
+import { NEW_PROJECT_CONFIRM_STEPS } from "./newProjectSteps.js";
 
 /**
  * Prompt id: `verse8-new-project-bootstrap`.
@@ -67,11 +68,7 @@ repo, path} triple at start time; if the triple you pass does not match it
 returns \`template_mismatch\` and does NO HTTP work.
 
 The MCP will:
-  1. POST /api/select-template       → creates GitLab project
-  2. GET  /api/gitlab/project-access-token (check existing PAT)
-  3. POST /api/gitlab/project-access-token (mint 30-day PAT if needed)
-  4. \`git clone -b develop <oauth2-embedded URL>\` into \`<targetDir>/<slug>\`
-  5. applyAttachmentArtifacts — hooks + AGENTS.md + .verse8/project.json
+${NEW_PROJECT_CONFIRM_STEPS}
 
 Success response:
 
@@ -92,7 +89,8 @@ token-grant — this avoids creating a duplicate timestamped GitLab repo.
 ## Error handling
 
 - \`not_logged_in\` (from start OR confirm): call verse8_login_start, show
-  the verification_uri_complete + user_code, wait for the user to confirm
+  the verification_uri_complete (or verification_uri when it is absent) +
+  user_code, wait for the user to confirm
   in the browser, then call verse8_login_complete with the same device_code.
 - \`tool_renamed\`: you called the deprecated verse8_new_project — use the
   start/confirm tools instead.

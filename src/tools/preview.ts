@@ -15,6 +15,7 @@ import {
   type CheckpointResult,
 } from "./checkpoint.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 export const previewInputSchema = z
   .object({
@@ -94,7 +95,7 @@ export const previewInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "If true, skip the checkpoint step and just probe / start the preview. Use when the user explicitly asked to 'open the preview again' without code changes.",
+        "If true, skip the checkpoint step and just probe / start the preview. Preflight (install, plus gameserver build + preview deploy) still runs — pass `skipPreflight: true` as well to skip it. Use when the user explicitly asked to 'open the preview again' without code changes.",
       ),
     readinessTimeoutMs: z
       .number()
@@ -581,7 +582,7 @@ function runServerOnlyPreview(input: PreviewInput, cwd: string): PreviewResult {
       ok: false,
       stage: "server_only",
       error: "not_logged_in",
-      hint: "The preview deploy needs the Verse8 login. Call verse8_login_start (then verse8_login_complete) and re-run.",
+      hint: `The preview deploy needs the Verse8 login: ${LOGIN_HINT}, then re-run.`,
     };
   }
   const forcedServerUpload = forgetDeployedServerHash(cwd);
@@ -683,8 +684,8 @@ export async function runPreview(
         ok: false,
         stage: "preflight_failed",
         hint:
-          "Not logged in to Verse8, and the gameserver preview deploy needs the login. " +
-          "Call verse8_login_start (then verse8_login_complete) and re-run verse8_preview.",
+          "Not logged in to Verse8, and the gameserver preview deploy needs the login: " +
+          `${LOGIN_HINT}, then re-run verse8_preview.`,
         failedStep: {
           command: previewDeployCommand(),
           durationMs: 0,

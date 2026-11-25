@@ -12,6 +12,7 @@ import { zodToJsonSchema } from "./util/jsonSchema.js";
 import { recordToolCall } from "./util/v8CallLog.js";
 import { redactHead, safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
+import { LOGIN_HINT } from "./util/hints.js";
 import { loadToken } from "./context/token.js";
 import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
@@ -115,7 +116,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_login_start",
     description:
-      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_login_start'. Begins Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete and user_code to the user, (2) wait for browser approval, (3) call verse8_login_complete with the same device_code. Do NOT re-call verse8_login_start before completing — each call issues a fresh device_code.",
+      "Call this when `workflow.nextTool` from verse8_bootstrap / verse8_status is 'verse8_login_start'. Begins Verse8 device-flow login (RFC 8628). Returns {verification_uri_complete, user_code, device_code, expires_in} IMMEDIATELY without polling. You MUST (1) show verification_uri_complete (or verification_uri when it is absent) and user_code to the user, (2) wait for browser approval, (3) call verse8_login_complete with the same device_code. Do NOT re-call verse8_login_start before completing — each call issues a fresh device_code.",
     inputSchema: zodToJsonSchema(loginStartInputSchema),
   },
   {
@@ -166,7 +167,7 @@ const CHECKPOINT_TOOL: Tool = {
 const PREVIEW_TOOL: Tool = {
   name: "verse8_preview",
   description:
-    "MANDATORY dev-server launcher for Verse8 projects — NEVER use `bun run dev` / `vite` / any dev server via Bash. This tool bundles a verse8_checkpoint commit with the spawn so 'what the user sees == what is in git'. Sequence: (1) internal verse8_checkpoint with the V8 commit fields you pass (`userPrompt` / `model` / `provider` / `problemStatement` / `workSummary`); (2) preflight — `installCommand` (default `bun update`), and for Agent8 GameServer projects (detected via `server.ts` / `server.js` / `server/`) runs pinned `@agent8/gameserver-node build` + `@agent8/deploy --preview`; (3) spawn `bun run dev` detached on port 5173. Use this whenever the user should visually verify a change. Pass `startOnly: true` to skip commit AND preflight (only when user asked to re-open preview without changes). Pass `skipPreflight: true` only if you already provisioned install/build/deploy. Response includes `webEditor.url` (https://create.verse8.io/creator/editor?chat=<projectPath>) on gitlab.verse8.io origins — show BOTH local preview URL AND web editor URL to the user. Errors: `preflight_failed` (dev server NOT started) / `dev_server_not_ready` (port never bound, log tail included).",
+    "MANDATORY dev-server launcher for Verse8 projects — NEVER use `bun run dev` / `vite` / any dev server via Bash. This tool bundles a verse8_checkpoint commit with the spawn so 'what the user sees == what is in git'. Sequence: (1) internal verse8_checkpoint with the V8 commit fields you pass (`userPrompt` / `model` / `provider` / `problemStatement` / `workSummary`); (2) preflight — `installCommand` (default `bun update`), and for Agent8 GameServer projects (detected via `server.ts` / `server.js` / `server/`) runs pinned `@agent8/gameserver-node build` + `@agent8/deploy --preview`; (3) spawn `bun run dev` detached on port 5173. Use this whenever the user should visually verify a change. Pass `startOnly: true` to skip the commit only (only when user asked to re-open preview without changes). Pass `skipPreflight: true` only if you already provisioned install/build/deploy. Response includes `webEditor.url` (https://create.verse8.io/creator/editor?chat=<projectPath>) on gitlab.verse8.io origins — show BOTH local preview URL AND web editor URL to the user. Errors: `preflight_failed` (dev server NOT started) / `dev_server_not_ready` (port never bound, log tail included).",
   inputSchema: zodToJsonSchema(previewInputSchema),
 };
 
@@ -472,7 +473,7 @@ export function createServer(): Server {
         return {
           content: jsonContent({
             error: "not_logged_in",
-            hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+            hint: LOGIN_HINT,
           }),
           isError: true,
         };

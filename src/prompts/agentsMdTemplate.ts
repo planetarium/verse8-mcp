@@ -3,6 +3,8 @@
  * (M1b-1 — extracted from src/tools/attach.ts.)
  */
 
+import { NEW_PROJECT_CONFIRM_STEPS } from "./newProjectSteps.js";
+
 export const AGENTS_MD_TEMPLATE = `# Verse8 Project — Agent Instructions
 
 > Read this file in full at session start. It is installed by verse8-mcp
@@ -106,7 +108,7 @@ MUST use for state-changing operations:
 
 | Intent | Use | Do NOT use |
 |--------|-----|------------|
-| Log in to Verse8 | \`verse8_login_start\` → \`verse8_login_complete\` | \`bash scripts/verse8-login.sh\` unless MCP is unavailable |
+| Log in to Verse8 | \`verse8_login_start\` → \`verse8_login_complete\` | — |
 | Check current profile / token | \`verse8_status\` | — |
 | Commit + push changes | **\`verse8_checkpoint\`** | Native \`git commit\` via Bash |
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |
@@ -158,7 +160,8 @@ when \`git remote origin\` is a gitlab.verse8.io repo. If \`webEditor\` is \`nul
 omit that line (the project isn't hosted on gitlab.verse8.io).
 
 Use \`startOnly: true\` only when the user specifically asks to reopen the
-preview with no new changes.
+preview with no new changes. It skips the commit, not the preflight —
+add \`skipPreflight: true\` too if install/build/deploy are already done.
 
 **Who is \`$sender.account\`?** On verse8.io it is the player's wallet
 address (EIP-55 \`0x…\`; guests get a temporary one), not the numeric
@@ -197,9 +200,10 @@ When calling \`verse8_checkpoint\`, always pass:
   unless you pass them.
 
 The MCP server assembles the V8 format commit message deterministically.
-A \`commit-msg\` git hook validates the result — **you will see warnings on
-stderr if your commit drifts from the format or is missing narrative**.
-Fix them next turn: if the hook warns about missing \`<problemStatement>\` or
+A \`commit-msg\` git hook validates the result: a commit that **drifts from
+the format is rejected** (see below), while a valid commit that is
+**missing narrative is accepted with warnings on stderr**.
+Fix those next turn: if the hook warns about missing \`<problemStatement>\` or
 \`<workSummary>\` inside \`<V8AssistantMessage>\`, that means you didn't pass
 \`problemStatement\` / \`workSummary\` and the next agent loses the reasoning
 for this change.
@@ -280,11 +284,7 @@ On user confirmation, call \`verse8_new_project_confirm\` with:
 - \`targetDir\`: optional parent directory for the clone (default: cwd)
 
 The MCP will:
-1. POST /api/select-template (creates the GitLab project)
-2. GET /api/gitlab/project-access-token (check existing PAT)
-3. POST /api/gitlab/project-access-token (grant a 30-day PAT if needed)
-4. \`git clone -b develop <oauth2-embedded URL>\` into \`<targetDir>/<slug>\`
-5. Install git hooks + AGENTS.md + \`.verse8/project.json\` (attach)
+${NEW_PROJECT_CONFIRM_STEPS}
 
 On success the response includes \`nextCallRequires.projectDir\`. **From that
 point on, you MUST pass \`projectDir\` on every subsequent tool call** —

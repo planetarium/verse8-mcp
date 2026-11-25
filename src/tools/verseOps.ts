@@ -3,6 +3,7 @@ import { z } from "zod";
 import { loadToken } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
@@ -138,7 +139,7 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
       case "mine": {
         // Needs only the login, not a verse in .env.
         const token = ctx.ok ? ctx.token : loadToken(path.resolve(input.projectDir ?? serverCwd));
-        if (!token) return opFail("not_logged_in", "call verse8_login_start (then verse8_login_complete)");
+        if (!token) return opFail("not_logged_in", LOGIN_HINT);
         const r = await v8Request<{ total: number; page: number; limit: number; items: VerseInfo[] }>("GET", "/v1/verse/my", {
           token,
           query: { page: input.page ?? 1, limit: input.limit ?? 20, includeReview: "true" },

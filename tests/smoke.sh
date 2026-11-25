@@ -80,7 +80,7 @@ trap cleanup EXIT INT TERM
 # Mock server helpers
 # ---------------------------------------------------------------------------
 
-# start_v8_mock [--stub-project-404]
+# start_v8_mock
 # Sets V8_MOCK_PID, V8_MOCK_PORT, VERSE8_API_URL
 start_v8_mock() {
   local extra_args="${1:-}"

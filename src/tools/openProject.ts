@@ -4,6 +4,7 @@ import { z } from "zod";
 import { loadToken } from "../context/token.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import {
   buildWebEditorLink,
   deriveProjectPathFromOrigin,
@@ -144,7 +145,7 @@ export function resolveProjectRef(
       ok: false,
       error: "environment_mismatch",
       hint: safeHint(
-        `The editor URL is on ${host}, but this MCP server is configured for ${createHost || "<unknown>"} (VERSE8_CREATE_URL). The login token belongs to one environment, so the project cannot be opened here. Point the server at the matching environment (see docs/environment.md) and log in again, or pass the project path instead if the project lives in this environment.`,
+        `The editor URL is on ${host}, but this MCP server is configured for ${createHost || "<unknown>"} (VERSE8_CREATE_URL). The login token belongs to one environment, so the project cannot be opened here. Point the server at the matching environment (the VERSE8_*_URL settings in the MCP server's env) and log in again, or pass the project path instead if the project lives in this environment.`,
       ),
     };
   }
@@ -226,7 +227,7 @@ export async function runOpenProject(
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
     };
   }
 

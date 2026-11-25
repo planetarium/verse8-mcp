@@ -31,6 +31,8 @@ If you did not produce any change this turn (pure reading, debugging, explanatio
 | `model` | recommended | Your model id, e.g. `claude-opus-4-7`. |
 | `provider` | recommended | `anthropic`, `openai`, `google-vertex`, etc. |
 | `mcpServers` | recommended | Names of MCP servers whose tools you invoked, e.g. `["image"]`. Omit if you used none. |
+| `problemStatement` | recommended | One or two sentences on what was wrong or missing, in the user's terms. Lands as `<problemStatement>`; the hook warns when it is missing. |
+| `workSummary` | recommended | One or two sentences on what you changed. Lands as `<workSummary>`; the hook warns when it is missing. |
 | `reasoning` | optional | One short paragraph summarizing your reasoning. Skip if you didn't reason. |
 | `toolCalls` | optional | List of `{ name, status, input?, output? }`. Tool names only is fine; `input`/`output` are optional (truncated past 4 KB). Omit entirely to let verse8-mcp auto-fill from its own log — but that log only covers verse8-mcp tools, so host Read/Write/Bash calls will be missing unless you pass them. |
 | `files` | optional | Explicit staging list. Omit to stage everything (`git add -A`). |
@@ -50,7 +52,7 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 <subject = first line of userPrompt>
 
 <V8AgentMessage>
-{"messageId":"msg_ext_…","status":"completed","mcpServers":[…]}
+{"messageId":"msg_ext_…","status":"completed","mcpServers":[…],"problemStatement":"…","workSummary":"…"}
 </V8AgentMessage>
 <V8UserMessage>
 [Model: …]
@@ -60,21 +62,54 @@ The checkpoint tool assembles the message deterministically and commits + pushes
 <userPrompt verbatim>
 </V8UserMessage>
 <V8AssistantMessage>
+<problemStatement id="prs_ext_…" status="completed">`…`</problemStatement>    (warns if missing)
+<workSummary id="wsm_ext_…" status="completed">`…`</workSummary>             (warns if missing)
 <reasoning id="prt_ext_r…" status="completed">`…`</reasoning>    (optional)
 <toolCall id="prt_ext_t…" name="…" status="…">`{…}`</toolCall>
 …
 </V8AssistantMessage>
 ```
 
-See `sample/match-three-game` in the repo for real container-generated commits, and `src/format/v8CommitMessage.ts` for the exact grammar.
+What the hook checks — a commit fails if any of these is missing:
 
-## If the commit-msg hook warns
+- A non-empty first line (the subject).
+- A `<V8AgentMessage>` block whose body is JSON with a `messageId` and a string `status`.
+- A `<V8UserMessage>` block with a non-empty user prompt. The `[Model: …]` / `[Provider: …]` lines are optional.
+- A `<V8AssistantMessage>` block (its children are optional).
 
-The `commit-msg` git hook (installed by `verse8_new_project`) runs `parseV8CommitMessage` and prints `⚠` lines to stderr for any drift. It does **not** block the commit; the checkpoint still lands. Read the warnings, fix the missing field next turn, move on.
+A commit that passes lands with a warning for each narrative field (problem statement, work summary) the hook cannot find in any of these places: the `problemStatement` / `workSummary` keys of the `<V8AgentMessage>` JSON, the `<problemStatement>` / `<workSummary>` tags, or the legacy `## Problem` / `## Work` sections.
 
-## Reference
+## Full example
 
-- Builder/parser: `src/format/v8CommitMessage.ts`
-- Hook: `src/cli/commitMsgHook.ts` + `hooks/commit-msg`
-- Standalone CLI: `scripts/v8-commit-message.js` (takes JSON stdin, prints message)
-- Example commits: `sample/match-three-game/` git history
+A complete message that the hook accepts with no warnings, as `verse8_checkpoint` builds it (the `*_ext_…` ids are minted per commit):
+
+```text
+make the jump higher
+
+<V8AgentMessage>
+{"messageId":"msg_ext_49a1a4199214525a7f166a","status":"completed","mcpServers":[],"problemStatement":"Players could not reach the second platform.","workSummary":"Raised JUMP_VELOCITY from 8 to 11 in src/player.ts."}
+</V8AgentMessage>
+<V8UserMessage>
+[Model: claude-opus-4-7]
+
+[Provider: anthropic]
+
+make the jump higher
+</V8UserMessage>
+<V8AssistantMessage>
+<problemStatement id="prs_ext_3800f0d73f77f3fd4e88cc" status="completed">`Players could not reach the second platform.`</problemStatement>
+
+<workSummary id="wsm_ext_45a1188f790464f69f8e53" status="completed">`Raised JUMP_VELOCITY from 8 to 11 in src/player.ts.`</workSummary>
+
+<reasoning id="prt_ext_8f695e4502bc0c897728ba" status="completed">`Raised the jump impulse; gravity is unchanged.`</reasoning>
+
+<toolCall id="prt_ext_141e702385718b3037d4e1" name="edit" status="completed">`{"input":{"filePath":"src/player.ts"}}`</toolCall>
+</V8AssistantMessage>
+```
+
+## If the commit-msg hook rejects or warns
+
+The `commit-msg` git hook (installed by `verse8_attach`, which `verse8_new_project_confirm` runs after cloning) runs `verse8-mcp hook commit-msg` and acts on the result in two ways:
+
+- **Format drift — rejected.** A message that is not valid V8 format makes the hook exit 1 and the commit does not land. Commit through `verse8_checkpoint` instead of a hand-written `git commit`. Merge / Revert subjects and `VERSE8_ALLOW_NONCOMPLIANT=1` are the only exceptions.
+- **Missing narrative — warned.** A valid commit without `<problemStatement>` / `<workSummary>` lands, and the hook prints `⚠` lines to stderr. Read the warnings, pass the missing field next turn, move on.

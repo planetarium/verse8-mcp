@@ -20,6 +20,7 @@ import { sanitizeChildEnv } from "../util/childEnv.js";
 import { resolveAgent8Pin } from "../util/gameserverPin.js";
 import { safeErrorHint, safeHint } from "../util/redact.js";
 import { stepsUseShell, unsafeShellTokens } from "../util/shellArgv.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import {
   checkpointInputSchema,
   runCheckpoint,
@@ -980,7 +981,7 @@ export async function runDeploy(
   }
   const token = loadToken(cwd);
   if (!token) {
-    return fail("preflight", "not_logged_in", "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh");
+    return fail("preflight", "not_logged_in", LOGIN_HINT);
   }
   const attachment = detectAttachment(cwd);
   if (!attachment.attached && !input.skipAttachCheck) {
@@ -1054,7 +1055,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", "Verse8 token rejected. Re-run verse8_login_start.", { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. To log in again: ${LOGIN_HINT}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,

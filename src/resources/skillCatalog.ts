@@ -33,8 +33,8 @@ export function renderSkillsCatalog(skills: SkillResource[]): string {
   return [
     "## Available Verse8 skills",
     "",
-    "The MCP server discovers skills from `skills/` (verse8 core) and",
-    "`skills-vendor/agent8-skills/` (vendored upstream). Only the skills",
+    "The MCP server ships these skills in its package: verse8 core skills and",
+    "skills vendored from agent8-skills. Only the skills",
     "that apply to this project are listed: a plugin that declares",
     "`requiresPackage` is included only when `package.json` depends on one",
     "of those packages. After adding such a dependency, re-run",

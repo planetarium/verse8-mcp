@@ -93,7 +93,7 @@ export async function runLoginStart(): Promise<LoginStartResult | LoginStartErro
     user_code: auth.user_code,
     expires_in: auth.expires_in,
     interval: auth.interval,
-    next: "Display verification_uri_complete + user_code to the user, wait for them to confirm they have approved in the browser, then call verse8_login_complete with the same device_code.",
+    next: "Display verification_uri_complete (or verification_uri when it is absent) + user_code to the user, wait for them to confirm they have approved in the browser, then call verse8_login_complete with the same device_code.",
   };
 }
 

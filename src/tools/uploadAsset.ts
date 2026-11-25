@@ -13,6 +13,7 @@ import {
 import { resolveCdnPath } from "../format/assetShortcuts.js";
 import { safeHint } from "../util/redact.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 
 /**
  * verse8_upload_asset — upload a single local file to the Verse8 CDN via
@@ -123,7 +124,7 @@ export async function runUploadAsset(
   if (!token) {
     return fail(
       "not_logged_in",
-      "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      LOGIN_HINT,
     );
   }
 

@@ -8,10 +8,6 @@
  *   POST /v1/auth/device/authorize  -> device flow init
  *   POST /v1/auth/device/token      -> pending on first call, success on second
  *   GET  /v1/auth/verify            -> profile if valid Bearer, 401 otherwise
- *   POST /v1/projects               -> create project (or 404 if --stub-project-404)
- *
- * Flags:
- *   --stub-project-404   Make POST /v1/projects return 404
  *
  * Writes port to /tmp/v8-mock-port.txt on startup.
  */
@@ -20,8 +16,6 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as url from "node:url";
 
-const args = process.argv.slice(2);
-const STUB_PROJECT_404 = args.includes("--stub-project-404");
 const VALID_TOKEN = "test-token-xyz";
 const PORT_FILE = "/tmp/v8-mock-port.txt";
 
@@ -105,38 +99,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /v1/projects
-  if (method === "POST" && pathname === "/v1/projects") {
-    if (STUB_PROJECT_404) {
-      send(res, 404, { error: "not_found", message: "Project creation endpoint not yet available" });
-      return;
-    }
-
-    const auth = req.headers["authorization"] ?? "";
-    if (auth !== `Bearer ${VALID_TOKEN}`) {
-      send(res, 401, { error: "unauthorized" });
-      return;
-    }
-
-    let body: Record<string, unknown> = {};
-    try {
-      body = JSON.parse(await readBody(req));
-    } catch {
-      /* ignore */
-    }
-
-    if (!body.gameType || !body.title || !body.preset) {
-      send(res, 400, { error: "bad_request", message: "gameType, title, and preset are required" });
-      return;
-    }
-
-    send(res, 201, {
-      cloneUrl: "file:///tmp/verse8-smoke-bundle.git",
-      projectId: "proj-abc123",
-    });
-    return;
-  }
-
   // Fallthrough 404
   send(res, 404, { error: "not_found" });
 });
@@ -145,7 +107,7 @@ server.listen(0, "127.0.0.1", () => {
   const addr = server.address() as { port: number };
   const port = addr.port;
   fs.writeFileSync(PORT_FILE, String(port), "utf8");
-  process.stderr.write(`[v8-mock] listening on 127.0.0.1:${port}${STUB_PROJECT_404 ? " (stub-project-404)" : ""}\n`);
+  process.stderr.write(`[v8-mock] listening on 127.0.0.1:${port}\n`);
 });
 
 process.on("SIGTERM", () => {

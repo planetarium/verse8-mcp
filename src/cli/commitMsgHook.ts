@@ -87,12 +87,12 @@ export function runCommitMsgHook(messageFilePath: string | undefined): number {
   process.stderr.write(
     "\n" +
       "[verse8 commit-msg] verse8 projects require the V8 commit format for web/container compatibility.\n" +
+      "[verse8 commit-msg] Format: a subject line, then <V8AgentMessage> (JSON with messageId + status),\n" +
+      "  <V8UserMessage> (the user prompt; [Model: …] / [Provider: …] lines optional) and <V8AssistantMessage>.\n" +
       "[verse8 commit-msg] Fix options:\n" +
       "  1. Use the verse8_checkpoint MCP tool — it builds the format deterministically.\n" +
-      "     (pass: userPrompt, model, provider, toolCalls)\n" +
-      "  2. Build a conformant message via scripts/v8-commit-message.js < input.json > msg.txt\n" +
-      "     then: git commit -F msg.txt\n" +
-      "  3. Bypass this check for a single commit (not recommended for agent-driven work):\n" +
+      "     (pass: userPrompt, model, provider, problemStatement, workSummary)\n" +
+      "  2. Bypass this check for a single commit (not recommended for agent-driven work):\n" +
       "       VERSE8_ALLOW_NONCOMPLIANT=1 git commit -m \"...\"\n",
   );
   return 1;

@@ -17,6 +17,7 @@ import {
 } from "../format/v8CommitMessage.js";
 import { drainSinceLastCheckpoint } from "../util/v8CallLog.js";
 import { isSafeAbsPath } from "../util/safePath.js";
+import { LOGIN_HINT } from "../util/hints.js";
 import { synthesizeFileChangesFromDiff } from "../format/fileChangeSynthesis.js";
 
 /**
@@ -464,7 +465,7 @@ export async function runCheckpoint(
     return {
       ok: false,
       error: "not_logged_in",
-      hint: "call verse8_login_start (then verse8_login_complete) or run: bash scripts/verse8-login.sh",
+      hint: LOGIN_HINT,
     };
   }
 

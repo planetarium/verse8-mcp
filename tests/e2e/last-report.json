@@ -1,6 +1,6 @@
 {
   "summary": {
-    "pass": 9,
+    "pass": 8,
     "fail": 0,
     "blocked": 0
   },
@@ -28,10 +28,6 @@
     },
     {
       "test": "image_proxy_live",
-      "status": "pass"
-    },
-    {
-      "test": "stub_new_project",
       "status": "pass"
     },
     {
