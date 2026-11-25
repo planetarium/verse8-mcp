@@ -5,22 +5,6 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
-## [Unreleased]
-
-### Added — asset library and registered uploads (#69)
-
-`verse8_assets` does what the web editor's asset panel does. `search`
-queries the Verse8 asset library (`GET /api/resources`) by one of the
-panel's categories and an optional keyword, 20 per page. `add` puts items
-from a search into `src/assets.json` under a `categoryPath`. `upload`
-uploads several files to `assets/<categoryPath>` with the checks of
-`verse8_upload_asset`, registers them in `src/assets.json`, and records the
-upload activity (`POST /v1/activity/upload-asset`). Entries use the web
-editor's shape and key format; existing entries are kept, a category path
-that runs into an existing asset returns `asset_category_conflict`, an
-unreadable manifest `assets_manifest_invalid`, and a manifest linked outside
-the project `assets_manifest_write_failed`.
-
 ## [0.10.0] — 2026-11-23
 
 ### Added — open an existing Verse8 game (#32, #51)

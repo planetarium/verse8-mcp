@@ -366,6 +366,107 @@ test("upload: a failed file is reported, the rest are registered, activity count
   }
 });
 
+// MCP-UP-4: asset manifest writes never leave the project folder
+test("upload: src linked outside the project is refused before any upload or activity request", async () => {
+  const dir = makeAttachedProject();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-assets-outside-"));
+  try {
+    fs.writeFileSync(path.join(outside, "assets.json"), "{}");
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    fs.symlinkSync(outside, path.join(dir, "src"), "junction");
+    const calls = [];
+    await withToken(() =>
+      withFetch(uploadFetch(calls), async () => {
+        const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
+        assert.equal(r.ok, false);
+        assert.equal(r.error, "assets_manifest_write_failed");
+      }),
+    );
+    assert.deepEqual(calls.map((c) => c.url), [], "no upload-attachment and no activity request");
+    assert.equal(fs.readFileSync(path.join(outside, "assets.json"), "utf8"), "{}");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("upload: a broken manifest or a conflicting categoryPath is refused before any network call", async () => {
+  const dir = makeAttachedProject();
+  try {
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    const calls = [];
+    await withToken(() =>
+      withFetch(uploadFetch(calls), async () => {
+        fs.writeFileSync(manifestPath(dir), "{ not json");
+        const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
+        assert.equal(r.error, "assets_manifest_invalid");
+        assert.equal(fs.readFileSync(manifestPath(dir), "utf8"), "{ not json");
+
+        const body = JSON.stringify({ hero: { url: "https://x/h.png", description: "", metadata: {} } }, null, 2);
+        fs.writeFileSync(manifestPath(dir), body);
+        const r2 = await runAssets({ action: "upload", categoryPath: ["hero", "x"], files: [{ path: "a.png" }] }, dir);
+        assert.equal(r2.error, "asset_category_conflict");
+        assert.equal(fs.readFileSync(manifestPath(dir), "utf8"), body);
+      }),
+    );
+    assert.deepEqual(calls.map((c) => c.url), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("upload: a manifest broken while uploading is not overwritten; the uploaded files are reported", async () => {
+  const dir = makeAttachedProject();
+  try {
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(manifestPath(dir), "{}");
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(() =>
+      withFetch(
+        async (url, init) => {
+          if (String(url).endsWith("/api/upload-attachment")) fs.writeFileSync(manifestPath(dir), "{ broken");
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
+          assert.equal(r.ok, false);
+          assert.equal(r.error, "assets_manifest_invalid");
+          assert.equal(r.uploaded.length, 1);
+          assert.match(r.hint, /NOT in src\/assets\.json/);
+          assert.equal(r.activityRecorded, true, "the upload happened, so the activity is still recorded");
+        },
+      ),
+    );
+    assert.equal(fs.readFileSync(manifestPath(dir), "utf8"), "{ broken");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("add and upload outside a verse8 project write nothing and send nothing", async () => {
+  _resetLibraryCacheForTests();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-assets-plain-"));
+  try {
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    const calls = [];
+    await withToken(() =>
+      withFetch(uploadFetch(calls), async () => {
+        const a = await runAssets({ action: "add", ids: ["r1"], categoryPath: ["images"] }, dir);
+        assert.equal(a.error, "not_a_verse_project");
+        const u = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
+        assert.equal(u.error, "not_a_verse_project");
+      }),
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(fs.existsSync(manifestPath(dir)), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("upload: one file failing the upload checks stops the batch before any network call", async () => {
   const dir = makeAttachedProject();
   try {
