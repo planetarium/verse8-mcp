@@ -237,7 +237,19 @@ export interface RunRule {
 }
 
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
-const quoted = (v: unknown): string => JSON.stringify(String(v ?? ""));
+const MAX_VALUE_CHARS = 80;
+/**
+ * One value as the prompt shows it: a string quoted, anything else as
+ * canonical JSON, nothing as "none". Cut at MAX_VALUE_CHARS so one long
+ * value (a description) cannot push the other changes out of the prompt.
+ */
+function shown(v: unknown): string {
+  if (v === null || v === undefined) return "none";
+  const s = typeof v === "string" ? JSON.stringify(v) : canonicalJson(v);
+  return s.length > MAX_VALUE_CHARS ? `${s.slice(0, MAX_VALUE_CHARS - 1)}…` : s;
+}
+/** Create-body fields the prompt already names in its own words (or that only repeat the target). */
+const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", "isActive", "purchaseConstraints"]);
 const vxShopPortal = (): string => `the game's creator page, VX Shop tab (${getCreateBaseUrl()}/creator)`;
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
 
@@ -255,18 +267,29 @@ function vxEditConfirm(p: Plan): ConfirmText {
   const state = rec(p.state);
   const { startsSale } = vxEditKind(p);
   const priceChanges = "price" in body;
-  const others = Object.keys(body).filter((k) => k !== "price" && k !== "isActive" && k !== "purchaseConstraints").sort();
   const price = priceChanges ? `Price: ${state.price} → ${body.price} VX` : `Price: ${state.price} VX`;
+  // Everything else the request changes, each with its current and new
+  // value. The body always carries the limits (re-sent when kept), so they
+  // are compared with the current ones; absent means they are removed.
+  const also: string[] = [];
+  const limitsNow = state.purchaseConstraints ?? null;
+  const limitsTo = body.purchaseConstraints ?? null;
+  if (canonicalJson(limitsNow) !== canonicalJson(limitsTo)) {
+    also.push(limitsTo === null ? `ALL purchase limits REMOVED (now ${shown(limitsNow)})` : `purchase limits: ${shown(limitsNow)} → ${shown(limitsTo)}`);
+  }
+  for (const k of Object.keys(body).filter((k) => k !== "price" && k !== "isActive" && k !== "purchaseConstraints").sort()) {
+    also.push(`${k}: ${shown(state[k])} → ${shown(body[k])}`);
+  }
   return {
     question: startsSale
       ? priceChanges
         ? "Start selling this VX Shop item at a new price?"
         : "Start selling this VX Shop item?"
       : "Change the price of a VX Shop item that is on sale?",
-    target: `Item: ${quoted(state.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
+    target: `Item: ${shown(state.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
     change:
       (startsSale ? `${price}; buyers can purchase it from now on` : `${price} for every buyer from now on`) +
-      (others.length > 0 ? `; also changes ${others.join(", ")}` : ""),
+      (also.length > 0 ? `; also changes ${also.join("; ")}` : ""),
     undo: SALE_UNDO,
   };
 }
@@ -282,10 +305,17 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
     condition: (p) => (rec(p.body).isActive === true ? "user_confirm" : "preview"),
     confirm: (p) => {
       const b = rec(p.body);
+      // Every other value the request sets, purchase limits first.
+      const rest = ["purchaseConstraints", ...Object.keys(b).filter((k) => !CREATE_SHOWN.has(k)).sort()]
+        .filter((k) => b[k] !== undefined)
+        .map((k) => `${k === "purchaseConstraints" ? "purchase limits" : k}: ${shown(b[k])}`);
       return {
         question: "Create this VX Shop item and start selling it?",
-        target: `Item: ${quoted(b.name)} (productId ${b.productId}) in verse ${p.target.verseId}`,
-        change: `Price: ${b.price} VX, stock ${b.stock}; buyers can purchase it from now on`,
+        target: `Item: ${shown(b.name)} (productId ${shown(b.productId)}) in verse ${p.target.verseId}`,
+        change:
+          `Price: ${b.price} VX, stock ${b.stock}; buyers can purchase it from now on` +
+          (b.purchaseConstraints === undefined ? "; no purchase limits" : "") +
+          (rest.length > 0 ? `; with ${rest.join("; ")}` : ""),
         undo: SALE_UNDO,
       };
     },
@@ -306,7 +336,7 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
       const s = rec(p.state);
       return {
         question: "Restore this VX Shop item and put it back on sale?",
-        target: `Item: ${quoted(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
+        target: `Item: ${shown(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
         change: `Price: ${s.price} VX; buyers can purchase it from now on`,
         undo: "Undo: you can archive it again; purchases already made stay as they are",
       };
@@ -351,9 +381,15 @@ export interface ConfirmHost {
   canAsk: boolean;
   /** Show the prompt and return the host's answer (`action`, and `content` on accept). */
   ask(message: string, schema: ConfirmSchema): Promise<{ action?: unknown; content?: unknown }>;
+  /**
+   * Whether the host has cancelled the tool call that is asking. Checked
+   * after the answer: a "Run" that arrives for a call the host already gave
+   * up on (its tool timeout) must not write.
+   */
+  isCancelled?(): boolean;
 }
 
-const MAX_CONFIRM_CHARS = 600;
+const MAX_CONFIRM_CHARS = 1200;
 /** Any whitespace run becomes one space (`\s` covers the line and paragraph separators; NEL is added). */
 const oneLine = (s: string): string => s.replace(/[\s\x85]+/g, " ").trim();
 
@@ -386,6 +422,19 @@ async function askUser(p: Plan, message: string, host: ConfirmHost | undefined):
     return opFail(
       "confirm_unavailable",
       `Nothing was changed: the confirmation prompt could not be shown or answered (${safeErrorHint(e)}). ${portalOf(p)}`,
+      { confirmation: message },
+    );
+  }
+  let cancelled = true;
+  try {
+    cancelled = host.isCancelled?.() ?? false;
+  } catch {
+    /* cannot tell: treat as cancelled */
+  }
+  if (cancelled) {
+    return opFail(
+      "confirm_unavailable",
+      `Nothing was changed: the host cancelled this tool call while the confirmation prompt was open (a tool timeout shorter than the time it took to answer), so the answer was not used. Raise the host's tool timeout for this server, or: ${portalOf(p)}`,
       { confirmation: message },
     );
   }

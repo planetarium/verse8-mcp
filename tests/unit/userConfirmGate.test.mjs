@@ -39,7 +39,16 @@ const item = (id, extra = {}) => ({
 });
 
 // 7: on sale. 8: hidden. 9: archived with the on-sale flag set. 10: archived, hidden.
-const makeItems = () => [item(7), item(8, { isActive: false }), item(9, { isArchived: true }), item(10, { isArchived: true, isActive: false })];
+// 12: on sale, with purchase limits. 13: hidden, with purchase limits.
+const WITH_LIMITS = { metadata: JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 2 } }) };
+const makeItems = () => [
+  item(7),
+  item(8, { isActive: false }),
+  item(9, { isArchived: true }),
+  item(10, { isArchived: true, isActive: false }),
+  item(12, WITH_LIMITS),
+  item(13, { isActive: false, ...WITH_LIMITS }),
+];
 
 async function withShop(f) {
   const items = makeItems();
@@ -90,7 +99,7 @@ const CONFIRMED = [
   {
     name: "create on sale",
     input: { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true, imagePath: "item.png" },
-    shows: [/Gems/, /productId gem/, /120 VX/, new RegExp(VERSE)],
+    shows: [/Gems/, /productId "gem"/, /120 VX/, new RegExp(VERSE)],
     upload: true,
   },
   {
@@ -106,7 +115,7 @@ const CONFIRMED = [
   {
     name: "edit: put on sale at a new price, renaming it",
     input: { action: "upsert", itemId: 8, isActive: true, price: 90, name: "Renamed" },
-    shows: [/Item 8/, /300 → 90 VX/, /also changes name/],
+    shows: [/Item 8/, /300 → 90 VX/, /also changes name: "Item 8" → "Renamed"/],
   },
   {
     name: "restore an archived item whose on-sale flag is set",
@@ -278,8 +287,109 @@ test("the prompt stays one line whatever the item is called, and is capped", () 
   assert.equal(/[\r\n\t]/.test(m) || SEPS.some((c) => m.includes(c)), false, JSON.stringify(m));
   assert.match(m, /Price: 5 VX, stock 1/);
   const long = confirmMessage(plan("x".repeat(5000)));
-  assert.ok(long.length <= 600, `${long.length}`);
+  assert.ok(long.length <= 1200, `${long.length}`);
   assert.match(long, /^Create this VX Shop item and start selling it\?/);
+});
+
+// ── the prompt shows every value the request changes, not only the price ──
+
+const LIMITS = '\\{"maxPurchasePerUser":2\\}';
+/** [name, input, what the prompt must show, what it must not]. Items 12 (on sale) and 13 (hidden) have purchase limits. */
+const SHOWS_ALL = [
+  [
+    "start a sale and remove the purchase limits",
+    { action: "upsert", itemId: 13, isActive: true, clearPurchaseConstraints: true },
+    [/Start selling/, /Price: 300 VX/, new RegExp(`ALL purchase limits REMOVED \\(now ${LIMITS}\\)`)],
+  ],
+  [
+    "reprice a live item and remove the purchase limits",
+    { action: "upsert", itemId: 12, price: 350, clearPurchaseConstraints: true },
+    [/300 → 350 VX/, new RegExp(`ALL purchase limits REMOVED \\(now ${LIMITS}\\)`)],
+  ],
+  [
+    "reprice a live item and change the purchase limits",
+    { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { maxPurchasePerUser: 9 } },
+    [new RegExp(`purchase limits: ${LIMITS} → \\{"maxPurchasePerUser":9\\}`)],
+  ],
+  [
+    "reprice a live item, limits kept: the re-sent limits are not a change",
+    { action: "upsert", itemId: 12, price: 350 },
+    [/300 → 350 VX/],
+    [/purchase limits/, /also changes/],
+  ],
+  [
+    "start a sale and change every other field",
+    { action: "upsert", itemId: 8, isActive: true, name: "Renamed", stock: 3, description: "new text", imageUrl: "https://img.example/i.png", metadata: { rarity: "epic" } },
+    [
+      /name: "Item 8" → "Renamed"/,
+      /stock: 100 → 3/,
+      /description: "d" → "new text"/,
+      /imageUrl: none → "https:\/\/img\.example\/i\.png"/,
+      /metadata: none → "\{\\"rarity\\":\\"epic\\"\}"/,
+    ],
+  ],
+  [
+    "start a sale with a local image: the upload is named",
+    { action: "upsert", itemId: 8, isActive: true, imagePath: "item.png" },
+    [/imageUrl: none → "<upload:item\.png>"/],
+  ],
+  [
+    "create on sale with limits, description, image and metadata",
+    { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true, purchaseConstraints: { maxPurchasePerUser: 1 }, description: "A gem", imagePath: "item.png", metadata: { tier: 2 } },
+    [/purchase limits: \{"maxPurchasePerUser":1\}/, /description: "A gem"/, /imageUrl: "<upload:item\.png>"/, /metadata: "\{\\"tier\\":2\}"/],
+    [/no purchase limits/],
+  ],
+  [
+    "create on sale without limits says so",
+    { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true },
+    [/no purchase limits/],
+  ],
+  [
+    "a very long description does not push the limit removal or the undo note out",
+    { action: "upsert", itemId: 12, price: 350, clearPurchaseConstraints: true, description: "y".repeat(5000), name: "n".repeat(255) },
+    [/ALL purchase limits REMOVED/, /description: "d" → "y+…/, /Undo: /],
+  ],
+];
+for (const [name, input, shows, hides = []] of SHOWS_ALL) {
+  test(`prompt shows the values: ${name}`, async () => {
+    const dir = project();
+    await withShop(async (calls) => {
+      const host = hostThat({ action: "cancel" });
+      const pre = await run(dir, input, host);
+      assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.error, "user_cancelled");
+      const asked = host.asked[0].message;
+      assert.equal(asked, pre.confirmation);
+      for (const re of shows) assert.match(asked, re);
+      for (const re of hides) assert.doesNotMatch(asked, re);
+      assert.match(asked, /Undo: /);
+      assert.doesNotMatch(asked, /[\r\n]/);
+      // Every field the preview lists as changing is named in the prompt.
+      for (const c of pre.changes ?? []) {
+        const label = c.field === "purchaseConstraints" ? "purchase limits" : c.field === "isActive" ? "Start selling" : c.field === "price" ? "Price: " : `${c.field}: `;
+        assert.ok(asked.includes(label), `${c.field} is in changes but not in the prompt: ${asked}`);
+      }
+      assert.deepEqual(writes(calls), []);
+    });
+  });
+}
+
+// ── a call the host already cancelled ──
+
+test("the host cancelled the tool call while the prompt was open → a late Run is not used, no write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 7, price: 350 };
+    for (const isCancelled of [() => true, () => { throw new Error("no signal"); }]) {
+      const host = { ...hostThat(RUN), isCancelled };
+      const pre = await run(dir, input, host);
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.error, "confirm_unavailable", JSON.stringify(r));
+      assert.match(r.hint, /cancelled this tool call/);
+    }
+    assert.deepEqual(writes(calls), []);
+  });
 });
 
 test("the form: one required choice, Cancel first, Run second", () => {
@@ -334,7 +444,7 @@ async function connect(clientCapabilities, onElicit) {
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
   const callShop = async (args) => JSON.parse((await client.callTool({ name: "verse8_vxshop", arguments: args })).content[0].text);
-  return { callShop, seen, close: () => client.close() };
+  return { callShop, client, seen, close: () => client.close() };
 }
 
 test("MCP host without the elicitation capability: sale start is refused with the web address, no write", async () => {
@@ -380,6 +490,31 @@ test("MCP host with elicitation: the request is a one-line form with Cancel firs
       assert.equal(done.ok, true, JSON.stringify(done));
       assert.equal(writes(calls).length, 1);
       assert.equal(host.seen.length, 3);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+test("MCP host cancels the tool call while the prompt is open, then answers Run → no write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const gaveUp = new AbortController();
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // The host's tool timeout fires while the user is still reading; the
+    // user picks Run afterwards.
+    const host = await connect({ elicitation: { form: {} } }, async () => {
+      gaveUp.abort();
+      await sleep(50);
+      return RUN;
+    });
+    try {
+      const args = { projectDir: dir, action: "upsert", itemId: 7, price: 350 };
+      const pre = await host.callShop(args);
+      await assert.rejects(host.client.callTool({ name: "verse8_vxshop", arguments: { ...args, planId: pre.planId } }, undefined, { signal: gaveUp.signal }));
+      await sleep(300);
+      assert.equal(host.seen.length, 1, "the prompt was open when the call was cancelled");
+      assert.deepEqual(writes(calls), []);
     } finally {
       await host.close();
     }

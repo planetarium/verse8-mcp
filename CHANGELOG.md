@@ -15,7 +15,10 @@ own preview, as before), and user confirmation. A user-confirmation action
 checks the `planId` and then asks you in the host's own prompt (MCP
 elicitation): one line with the target, the price or changed values and
 whether it can be undone, choices `Cancel` (first) and `Run`. Only `Run`
-runs it; anything else returns `user_cancelled`. A host that does not
+runs it; anything else returns `user_cancelled`. Every value the request
+changes is in the prompt as `field: current → new`, purchase limits being
+changed or removed included. An answer that arrives after the host
+cancelled the tool call is not used. A host that does not
 declare elicitation gets `confirm_unavailable` and the web address to do the
 same. An action missing from the table does not run (`op_not_classified`).
 

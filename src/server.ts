@@ -274,12 +274,16 @@ export function createServer(): Server {
   // prompt is an MCP elicitation the host shows in its own UI, and the
   // answer comes back on this connection, not through the agent. A host
   // that did not declare elicitation at initialize cannot be asked.
-  const confirmHost: ConfirmHost = {
+  // `signal` is the tool call's own: the SDK aborts it when the host cancels
+  // the call. The prompt is withdrawn with it, and an answer that still
+  // arrives afterwards is not used.
+  const confirmHostFor = (signal: AbortSignal): ConfirmHost => ({
     get canAsk() {
       return server.getClientCapabilities()?.elicitation !== undefined;
     },
-    ask: (message, requestedSchema) => server.elicitInput({ message, requestedSchema }, { timeout: CONFIRM_TIMEOUT_MS }),
-  };
+    ask: (message, requestedSchema) => server.elicitInput({ message, requestedSchema }, { timeout: CONFIRM_TIMEOUT_MS, signal }),
+    isCancelled: () => signal.aborted,
+  });
 
   // tools/list — re-evaluate token every call so project-scoped tools
   // appear as soon as the user logs in (no server restart needed).
@@ -316,7 +320,7 @@ export function createServer(): Server {
 
   // tools/call — re-validate on invocation and record to the V8 call log
   // (consumed by verse8_checkpoint when the LLM omits explicit toolCalls).
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const { name, arguments: args } = req.params;
     const cwd = process.cwd();
     // verse8_checkpoint is the consumer of the log; don't record itself.
@@ -476,7 +480,7 @@ export function createServer(): Server {
       if (name === "verse8_vxshop") {
         const parsed = vxShopInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runVxShop(parsed, cwd, confirmHost), { projectDir: pd });
+        const result = await dispatchTool(name, () => runVxShop(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

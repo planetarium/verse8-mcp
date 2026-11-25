@@ -123,7 +123,7 @@ The prompt is an MCP elicitation. It is one line with the target, the price or t
 
 - **Hosts without elicitation.** A host that does not declare the elicitation capability when it connects cannot show the prompt: the action returns `confirm_unavailable`, changes nothing, and says where to do the same on the web (the game's creator page). Non-interactive runs (`claude -p`, the Agent SDK) cancel the prompt by themselves and get `user_cancelled`.
 - **Hooks that answer for you.** If you configure your host to answer elicitations automatically — for example a Claude Code `Elicitation` hook that returns `accept` — the server receives the same answer as if you had chosen `Run` and cannot tell the two apart. Do not auto-accept prompts from this server unless you mean every such action to run unasked.
-- **Timeouts.** The tool call waits for your answer for up to 10 minutes; a host tool timeout shorter than that ends the call first (nothing runs).
+- **Timeouts.** The tool call waits for your answer for up to 10 minutes. If the host cancels the tool call first (a tool timeout shorter than the time you take to answer — Codex `tool_timeout_sec` defaults to 60 seconds), the prompt is withdrawn and an answer given afterwards is not used: nothing runs. Raise the host's tool timeout for this server if you need longer. A host that gives up on a call without sending the MCP cancellation cannot be detected.
 
 ---
 
