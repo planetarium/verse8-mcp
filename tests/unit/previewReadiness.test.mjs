@@ -28,7 +28,7 @@ function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "verse8-preview-ready-"));
 }
 
-// Pick a likely-free high port. We probe isPortInUse-style with a throwaway
+// Pick a likely-free high port. We probe isLoopbackPortInUse-style with a throwaway
 // socket — if it's already bound, advance.
 import { createServer } from "node:net";
 async function reservePort() {
@@ -202,6 +202,99 @@ test("runPreview: already_running path returns webEditor:null for non-gitlab cwd
     assert.equal(result.webEditor, null);
   } finally {
     await new Promise((r) => primer.close(r));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #30: on Node 17+ `localhost` can resolve to ::1 first, so a dev server
+// (e.g. Vite) may bind only the IPv6 loopback. The probe must see it there too.
+// Returns a free port on ::1, or null when this host has no IPv6 loopback.
+async function reserveIpv6Port() {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.once("error", () => resolve(null));
+    srv.listen({ port: 0, host: "::1", ipv6Only: true }, () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+const ipv6Port = await reserveIpv6Port();
+const skipNoIpv6 = ipv6Port === null ? "IPv6 loopback (::1) unavailable" : false;
+
+test("runPreview: server bound only on ::1 → already_running", { skip: skipNoIpv6 }, async () => {
+  const dir = tmpdir();
+  // Keep the listener on its kernel-assigned port for the whole test rather
+  // than reserving a port, releasing it and binding again — no other process
+  // can take the port in between.
+  const primer = createServer();
+  await new Promise((r) => primer.listen({ port: 0, host: "::1", ipv6Only: true }, r));
+  const port = primer.address().port;
+  try {
+    const cmd = writeNodeScript(dir, "process.exit(0);\n");
+    const result = await runPreview(
+      {
+        projectDir: dir,
+        previewCommand: cmd,
+        previewPort: port,
+        logPath: "preview.log",
+        startOnly: true,
+        readinessTimeoutMs: 5000,
+        useAutoToolLog: true,
+        skipAttachCheck: false,
+        installCommand: "bun update",
+        skipPreflight: true,
+        preflightTimeoutMs: 30000,
+      },
+      dir,
+    );
+    assert.equal(result.ok, true, `expected ok:true, got ${JSON.stringify(result)}`);
+    assert.equal(result.preview.status, "already_running");
+    assert.equal(result.preview.url, `http://localhost:${port}`);
+  } finally {
+    await new Promise((r) => primer.close(r));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreview: dev server binding only ::1 passes the readiness check", { skip: skipNoIpv6 }, async () => {
+  const dir = tmpdir();
+  // This case cannot hold the port: runPreview must find it free, spawn the
+  // command, and then see the child bind it, and a held socket cannot be
+  // handed to the spawned command. So it reserves a port and releases it;
+  // another process taking that port in the gap would make this test flaky.
+  const port = await reserveIpv6Port();
+  try {
+    const cmd = writeNodeScript(
+      dir,
+      `require('net').createServer(c => c.end()).listen({ port: ${port}, host: '::1', ipv6Only: true });\n`,
+    );
+    const result = await runPreview(
+      {
+        projectDir: dir,
+        previewCommand: cmd,
+        previewPort: port,
+        logPath: "preview.log",
+        startOnly: true,
+        readinessTimeoutMs: 5000,
+        useAutoToolLog: true,
+        skipAttachCheck: false,
+        installCommand: "bun update",
+        skipPreflight: true,
+        preflightTimeoutMs: 30000,
+      },
+      dir,
+    );
+    if (typeof result.preview === "object" && typeof result.preview?.pid === "number") {
+      spawnedPids.push(result.preview.pid);
+    }
+    if (result.ok === false && typeof result.pid === "number") {
+      spawnedPids.push(result.pid);
+    }
+    assert.equal(result.ok, true, `expected ok:true, got ${JSON.stringify(result)}`);
+    assert.equal(result.preview.status, "started");
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

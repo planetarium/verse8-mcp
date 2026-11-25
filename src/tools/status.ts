@@ -7,6 +7,7 @@ import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 import { LOGIN_HINT } from "../util/hints.js";
+import { isLoopbackPortInUseSync } from "../util/loopback.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { resolveMcpServices, type ResolutionSource } from "../proxy/registry.js";
 import { CREDIT_RECHARGE_URL } from "../constants.js";
@@ -52,23 +53,6 @@ export interface ProjectStatus {
     disabled: string[];
     source: ResolutionSource;
   };
-}
-
-function probePortSync(port: number, host: string): boolean {
-  try {
-    const out = execFileSync(
-      process.execPath,
-      [
-        "-e",
-        `const net=require('net');const s=net.createConnection({port:${port},host:'${host}'});s.setTimeout(200);let done=false;const finish=v=>{if(done)return;done=true;s.destroy();process.exitCode=v?0:1;};s.once('connect',()=>finish(true));s.once('timeout',()=>finish(false));s.once('error',()=>finish(false));`,
-      ],
-      { timeout: 1000, stdio: ["ignore", "ignore", "ignore"] },
-    );
-    return out !== undefined; // exit 0 → used
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException & { status?: number | null };
-    return e.status === 0;
-  }
 }
 
 function workingTreeDirtyCount(projectDir: string): number {
@@ -132,7 +116,7 @@ function detectStalePreview(projectDir: string): ProjectStatus["stalePreviewWarn
   const dirty = workingTreeDirtyCount(projectDir);
   if (dirty === 0) return undefined;
   for (const port of PREVIEW_PORTS) {
-    if (probePortSync(port, "127.0.0.1")) {
+    if (isLoopbackPortInUseSync(port)) {
       return {
         port,
         uncommittedFiles: dirty,
