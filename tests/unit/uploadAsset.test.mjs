@@ -59,29 +59,30 @@ function makeAttachedProject(envVerse) {
   return dir;
 }
 
-function withToken(value, fn) {
-  const home = process.env.HOME;
-  const tokenDir = path.join(home, ".config", "verse8");
-  const tokenPath = path.join(tokenDir, "token");
-  const existed = fs.existsSync(tokenPath);
-  const backup = existed ? fs.readFileSync(tokenPath) : null;
-  fs.mkdirSync(tokenDir, { recursive: true });
-  fs.writeFileSync(tokenPath, value);
+// Token fixtures live in a private XDG_CONFIG_HOME, never in the real
+// ~/.config/verse8/token: other test files run in parallel and read that
+// path, and a developer's own login lives there.
+function withConfigHome(value, fn) {
+  const saved = process.env.XDG_CONFIG_HOME;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-upload-xdg-"));
+  if (value !== null) {
+    fs.mkdirSync(path.join(dir, "verse8"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "verse8", "token"), value, { mode: 0o600 });
+  }
+  process.env.XDG_CONFIG_HOME = dir;
   return Promise.resolve(fn()).finally(() => {
-    if (backup !== null) fs.writeFileSync(tokenPath, backup);
-    else fs.unlinkSync(tokenPath);
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 }
 
+function withToken(value, fn) {
+  return withConfigHome(value, fn);
+}
+
 function withoutToken(fn) {
-  const home = process.env.HOME;
-  const tokenPath = path.join(home, ".config", "verse8", "token");
-  const existed = fs.existsSync(tokenPath);
-  const backup = existed ? fs.readFileSync(tokenPath) : null;
-  if (existed) fs.unlinkSync(tokenPath);
-  return Promise.resolve(fn()).finally(() => {
-    if (backup !== null) fs.writeFileSync(tokenPath, backup);
-  });
+  return withConfigHome(null, fn);
 }
 
 function withFetch(handler, fn) {

@@ -160,8 +160,25 @@ test("prepublish-guard: wallet env binding with hex value fails; placeholder tex
 });
 
 test("prepublish-guard: real repo tarball passes the guard (integration)", () => {
-  // Rebuild + run against the actual repo.
-  execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT });
-  const res = runGuard(REPO_ROOT);
-  assert.equal(res.status, 0, `guard failed on real repo: ${res.stderr}`);
+  // Build a fresh copy of the real package in a temp dir and run the guard
+  // there. Rebuilding the repo's own dist/ here would rewrite files that the
+  // other test files, running in parallel, are importing at that moment.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-prepublish-real-"));
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+    fs.copyFileSync(path.join(REPO_ROOT, "package.json"), path.join(dir, "package.json"));
+    for (const entry of pkg.files) {
+      if (entry.startsWith("dist/")) continue; // built below
+      const rel = entry.replace(/\/$/, "");
+      fs.cpSync(path.join(REPO_ROOT, rel), path.join(dir, rel), { recursive: true });
+    }
+    const tsc = path.join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc");
+    execFileSync(process.execPath, [tsc, "-p", path.join(REPO_ROOT, "tsconfig.json"), "--outDir", path.join(dir, "dist")], {
+      cwd: REPO_ROOT,
+    });
+    const res = runGuard(dir);
+    assert.equal(res.status, 0, `guard failed on real repo: ${res.stderr}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

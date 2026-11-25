@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { REPO_ROOT, repoPathRefs } from "./_repoPaths.mjs";
 
-import { createServer } from "../../dist/server.js";
 import { parseV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
 import { AGENTS_MD_TEMPLATE } from "../../dist/prompts/agentsMdTemplate.js";
 import { getNewProjectBootstrapPrompt } from "../../dist/prompts/newProjectBootstrap.js";
@@ -14,6 +13,9 @@ async function listTools() {
   process.env.VERSE8_ACCESS_TOKEN = "tok";
   globalThis.fetch = async () => new Response("{}", { status: 503 }); // proxy discovery
   try {
+    // Only this test needs the whole server (tools/list); load it here so the
+    // doc tests below depend on their own small modules only.
+    const { createServer } = await import("../../dist/server.js");
     const { tools } = await createServer()._requestHandlers.get("tools/list")({ method: "tools/list", params: {} }, {});
     return tools;
   } finally {

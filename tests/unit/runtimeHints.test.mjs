@@ -9,7 +9,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import ts from "typescript";
 
-import { createServer } from "../../dist/server.js";
 import { LOGIN_HINT } from "../../dist/util/hints.js";
 import { runCommitMsgHook } from "../../dist/cli/commitMsgHook.js";
 import { REPO_ROOT, repoPathRefs } from "./_repoPaths.mjs";
@@ -98,6 +97,8 @@ test("not_logged_in hint: start → user approves → complete, the same order a
   process.env.XDG_CONFIG_HOME = path.join(dir, "xdg");
   process.chdir(dir);
   try {
+    // Only this test needs the whole server; the scans above read src/ only.
+    const { createServer } = await import("../../dist/server.js");
     const res = await createServer()._requestHandlers.get("tools/call")(
       { method: "tools/call", params: { name: "verse8_status", arguments: {} } },
       {},
