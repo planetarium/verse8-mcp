@@ -21,7 +21,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 |--------|---------|-------|
 | Log in | `verse8_login_start` → `verse8_login_complete` | Split flow: start returns the URL/code immediately so you can show them to the user, then complete polls for the access token (default 120s, max 1800s). |
 | Who am I | `verse8_status` | Profile from `GET /v1/auth/verify`, which token is in use (`tokenSource`), plus this project's attachment state |
-| Log out / switch account | `verse8_logout` | Deletes the local token files. Tell the user the token is **not revoked**: Verse8 has no revocation API, so it stays valid on the server until it expires. `logout_incomplete` means a token is still in use (see below) |
+| Log out / switch account | `verse8_logout` | Deletes the local token files. Tell the user the token is **not revoked**: Verse8 has no revocation API, so it stays valid on the server until it expires. `logout_incomplete` means a token is still in use (see below) or a token file is still on disk; its `hint` says what the user has to remove |
 
 ## How login works
 
@@ -36,7 +36,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 verse8-mcp tools resolve the token in this order:
 
 1. `VERSE8_ACCESS_TOKEN` env var
-2. `<cwd>/.verse8/token` (project-scoped, gitignored) — skipped when it is a link or tracked by git; `verse8_status` then shows `projectTokenRefused`
+2. `<cwd>/.verse8/token` (project-scoped, gitignored) — skipped when it is a link, tracked by git, or cannot be checked (git failing or missing, file unreadable); `verse8_status` then shows `projectTokenRefused` with the reason
 3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token` (written by `verse8_login_complete`)
 
 A login only rewrites the third one. When a token is rejected, clear whatever outranks it first:

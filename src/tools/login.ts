@@ -7,6 +7,7 @@ import {
   inspectProjectToken,
   refusedProjectTokenHint,
   resolveToken,
+  type ProjectTokenRefusal,
   type TokenSource,
 } from "../context/token.js";
 import { resetProxyCaches } from "../proxy/forward.js";
@@ -233,7 +234,7 @@ export interface LogoutOk {
   ok: true;
   /** Token files this call deleted. */
   removed: LogoutEntry[];
-  /** Token sources this call left in place, none of which is in use. */
+  /** Token sources this call left in place, none of which can supply a token. */
   left: LogoutLeft[];
   serverSide: string;
   next: string;
@@ -243,26 +244,42 @@ export interface LogoutError {
   ok: false;
   error: "logout_incomplete";
   hint: string;
-  /** The source that still supplies a token. */
+  /** The source that still supplies a token, or still holds one that may be used again. */
   tokenSource: LogoutEntry;
   removed: LogoutEntry[];
   left: LogoutLeft[];
   serverSide: string;
 }
 
+/**
+ * Project token refusals that only say "could not check right now". The file
+ * may well be a usable token once git works again or the folder is readable,
+ * so logout must not call the login gone while it is still there.
+ */
+const UNVERIFIED_REFUSALS: ReadonlySet<ProjectTokenRefusal> = new Set<ProjectTokenRefusal>([
+  "unreadable",
+  "git_unavailable",
+  "git_check_failed",
+]);
+
+/** Delete one token file. Returns the entry when the file is still there afterwards. */
 function removeTokenFile(
   entry: LogoutEntry & { path: string },
   removed: LogoutEntry[],
   left: LogoutLeft[],
-): void {
+): LogoutLeft | null {
   try {
     // unlink removes a link itself, never the file it points at.
     fs.unlinkSync(entry.path);
     removed.push(entry);
+    return null;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return;
-    left.push({ ...entry, reason: `could not delete the file (${code ?? "unknown error"})` });
+    // Only "nothing there" is a clean outcome; any other failure leaves a token behind.
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    const kept: LogoutLeft = { ...entry, reason: `could not delete the file (${code ?? "unknown error"})` };
+    left.push(kept);
+    return kept;
   }
 }
 
@@ -273,21 +290,26 @@ export async function runLogout(
   const projectDir = input.projectDir ?? cwd;
   const removed: LogoutEntry[] = [];
   const left: LogoutLeft[] = [];
+  /** Token files that are still on disk and may supply a token later. */
+  const stillThere: LogoutLeft[] = [];
 
-  removeTokenFile({ source: "config", path: getConfigTokenPath() }, removed, left);
+  const configKept = removeTokenFile({ source: "config", path: getConfigTokenPath() }, removed, left);
+  if (configKept) stillThere.push(configKept);
 
   const project = inspectProjectToken(projectDir);
   if (project.state === "usable") {
-    removeTokenFile({ source: "project", path: project.path }, removed, left);
+    const kept = removeTokenFile({ source: "project", path: project.path }, removed, left);
+    if (kept) stillThere.push(kept);
   } else if (project.state === "refused") {
-    // Never read, so not a login. Deleting behind a linked `.verse8` would
-    // remove a file outside the project, and deleting a tracked file would
-    // dirty the repository — leave both to the user.
-    left.push({
+    // Not deleted: behind a linked `.verse8` the file is outside the
+    // project, and deleting a tracked file would dirty the repository.
+    const kept: LogoutLeft = {
       source: "project",
       path: project.path,
-      reason: `not deleted and not used: ${refusedProjectTokenHint({ path: project.path, reason: project.reason })}`,
-    });
+      reason: `not deleted: ${refusedProjectTokenHint({ path: project.path, reason: project.reason })}`,
+    };
+    left.push(kept);
+    if (UNVERIFIED_REFUSALS.has(project.reason)) stillThere.push(kept);
   }
 
   const envToken = process.env.VERSE8_ACCESS_TOKEN;
@@ -302,16 +324,36 @@ export async function runLogout(
   // The previous identity's proxy sessions and tool schemas are stale now.
   resetProxyCaches();
 
+  const incomplete = (tokenSource: LogoutEntry, hint: string): LogoutError => ({
+    ok: false,
+    error: "logout_incomplete",
+    hint,
+    tokenSource,
+    removed,
+    left,
+    serverSide: NOT_REVOKED,
+  });
+
   const after = resolveToken(projectDir);
   if (after.source) {
     const tokenSource: LogoutEntry = after.path
       ? { source: after.source, path: after.path }
       : { source: after.source };
-    const hint =
+    return incomplete(
+      tokenSource,
       after.source === "env"
         ? "Still logged in: the VERSE8_ACCESS_TOKEN environment variable supplies a token and is used before any token file. Ask the user to remove it from the MCP server's env settings and restart the server."
-        : `Still logged in: ${after.path} could not be deleted. Ask the user to delete that file.`;
-    return { ok: false, error: "logout_incomplete", hint, tokenSource, removed, left, serverSide: NOT_REVOKED };
+        : `Still logged in: ${after.path} could not be deleted. Ask the user to delete that file.`,
+    );
+  }
+  // No token resolves right now, but a file that could not be deleted or
+  // could not be checked is still a login waiting to come back.
+  if (stillThere.length > 0) {
+    const kept = stillThere[0];
+    return incomplete(
+      { source: kept.source, path: kept.path },
+      `Logout is not complete: ${kept.path} is still on disk (${kept.reason}). It is not in use right now but may be used again later. Ask the user to delete that file.`,
+    );
   }
 
   return {

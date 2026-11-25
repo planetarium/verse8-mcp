@@ -23,9 +23,9 @@ Each URL override is checked against its service’s host allowlist. The IP asse
 ## 토큰 우선순위
 
 1. env `VERSE8_ACCESS_TOKEN`
-2. `<cwd>/.verse8/token` — read only when it is a regular file that git does not track. A link (the file or the `.verse8` folder) or a tracked file is skipped ([INV-16](./security.md#invariants)).
+2. `<cwd>/.verse8/token` — read only when it is a regular file that git does not track. A link (the file or the `.verse8` folder) or a tracked file is skipped, and so is a file that could not be checked — git failing for any reason other than "this folder is not in a repository", git missing, or the file being unreadable ([INV-16](./security.md#invariants)).
 3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token` — written by `verse8_login_complete`.
 
-`verse8_status` reports which one is in use as `tokenSource` (`env` / `project` / `config`, plus the file path), and a skipped project file as `projectTokenRefused`. When the server rejects the token (HTTP 401), the hint names the source: logging in again only rewrites the third one, so a stale `VERSE8_ACCESS_TOKEN` or project token has to be cleared first.
+`verse8_status` reports which one is in use as `tokenSource` (`env` / `project` / `config`, plus the file path), and a skipped project file as `projectTokenRefused` with a `reason` (`symlink`, `not_a_file`, `unreadable`, `git_tracked`, `git_unavailable`, `git_check_failed`). When the server rejects the token (HTTP 401), the hint names the source: logging in again only rewrites the third one, so a stale `VERSE8_ACCESS_TOKEN` or project token has to be cleared first.
 
-`verse8_logout` deletes the two token files (never a skipped project file) and answers `logout_incomplete` while `VERSE8_ACCESS_TOKEN` still supplies a token. Verse8 has no token revocation API: a deleted token stays valid on the server until it expires.
+`verse8_logout` deletes the two token files (never a skipped project file) and answers `logout_incomplete` while `VERSE8_ACCESS_TOKEN` still supplies a token, when a token file could not be deleted, or when a project token file was skipped only because it could not be checked. Verse8 has no token revocation API: a deleted token stays valid on the server until it expires.

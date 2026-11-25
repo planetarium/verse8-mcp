@@ -130,7 +130,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_logout",
     description:
-      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd). Returns {removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards, e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings.",
+      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd). Returns {removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards (e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings) or a token file could not be deleted or checked — `hint` says what the user has to remove.",
     inputSchema: zodToJsonSchema(logoutInputSchema),
   },
   {

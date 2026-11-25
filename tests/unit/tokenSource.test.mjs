@@ -293,6 +293,138 @@ test("project token that is itself a symlink is not read", async (t) => {
   });
 });
 
+// The checks below can fail instead of answering. A failed check is not
+// evidence that the file is safe, so each of them must refuse the file.
+
+// INV-16: The project token file is never read through a link or from git
+test("project token in a repository git cannot read (damaged HEAD, exit 128) is not read", async () => {
+  await withIsolatedLogin(async ({ project, configToken }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    git(project, "init", "-q");
+    writeToken(projectToken, GOOD);
+    // git now answers "fatal: not a git repository" with exit 128 — the
+    // same words as for a plain folder — although a `.git` folder is there.
+    fs.writeFileSync(path.join(project, ".git", "HEAD"), "garbage\n");
+
+    const where = resolveToken(project);
+    assert.equal(where.token, null);
+    assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "git_check_failed" });
+
+    const status = await call("verse8_status");
+    assert.equal(status.error, "not_logged_in");
+    assert.equal(status.projectTokenRefused.reason, "git_check_failed");
+    assert.match(status.projectTokenRefused.hint, /another reason than "not a git repository"/);
+
+    // The file may become usable again once the repository is repaired, so
+    // logout must not report the login as gone while it is still on disk.
+    writeToken(configToken, GOOD);
+    const out = await call("verse8_logout");
+    assert.equal(out.error, "logout_incomplete");
+    assert.deepEqual(out.tokenSource, { source: "project", path: projectToken });
+    assert.deepEqual(out.removed, [{ source: "config", path: configToken }]);
+    assert.equal(fs.existsSync(projectToken), true);
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token in a repository with a corrupt index (another exit 128) is not read", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    git(project, "init", "-q");
+    writeToken(projectToken, GOOD);
+    fs.writeFileSync(path.join(project, ".git", "index"), "this is not a git index");
+
+    const where = resolveToken(project);
+    assert.equal(where.token, null);
+    assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "git_check_failed" });
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token is not read when git cannot be started, and status tells that apart", async () => {
+  await withIsolatedLogin(async ({ project, outside }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    writeToken(projectToken, GOOD);
+    assert.equal(resolveToken(project).source, "project", "readable while git works");
+
+    const savedPath = process.env.PATH;
+    process.env.PATH = outside; // an empty folder: no git to start
+    try {
+      const where = resolveToken(project);
+      assert.equal(where.token, null);
+      assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "git_unavailable" });
+      const status = await call("verse8_status");
+      assert.equal(status.projectTokenRefused.reason, "git_unavailable");
+      assert.match(status.projectTokenRefused.hint, /could not be started/);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token tracked under a name that differs only in case is not read", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    git(project, "init", "-q");
+    writeToken(projectToken, GOOD);
+    // What a clone made on a case-sensitive system leaves in the index: an
+    // entry `.verse8/TOKEN`, which is this very file where case is ignored.
+    const blob = execFileSync("git", ["hash-object", "-w", ".verse8/token"], { cwd: project, encoding: "utf8" }).trim();
+    git(project, "update-index", "--add", "--cacheinfo", `100644,${blob},.verse8/TOKEN`);
+
+    const where = resolveToken(project);
+    assert.equal(where.token, null);
+    assert.equal(where.refusedProjectToken.reason, "git_tracked");
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token whose .verse8 folder cannot be examined is refused, not treated as absent", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("needs POSIX permission bits and a non-root user");
+    return;
+  }
+  await withIsolatedLogin(async ({ project }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    writeToken(projectToken, GOOD);
+    fs.chmodSync(path.join(project, ".verse8"), 0o000); // lstat of the token now fails with EACCES
+    try {
+      const where = resolveToken(project);
+      assert.equal(where.token, null);
+      assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "unreadable" });
+      const out = await call("verse8_logout");
+      assert.equal(out.error, "logout_incomplete");
+      assert.deepEqual(out.tokenSource, { source: "project", path: projectToken });
+    } finally {
+      fs.chmodSync(path.join(project, ".verse8"), 0o700);
+    }
+  });
+});
+
+test("verse8_logout: a token file that cannot be deleted makes the logout incomplete", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("needs POSIX permission bits and a non-root user");
+    return;
+  }
+  await withIsolatedLogin(async ({ configToken }) => {
+    writeToken(configToken, GOOD);
+    // No write on the folder (unlink fails) and no read on the file, so no
+    // token resolves afterwards although the file is still there.
+    fs.chmodSync(configToken, 0o000);
+    fs.chmodSync(path.dirname(configToken), 0o500);
+    try {
+      const out = await call("verse8_logout");
+      assert.equal(out.ok, false);
+      assert.equal(out.error, "logout_incomplete");
+      assert.deepEqual(out.tokenSource, { source: "config", path: configToken });
+      assert.deepEqual(out.removed, []);
+    } finally {
+      fs.chmodSync(path.dirname(configToken), 0o700);
+    }
+  });
+});
+
 // INV-16: The project token file is never read through a link or from git
 test("project token tracked by git is not read; untracked in the same repo it is", async () => {
   await withIsolatedLogin(async ({ project, configToken }) => {

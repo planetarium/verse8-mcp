@@ -54,7 +54,17 @@ function warnOnLooseTokenMode(p: string): void {
 export type TokenSource = "env" | "project" | "config";
 
 /** Why a project-folder token file was not read. */
-export type ProjectTokenRefusal = "symlink" | "not_a_file" | "git_tracked" | "git_check_failed";
+export type ProjectTokenRefusal =
+  /** The file or the `.verse8` folder is a link, or was swapped while being read. */
+  | "symlink"
+  | "not_a_file"
+  /** The file or the `.verse8` folder is there but could not be examined or read. */
+  | "unreadable"
+  | "git_tracked"
+  /** git could not be started (not installed, not on PATH) or timed out. */
+  | "git_unavailable"
+  /** git ran but failed for another reason than "this is not a repository". */
+  | "git_check_failed";
 
 export interface RefusedProjectToken {
   path: string;
@@ -81,68 +91,134 @@ export type ProjectTokenState =
   | { state: "refused"; path: string; reason: ProjectTokenRefusal }
   | { state: "usable"; path: string; value: string };
 
-function lstatOrNull(p: string): fs.Stats | null {
+/**
+ * lstat that tells "nothing there" (`missing`) from "could not look"
+ * (`error`). Only the first may be read as absent: a failed look is not
+ * evidence that the path is harmless.
+ */
+function lstatStrict(p: string): fs.Stats | "missing" | "error" {
   try {
     return fs.lstatSync(p);
-  } catch {
-    return null;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "error";
   }
 }
+
+/** Does `dir` or any folder above it hold a `.git` entry (folder or file)? */
+function hasGitEntryAbove(dir: string): boolean {
+  let cur = path.resolve(dir);
+  for (;;) {
+    // Anything but a clean "missing" counts as "there may be a repository".
+    if (lstatStrict(path.join(cur, ".git")) !== "missing") return true;
+    const parent = path.dirname(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
+}
+
+/** Env for the tracked-file check: nothing that points git at another repo or index. */
+function gitCheckEnv(): NodeJS.ProcessEnv {
+  const env = sanitizeChildEnv();
+  for (const key of Object.keys(env)) {
+    if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|CEILING_DIRECTORIES|NAMESPACE)$/i.test(key)) {
+      delete env[key];
+    }
+  }
+  // The "not a git repository" answer is matched as text below.
+  env.LC_ALL = "C";
+  env.LANG = "C";
+  return env;
+}
+
+type GitTrackedAnswer = "tracked" | "untracked" | "git_unavailable" | "git_check_failed";
 
 /**
  * Is `.verse8/token` tracked by the git repo around `cwd`? A tracked token
  * file arrived with a clone or would leave with a push, so it is somebody
- * else's login or about to become public. `null` = git could not answer.
+ * else's login or about to become public.
+ *
+ * Only two answers let the file through (`untracked`): git says the path is
+ * not in the index (exit 1), or git says in so many words that `cwd` is not
+ * in a repository AND no `.git` entry exists in `cwd` or above it. The
+ * second condition matters because git gives the same "not a git
+ * repository" answer for a damaged repository. Every other failure —
+ * exit 128 for dubious ownership, a corrupt index, a bad config; git
+ * missing; a timeout — refuses the file.
  */
-function isTrackedByGit(cwd: string): boolean | null {
-  const r = spawnSync("git", ["ls-files", "--error-unmatch", "--", ".verse8/token"], {
-    cwd,
-    stdio: "ignore",
-    timeout: 5000,
-    windowsHide: true,
-    env: sanitizeChildEnv(),
-  });
-  if (r.error || r.status === null) return null;
-  // 0 = tracked; 1 = not tracked; 128 = not a git repository.
-  return r.status === 0;
+function checkTrackedByGit(cwd: string): GitTrackedAnswer {
+  const r = spawnSync(
+    "git",
+    // icase: on a case-insensitive filesystem `.verse8/Token` in the index
+    // is this very file.
+    ["ls-files", "--error-unmatch", "--", ":(icase).verse8/token"],
+    {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true,
+      env: gitCheckEnv(),
+    },
+  );
+  if (r.error || r.status === null) return "git_unavailable";
+  if (r.status === 0) return "tracked";
+  if (r.status === 1) return "untracked";
+  const saysNotARepo = /not a git repository/i.test(r.stderr ?? "");
+  if (saysNotARepo && !hasGitEntryAbove(cwd)) return "untracked";
+  return "git_check_failed";
 }
 
 /**
- * Look at `<cwd>/.verse8/token` without trusting it.
+ * Look at `<cwd>/.verse8/token` without trusting it. Every check that
+ * cannot be completed refuses the file; only a clean "nothing there" is
+ * `absent`.
  *
  * INV-16: The project token file is never read through a link or from git
  */
 export function inspectProjectToken(cwd: string): ProjectTokenState {
   const dir = path.join(cwd, ".verse8");
   const p = getProjectTokenPath(cwd);
+  const refused = (reason: ProjectTokenRefusal): ProjectTokenState => ({ state: "refused", path: p, reason });
 
-  const dirStat = lstatOrNull(dir);
-  if (!dirStat) return { state: "absent", path: p };
+  const dirStat = lstatStrict(dir);
+  if (dirStat === "missing") return { state: "absent", path: p };
+  if (dirStat === "error") return refused("unreadable");
   // lstat reports Windows junctions as symbolic links too.
-  if (dirStat.isSymbolicLink()) return { state: "refused", path: p, reason: "symlink" };
+  if (dirStat.isSymbolicLink()) return refused("symlink");
 
-  const fileStat = lstatOrNull(p);
-  if (!fileStat) return { state: "absent", path: p };
-  if (fileStat.isSymbolicLink()) return { state: "refused", path: p, reason: "symlink" };
-  if (!fileStat.isFile()) return { state: "refused", path: p, reason: "not_a_file" };
+  const fileStat = lstatStrict(p);
+  if (fileStat === "missing") return { state: "absent", path: p };
+  if (fileStat === "error") return refused("unreadable");
+  if (fileStat.isSymbolicLink()) return refused("symlink");
+  if (!fileStat.isFile()) return refused("not_a_file");
 
-  const tracked = isTrackedByGit(cwd);
-  if (tracked === null) return { state: "refused", path: p, reason: "git_check_failed" };
-  if (tracked) return { state: "refused", path: p, reason: "git_tracked" };
+  const tracked = checkTrackedByGit(cwd);
+  if (tracked === "tracked") return refused("git_tracked");
+  if (tracked !== "untracked") return refused(tracked);
 
   let value: string;
   try {
     // O_NOFOLLOW (POSIX only) closes the gap between the lstat above and
-    // this open: a file swapped for a link in between fails instead of
-    // being followed.
+    // this open: a file swapped for a link in between fails with ELOOP
+    // instead of being followed.
     const fd = fs.openSync(p, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
     try {
+      // Where O_NOFOLLOW does not exist (Windows), the same swap shows up
+      // as an open file that is not the one lstat examined.
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.dev !== fileStat.dev || opened.ino !== fileStat.ino) {
+        return refused("symlink");
+      }
       value = fs.readFileSync(fd, "utf8").trim();
     } finally {
       fs.closeSync(fd);
     }
-  } catch {
-    return { state: "absent", path: p };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // Deleted since the lstat: nothing there. A link in its place: refused.
+    if (code === "ENOENT") return { state: "absent", path: p };
+    return refused(code === "ELOOP" ? "symlink" : "unreadable");
   }
   if (value.length === 0) return { state: "absent", path: p };
   warnOnLooseTokenMode(p);
@@ -215,7 +291,11 @@ const REFUSAL_TEXT: Record<ProjectTokenRefusal, string> = {
   not_a_file: "it is not a regular file",
   git_tracked:
     "git tracks it, so it came with the repository or would be pushed with it (remove it with `git rm --cached .verse8/token` and delete the file)",
-  git_check_failed: "git could not be run to check that the file is untracked",
+  unreadable: "it (or the .verse8 folder) could not be examined or read, so it could not be checked",
+  git_unavailable:
+    "git could not be started (not installed, not on PATH, or timed out), so the file could not be checked for being untracked",
+  git_check_failed:
+    "git failed in this folder for another reason than \"not a git repository\" (for example unsafe ownership or a damaged repository — run `git status` there to see it), so the file could not be checked for being untracked",
 };
 
 /** One sentence about a project-folder token file that was not read. */
