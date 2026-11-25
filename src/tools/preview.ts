@@ -1,6 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
-import { createConnection } from "node:net";
 import * as path from "node:path";
 import { z } from "zod";
 import { parseOverrideHost } from "../util/hostAllowlist.js";
@@ -16,6 +15,7 @@ import {
 } from "./checkpoint.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 import { LOGIN_HINT } from "../util/hints.js";
+import { isLoopbackPortInUse } from "../util/loopback.js";
 
 export const previewInputSchema = z
   .object({
@@ -306,34 +306,6 @@ export function buildWebEditorLink(projectPath: string): WebEditorLink {
   };
 }
 
-// The preview URL is `http://localhost:<port>`, and `localhost` may resolve to
-// either loopback family (Node 17+ keeps the OS order, often ::1 first), so a
-// dev server such as Vite can end up bound to only one of them. Probe both and
-// treat the port as in use if either accepts. A host without IPv6 just fails
-// the ::1 probe fast, leaving the 127.0.0.1 result to decide.
-const LOOPBACK_HOSTS = ["127.0.0.1", "::1"] as const;
-
-async function isPortInUse(port: number): Promise<boolean> {
-  const results = await Promise.all(
-    LOOPBACK_HOSTS.map((host) => isPortOpenOn(port, host)),
-  );
-  return results.some(Boolean);
-}
-
-async function isPortOpenOn(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = createConnection({ port, host });
-    const done = (used: boolean) => {
-      socket.destroy();
-      resolve(used);
-    };
-    socket.setTimeout(300);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
-}
-
 function isProcessAlive(pid: number | undefined): boolean {
   if (typeof pid !== "number") return false;
   try {
@@ -359,7 +331,7 @@ async function waitForDevServer(
   const pollInterval = 250;
   await new Promise((r) => setTimeout(r, initialSleep));
   while (Date.now() < deadline) {
-    if (await isPortInUse(port)) return { ready: true };
+    if (await isLoopbackPortInUse(port)) return { ready: true };
     if (!isProcessAlive(pid)) return { ready: false, reason: "child_exited" };
     await new Promise((r) => setTimeout(r, pollInterval));
   }
@@ -741,7 +713,7 @@ export async function runPreview(
   const projectPath = deriveProjectPathFromOrigin(cwd);
   const webEditor = projectPath ? buildWebEditorLink(projectPath) : null;
 
-  const inUse = await isPortInUse(port);
+  const inUse = await isLoopbackPortInUse(port);
   if (inUse) {
     return {
       ok: true,
