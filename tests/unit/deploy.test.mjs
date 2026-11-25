@@ -870,3 +870,92 @@ test("runDeploy: token rejected on verse lookup → unauthorized", async () => {
   const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir), dir)));
   assert.equal(res.error, "unauthorized");
 });
+
+// ── INV-16: a deploy that widens who can see the game asks the user ─────────
+// The deploy sends a visibility with its publish, so it goes through the same
+// rule and prompt as the game page update (creatorOps RUN_RULES). The prompt
+// comes before the checkpoint: refused, nothing is committed, built or sent.
+
+const LIVE_GAME = { verseId: VERSE, isOwner: true, title: "Live Game", description: "d", imageUrl: "https://x/i.png", tag: ["rpg"], category: "ALL", isPublic: true };
+const firstRoutes = () => ({
+  "GET /v1/verse/verseId": () => json(404, { message: "Verse not found" }),
+  "GET /v1/verse/id-available": () => json(200, { verseId: VERSE, available: true }),
+});
+const updateRoutes = (visibility) => ({
+  "GET /v1/verse/verseId": () => json(200, visibility === undefined ? LIVE_GAME : { ...LIVE_GAME, visibility }),
+});
+function confirmHostThat(answer, { canAsk = true } = {}) {
+  const asked = [];
+  return { asked, canAsk, ask: async (message, schema) => { asked.push({ message, schema }); return answer; } };
+}
+
+/** [name, routes, input, run condition, what the prompt shows]. */
+const DEPLOY_VISIBILITY = [
+  ["first deploy, visibility not given (defaults to Public)", firstRoutes, FULL_FIRST, "user_confirm", [/Game: "My Game"/, /Visibility: not published yet → Public \(listed on Verse8 for everyone\)/, /to Private afterwards/]],
+  ["first deploy, Unlisted", firstRoutes, { ...FULL_FIRST, visibility: "Unlisted" }, "user_confirm", [/not published yet → Unlisted/]],
+  ["first deploy, Private", firstRoutes, { ...FULL_FIRST, visibility: "Private" }, "preview"],
+  ["update, Private kept", () => updateRoutes("Private"), NOTES, "preview"],
+  ["update, Private → Public", () => updateRoutes("Private"), { ...NOTES, visibility: "Public" }, "user_confirm", [/Game: "Live Game"/, /Visibility: Private → Public/, /back to Private/]],
+  ["update, Private → Unlisted", () => updateRoutes("Private"), { ...NOTES, visibility: "Unlisted" }, "user_confirm", [/Private → Unlisted/]],
+  ["update, Unlisted → Public", () => updateRoutes("Unlisted"), { ...NOTES, visibility: "Public" }, "user_confirm", [/Unlisted → Public/]],
+  ["update, Public → Private", () => updateRoutes("Public"), { ...NOTES, visibility: "Private" }, "preview"],
+  ["update, Public → Unlisted", () => updateRoutes("Public"), { ...NOTES, visibility: "Unlisted" }, "preview"],
+  ["update, Public kept", () => updateRoutes("Public"), NOTES, "preview"],
+  ["update of a record without a visibility (the body falls back to Public)", () => updateRoutes(undefined), NOTES, "user_confirm", [/Visibility: not set → Public/]],
+];
+
+for (const [name, routes, input, condition, shows = []] of DEPLOY_VISIBILITY) {
+  test(`runDeploy dryRun run condition: ${name} → ${condition}; the dryRun asks nobody`, async () => {
+    const dir = makeProject();
+    const { calls, handler } = router(routes());
+    const host = confirmHostThat({ action: "accept", content: { choice: "Run" } });
+    const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, input), dir, host)));
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.runCondition, condition);
+    if (condition === "preview") assert.equal(res.confirmation, undefined);
+    else {
+      assert.doesNotMatch(res.confirmation, /[\r\n]/);
+      assert.match(res.confirmation, new RegExp(`\(verse ${VERSE}\)`));
+      assert.match(res.confirmation, /applied when this deploy publishes the new build/);
+      for (const re of shows) assert.match(res.confirmation, re);
+      // The prompt names the visibility the publish body will carry.
+      assert.ok(res.confirmation.includes(`→ ${res.publishBody.visibility} `), res.confirmation);
+    }
+    assert.equal(host.asked.length, 0);
+    assert.ok(!calls.some((c) => !c.key.startsWith("GET")));
+  });
+}
+
+const DEPLOY_REFUSALS = [
+  ["decline", confirmHostThat({ action: "decline" }), "user_cancelled", 1],
+  ["cancel", confirmHostThat({ action: "cancel" }), "user_cancelled", 1],
+  ["accept with the Cancel choice", confirmHostThat({ action: "accept", content: { choice: "Cancel" } }), "user_cancelled", 1],
+  ["accept without content", confirmHostThat({ action: "accept" }), "user_cancelled", 1],
+  ["a host that did not declare elicitation", confirmHostThat({ action: "accept", content: { choice: "Run" } }, { canAsk: false }), "confirm_unavailable", 0],
+  ["no host", undefined, "confirm_unavailable", 0],
+];
+for (const [name, routes, input] of [
+  ["first deploy (Public by default)", firstRoutes, FULL_FIRST],
+  ["update Private → Public", () => updateRoutes("Private"), { ...NOTES, visibility: "Public" }],
+]) {
+  for (const [label, host, error, asks] of DEPLOY_REFUSALS) {
+    test(`runDeploy ${name}: ${label} → ${error} before the checkpoint; no commit, no write call`, async () => {
+      const dir = makeProject();
+      fs.writeFileSync(path.join(dir, "pending.txt"), "not committed yet\n");
+      if (host) host.asked.length = 0;
+      const { calls, handler } = router(routes());
+      const real = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, ...input });
+      const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+      assert.equal(res.ok, false, JSON.stringify(res));
+      assert.equal(res.stage, "confirm");
+      assert.equal(res.error, error);
+      assert.match(res.hint, /Nothing was changed/);
+      assert.match(res.hint, new RegExp(`General tab: https://create[.]verse8[.]io/creations/${VERSE} `), "says where to widen it on the web");
+      assert.equal(host ? host.asked.length : 0, asks);
+      if (asks) assert.deepEqual(host.asked[0].schema.properties.choice.enum, ["Cancel", "Run"]);
+      assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), [], "no write call");
+      assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, stdio: "pipe" }), "the checkpoint did not commit");
+      assert.match(execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" }), /pending\.txt/);
+    });
+  }
+}

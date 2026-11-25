@@ -30,7 +30,17 @@ Unlisted → Public); narrowing it stays a preview. The prompt shows the
 game's title and `Visibility: current → new`. Previews carry `runCondition`
 and, for these, the `confirmation` text. Editing an item is now also refused
 with `plan_mismatch` when its name, price or on-sale flag changed since the
-preview, and a visibility change when the game's title did. The refusal for
+preview, and a visibility change when the game's title did.
+
+`verse8_deploy` sends a visibility too, so the same rule covers it: a first
+deploy that is not Private (Public is the default) and an update whose
+`visibility` moves towards Public ask you before the deploy commits, builds
+or uploads anything; the `dryRun` reports `runCondition` and the
+`confirmation` text. An update that keeps the visibility is not asked.
+`verse8_verse` `comment_delete` (irreversible) asks as well, showing the
+commenter and the comment. Answering a dispute and pinning a comment stay at
+preview: a dispute answer is a message to the buyer and moves no money, a pin
+is undone by unpinning. The refusal for
 hosts that cannot ask points to the game's own creator page
 (`<create host>/creations/<verseId>`) and names the tab. A host hook that auto-accepts elicitations is indistinguishable
 from you choosing `Run` (see the README).

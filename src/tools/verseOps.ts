@@ -16,8 +16,8 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  *
  * Changing actions preview by default and only call the API with the
  * planId their preview returned (creatorOps plan gate). An update that
- * widens the visibility also needs the user's own confirmation in the
- * host's prompt (creatorOps RUN_RULES). Every listing
+ * widens the visibility, and deleting a comment, also need the user's own
+ * confirmation in the host's prompt (creatorOps RUN_RULES). Every listing
  * update re-sends the current `visibility`:
  * the backend's update DTO defaults `isPublic` to true, so a body without
  * `visibility` would make a Private / Unlisted game Public
@@ -211,7 +211,7 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
       case "comment_pin":
       case "comment_delete":
         if (!ctx.ok) return ctx as OpFail;
-        return await runCommentChange(input, ctx.verseId, ctx.token);
+        return await runCommentChange(input, ctx.verseId, ctx.token, host);
     }
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
@@ -540,7 +540,7 @@ async function findComment(
   return { ok: true, comment: null, pinnedId };
 }
 
-async function runCommentChange(input: VerseOpsInput, verseId: string, token: string): Promise<VerseOpsResult> {
+async function runCommentChange(input: VerseOpsInput, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VerseOpsResult> {
   if (input.commentId === undefined) return opFail("invalid_input", `${input.action} needs commentId (see action comments).`);
   const owned = await loadOwnedVerse(verseId, token);
   if (!owned.ok) return owned;
@@ -562,9 +562,10 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
       op: "verse8_verse.comment_delete",
       target: { verseId, commentId: c.id },
       body: null,
-      state: { content: c.content, pinned: isPinned },
+      // author and content are what the user confirmation shows (creatorOps RUN_RULES).
+      state: { content: c.content, pinned: isPinned, author: c.userHandle ?? c.userDisplayName ?? `uid ${c.userUid}` },
     };
-    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
+    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings }, host);
     if (!isApproved(gate)) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);

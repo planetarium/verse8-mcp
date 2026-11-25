@@ -19,7 +19,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { CONFIRM_SCHEMA, RUN_RULES, confirmMessage, planGate, planId, runConditionOf } from "../../dist/tools/creatorOps.js";
+import { CONFIRM_SCHEMA, RUN_RULES, confirmGate, confirmMessage, planGate, planId, runConditionOf } from "../../dist/tools/creatorOps.js";
 import { runVerseOps, verseOpsInputSchema } from "../../dist/tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "../../dist/tools/vxShop.js";
 import { createServer } from "../../dist/server.js";
@@ -54,6 +54,7 @@ const makeItems = () => [
 async function withShop(f) {
   const items = makeItems();
   const verse = { verseId: VERSE, verseShortId: "abc", isOwner: true, title: "Old title", description: "d", tag: ["RPG"], visibility: "Private", allowRemix: false };
+  const comments = [1, 2].map((id) => ({ id, userUid: "9", userHandle: "ana", userDisplayName: "Ana", content: id === 1 ? "first!" : "second", parentCommentId: null, likes: 0, isDeleted: false, createdAt: "t" }));
   const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN };
   const calls = [];
   globalThis.fetch = async (u, init = {}) => {
@@ -61,6 +62,11 @@ async function withShop(f) {
     const method = init.method ?? "GET";
     calls.push({ method, path: pathname });
     if (pathname === "/v1/verse/verseId") return json(200, verse);
+    if (method === "GET" && pathname === `/v1/verse/${VERSE}/comments`) return json(200, { pinnedComment: null, comments, page: 1, limit: 100, total: comments.length });
+    if (method === "DELETE" && /^\/v1\/verse\/[^/]+\/comments\/\d+$/.test(pathname)) return new Response(null, { status: 204 });
+    if (method === "POST" && /^\/v1\/verse\/[^/]+\/comments\/\d+\/pin$/.test(pathname)) return json(201, { isPinned: true });
+    if (method === "GET" && pathname === "/v1/vx-shop-items/sales") return json(200, { sales: [{ id: 55, shopItemId: 7, status: "completed", disputeStatus: "REQUEST", disputeMessage: "not received" }], total: 1 });
+    if (method === "PUT" && pathname === "/v1/vx-shop-items/sales/55/dispute") return json(200, { success: true });
     if (method === "POST" && pathname === `/v1/verse/update/${VERSE}`) return json(201, { ...verse, ...JSON.parse(init.body) });
     if (method === "GET" && pathname === "/v1/vx-wallet") return json(200, { isSeller: true, balance: 0 });
     if (method === "GET" && pathname === "/v1/vx-shop-items") return json(200, { items, total: items.length });
@@ -82,13 +88,14 @@ async function withShop(f) {
 }
 
 const run = (dir, input, host) =>
-  input.action === "update"
+  ["update", "comment_delete", "comment_pin"].includes(input.action)
     ? runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...input }), dir, host)
     : runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
 // Where a refusal sends the user: the per-game creator page on the create host, and the tab.
 const PAGE = `https://create[.]verse8[.]io/creations/${VERSE}`;
 const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab[)]`);
 const GAME_PORTAL = new RegExp(`General tab: ${PAGE} [(]the "Visibility" select[)]`);
+const COMMENT_PORTAL = /the game.s page on Verse8: open the comments, then the comment.s "…" menu → Delete/;
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
 /** A host that can ask and answers with `answer` (a value, or a function that may throw). */
@@ -144,6 +151,12 @@ const CONFIRMED = [
     input: { action: "update", visibility: "Unlisted", title: "New title" },
     shows: [/Game: "Old title"/, /Visibility: Private → Unlisted \(anyone with the link can play, not listed\)/, /also changes title: "Old title" → "New title"/],
     portal: GAME_PORTAL,
+  },
+  {
+    name: "delete a comment",
+    input: { action: "comment_delete", commentId: 1 },
+    shows: [/Delete this comment for good\?/, /Comment 1 by "ana"/, new RegExp(VERSE), /Deletes: "first!"/, /Undo: none — a deleted comment cannot be restored/],
+    portal: COMMENT_PORTAL,
   },
 ];
 
@@ -280,6 +293,10 @@ const PREVIEW_ONLY = [
   ["rename an item on sale", { action: "upsert", itemId: 7, name: "Renamed" }],
   ["archive an item on sale", { action: "archive", itemId: 7 }],
   ["restore a hidden item", { action: "archive", itemId: 10, archived: false }],
+  // Kept at preview on purpose: pinning is undone by unpinning; a dispute
+  // answer is a message to the buyer and moves no money.
+  ["pin a comment", { action: "comment_pin", commentId: 1 }],
+  ["answer a buyer's dispute", { action: "dispute", saleId: 55, disputeStatus: "RESOLVED", responseMessage: "Sent again" }],
 ];
 for (const [name, input] of PREVIEW_ONLY) {
   test(`preview-level: ${name} → runs with the planId alone, the user is not asked`, async () => {
@@ -624,4 +641,52 @@ test("MCP host cancels the tool call while the prompt is open, then answers Run 
       await host.close();
     }
   });
+});
+
+// ── the same gate for a tool without a planId (verse8_deploy) ──
+
+test("confirmGate: one rule for every action that sends a visibility — deploy and game page update agree on what widens", async () => {
+  const VALUES = [null, "Private", "Unlisted", "Public"];
+  for (const from of VALUES) {
+    for (const to of VALUES.slice(1)) {
+      const parts = { target: { verseId: VERSE }, body: { visibility: to }, state: { visibility: from, title: "T" } };
+      const deploy = runConditionOf({ op: "verse8_deploy.publish", ...parts });
+      assert.equal(deploy, runConditionOf({ op: "verse8_verse.update", ...parts }), `${from} → ${to}`);
+      const widens = VALUES.indexOf(to) > Math.max(1, VALUES.indexOf(from));
+      assert.equal(deploy, widens ? "user_confirm" : "preview", `${from} → ${to}`);
+    }
+  }
+});
+
+test("confirmGate: asks only for a user_confirm plan, passes only on Run, reports without asking when told to, refuses an unlisted op", async () => {
+  const widening = { op: "verse8_deploy.publish", target: { verseId: VERSE }, body: { visibility: "Public" }, state: { visibility: "Private", published: true, title: "T" } };
+  const kept = { ...widening, body: { visibility: "Private" } };
+
+  const yes = hostThat(RUN);
+  const passed = await confirmGate(widening, yes);
+  assert.equal(passed.confirmed, true, JSON.stringify(passed));
+  assert.equal(passed.runCondition, "user_confirm");
+  assert.equal(yes.asked.length, 1);
+  assert.equal(yes.asked[0].message, passed.confirmation);
+  assert.doesNotMatch(passed.confirmation, /[\r\n]/);
+
+  const no = hostThat({ action: "decline" });
+  assert.equal((await confirmGate(widening, no)).error, "user_cancelled");
+  assert.equal((await confirmGate(widening, undefined)).error, "confirm_unavailable");
+  assert.equal((await confirmGate(widening, { ...hostThat(RUN), isCancelled: () => true })).error, "confirm_unavailable");
+
+  const silent = hostThat({ action: "decline" });
+  const reported = await confirmGate(widening, silent, { ask: false });
+  assert.equal(reported.confirmed, true);
+  assert.equal(reported.runCondition, "user_confirm");
+  assert.ok(reported.confirmation);
+  const preview = await confirmGate(kept, silent);
+  assert.equal(preview.confirmed, true);
+  assert.equal(preview.runCondition, "preview");
+  assert.equal(preview.confirmation, undefined);
+  assert.equal(silent.asked.length, 0);
+
+  const unlisted = await confirmGate({ ...widening, op: "verse8_deploy.unpublish" }, hostThat(RUN));
+  assert.equal(unlisted.error, "op_not_classified");
+  assert.equal(unlisted.confirmed, undefined);
 });

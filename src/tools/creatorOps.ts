@@ -199,7 +199,7 @@ export const CONFIRM_NEXT =
 // What it takes for an action to run. Three conditions:
 //
 //   immediate     reads, and changes to local files only — these never come
-//                 through planGate.
+//                 through planGate / confirmGate.
 //   preview       can be undone and costs nothing: the planId of its own
 //                 preview is enough (above).
 //   user_confirm  costs money, changes what is public, affects other people,
@@ -208,7 +208,8 @@ export const CONFIRM_NEXT =
 //                 runs only on their "Run". The answer comes from the host
 //                 to this server; it does not pass through the agent.
 //
-// RUN_RULES is the one table of it: every op that calls planGate has a row,
+// RUN_RULES is the one table of it: every op that calls planGate (or, for a
+// tool without a planId, confirmGate) has a row,
 // and an op without a row does not run. A row may decide by the plan — the
 // same parts the planId hashes — so the condition cannot differ from what
 // the preview showed.
@@ -261,6 +262,10 @@ const visibilityPortal = (p: Plan): string => `the game's creator page, General 
 
 // Who can see a game, narrowest first. A change is widening when it moves
 // to a later entry; a value this list does not know is treated as widening.
+// No current value (a game not published yet, or a record without one)
+// counts as the narrowest: nobody but the owner sees it now.
+// This is the one rule for every action that sends a visibility to the
+// server — the game page update and the deploy's publish.
 const VISIBILITY_ORDER = ["Private", "Unlisted", "Public"];
 const VISIBILITY_MEANS: Record<string, string> = {
   Private: "only you can open it",
@@ -268,35 +273,43 @@ const VISIBILITY_MEANS: Record<string, string> = {
   Public: "listed on Verse8 for everyone",
 };
 function widensVisibility(p: Plan): boolean {
-  const from = rec(p.state).visibility;
+  const from = rec(p.state).visibility ?? null;
   const to = rec(p.body).visibility;
   if (to === undefined || to === from) return false;
-  const a = VISIBILITY_ORDER.indexOf(String(from));
+  const a = from === null ? 0 : VISIBILITY_ORDER.indexOf(String(from));
   const b = VISIBILITY_ORDER.indexOf(String(to));
   return a < 0 || b < 0 || b > a;
 }
 const userTags = (v: unknown): unknown => (Array.isArray(v) ? v.filter((t) => !(typeof t === "string" && t.startsWith("__"))) : v);
+const DEPLOY_OP = "verse8_deploy.publish";
 function visibilityConfirm(p: Plan): ConfirmText {
   const body = rec(p.body);
   const state = rec(p.state);
-  const from = String(state.visibility);
+  const known = state.visibility !== null && state.visibility !== undefined;
+  const from = known ? String(state.visibility) : state.published === false ? "not published yet" : "not set";
   const to = String(body.visibility);
-  const review = from === "Private" && Array.isArray(state.tag) && state.tag.includes("__review_required");
+  const review = (!known || from === "Private") && Array.isArray(state.tag) && state.tag.includes("__review_required");
   // Everything else the same request changes, with its current and new value.
   const also = Object.keys(body)
     .filter((k) => k !== "visibility" && k !== "sendNotificationToFollowers")
     .sort()
     .map((k) => `${k}: ${shown(k === "tag" ? userTags(state[k]) : state[k])} → ${shown(body[k])}`);
   return {
-    question: "Make this game visible to more people?",
+    question: p.op === DEPLOY_OP ? "Deploy this game so that more people can see it?" : "Make this game visible to more people?",
     target: `Game: ${shown(state.title)} (verse ${p.target.verseId})`,
     change:
       `Visibility: ${from} → ${to} (${VISIBILITY_MEANS[to] ?? "more people can see it"})` +
+      (p.op === DEPLOY_OP ? "; applied when this deploy publishes the new build" : "") +
       (review ? "; this starts a Verse8 review and the game may stay hidden until it passes" : "") +
       (also.length > 0 ? `; also changes ${also.join("; ")}` : ""),
-    undo: `Undo: you can set it back to ${from}; people who opened or saw it meanwhile have seen it`,
+    undo: `Undo: you can set it ${known ? `back to ${from}` : "to Private afterwards"}; people who opened or saw it meanwhile have seen it`,
   };
 }
+const deployPortal = (p: Plan): string =>
+  `the web after deploying without widening it — pass visibility "Private" on a first deploy, or leave visibility out on an update — then use the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
+// The portal deletes a comment from the comment panel of the game's own
+// page (the comment's menu → Delete); that panel has no address of its own.
+const commentPortal = (): string => `the game's page on Verse8: open the comments, then the comment's "…" menu → Delete`;
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
 
 /** An edit starts a sale when it turns isActive on; it reprices a live item when the price changes on one that is on sale and stays so. */
@@ -348,9 +361,32 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
     confirm: visibilityConfirm,
     portal: visibilityPortal,
   },
+  // The deploy's publish sends a visibility too: the same rule decides. It
+  // has no planId (confirmGate, below); "preview" here means its own dryRun.
+  [DEPLOY_OP]: {
+    condition: (p) => (widensVisibility(p) ? "user_confirm" : "preview"),
+    confirm: visibilityConfirm,
+    portal: deployPortal,
+  },
   "verse8_verse.release_note_update": { condition: "preview" },
+  // Pinning can be undone (unpin) and changes nothing for anyone else.
   "verse8_verse.comment_pin": { condition: "preview" },
-  "verse8_verse.comment_delete": { condition: "preview" },
+  // A deleted comment cannot be restored, and it is someone else's.
+  "verse8_verse.comment_delete": {
+    condition: "user_confirm",
+    confirm: (p) => {
+      const s = rec(p.state);
+      return {
+        question: "Delete this comment for good?",
+        target: `Comment ${p.target.commentId} by ${shown(s.author)} on verse ${p.target.verseId}`,
+        change: `Deletes: ${shown(s.content)}` + (s.pinned === true ? "; it is the pinned comment" : ""),
+        undo: "Undo: none — a deleted comment cannot be restored, and it counts against the commenter's moderation record",
+      };
+    },
+    portal: commentPortal,
+  },
+  // Answering a dispute sends the buyer a message; it moves no money and
+  // changes nothing public (refunds are not part of it).
   "verse8_vxshop.dispute": { condition: "preview" },
   // Creating an item on sale starts a sale; created hidden it is a preview.
   "verse8_vxshop.upsert.create": {
@@ -499,6 +535,51 @@ async function askUser(p: Plan, message: string, host: ConfirmHost | undefined):
   );
 }
 
+/** What a plan needs to run: its condition and, for user_confirm, the prompt. The refusal when its op is not in RUN_RULES. */
+function runRequirement(p: Plan): { ok: true; condition: GatedCondition; message: string | null } | OpFail {
+  const condition = runConditionOf(p);
+  if (condition === null) {
+    return opFail("op_not_classified", `Nothing was changed: '${p.op}' has no run condition (RUN_RULES), so it does not run. This is a bug in @verse8/mcp.`);
+  }
+  const message = condition === "user_confirm" ? confirmMessage(p) : null;
+  if (condition === "user_confirm" && message === null) {
+    return opFail("op_not_classified", `Nothing was changed: '${p.op}' needs the user's confirmation but has no confirmation text (RUN_RULES). This is a bug in @verse8/mcp.`);
+  }
+  return { ok: true, condition, message };
+}
+
+/** A confirmation that was not needed, or that the user answered with "Run". */
+export interface ConfirmPassed {
+  confirmed: true;
+  runCondition: GatedCondition;
+  /** The prompt text of a user_confirm plan. */
+  confirmation?: string;
+}
+
+export function isConfirmed(g: unknown): g is ConfirmPassed {
+  return typeof g === "object" && g !== null && (g as { confirmed?: unknown }).confirmed === true;
+}
+
+/**
+ * INV-16: A user-confirmation action writes nothing without the user's "Run".
+ * The same table and the same prompt for a tool that has no planId of its
+ * own (verse8_deploy, whose preview is its dryRun). `ask: false` only
+ * reports the condition and the prompt text, for that preview. Otherwise a
+ * user_confirm plan asks through `host` and passes only on "Run"; a preview
+ * plan passes as it is; an op with no row is refused.
+ */
+export async function confirmGate(
+  p: Plan,
+  host: ConfirmHost | undefined,
+  opts: { ask: boolean } = { ask: true },
+): Promise<ConfirmPassed | OpFail> {
+  const need = runRequirement(p);
+  if (!need.ok) return need;
+  const out = { confirmed: true as const, runCondition: need.condition, ...(need.message === null ? {} : { confirmation: need.message }) };
+  if (need.message === null || !opts.ask) return out;
+  return (await askUser(p, need.message, host)) ?? out;
+}
+
 /**
  * INV-16: A user-confirmation action writes nothing without the user's "Run".
  * The gate every changing action goes through. Without planId: the preview,
@@ -513,14 +594,9 @@ export async function planGate<T extends { action: string }>(
   preview: T,
   host?: ConfirmHost,
 ): Promise<(T & { ok: true; dryRun: true; planId: string; next: string; runCondition: GatedCondition; confirmation?: string }) | OpFail | PlanApproved> {
-  const condition = runConditionOf(p);
-  if (condition === null) {
-    return opFail("op_not_classified", `Nothing was changed: '${p.op}' has no run condition (RUN_RULES), so it does not run. This is a bug in @verse8/mcp.`);
-  }
-  const message = condition === "user_confirm" ? confirmMessage(p) : null;
-  if (condition === "user_confirm" && message === null) {
-    return opFail("op_not_classified", `Nothing was changed: '${p.op}' needs the user's confirmation but has no confirmation text (RUN_RULES). This is a bug in @verse8/mcp.`);
-  }
+  const need = runRequirement(p);
+  if (!need.ok) return need;
+  const { condition, message } = need;
   if (given === undefined) {
     return {
       ok: true,

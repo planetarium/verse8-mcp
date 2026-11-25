@@ -31,6 +31,7 @@ import {
   deriveProjectPathFromOrigin,
   detectGameserver,
 } from "./preview.js";
+import { confirmGate, isConfirmed, type ConfirmHost, type Plan } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 
 /**
@@ -47,6 +48,9 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  *                     HEAD (the sha playUrl records, read once)
  *   5. upload         `@agent8/deploy --prod --verse <id> --account <acct>`
  *   6. publish        POST /v1/verse/create | /v1/verse/update/:verseId
+ *
+ * Before step 2 the run condition is checked (creatorOps RUN_RULES): a deploy
+ * that widens who can see the game asks the user in the host's own prompt.
  *
  * Mirrors agent8 container-agent deploy (message-handler.ts
  * handleDeployOperation + deploy-command.ts) and verse8-vibe's publish
@@ -228,6 +232,10 @@ export type DeployResult =
       playUrl: string;
       publishBody: Record<string, unknown>;
       plannedSteps?: string[];
+      /** dryRun: what the real run needs — `user_confirm` when it widens who can see the game. */
+      runCondition?: "preview" | "user_confirm";
+      /** dryRun: the one-line prompt the user is asked before a user_confirm run. */
+      confirmation?: string;
       commit?: CheckpointResult;
       steps?: DeployStepResult[];
       verse?: VerseInfo;
@@ -970,6 +978,7 @@ function looksLikeBotCheck(body: string): boolean {
 export async function runDeploy(
   input: DeployInput,
   serverCwd: string = process.cwd(),
+  host?: ConfirmHost,
 ): Promise<DeployResult> {
   const cwd = path.resolve(input.projectDir ?? serverCwd);
   const warnings: string[] = [];
@@ -1110,6 +1119,34 @@ export async function runDeploy(
   };
   const steps = buildDeploySteps({ installCommand: input.installCommand, gameserver, verseId, account, baseEnv, token });
 
+  // ── 4b. Run condition (creatorOps RUN_RULES) ──────────────────────────
+  // A deploy that widens who can see the game — a first deploy that is not
+  // Private (Public is the default), or an update whose visibility moves
+  // towards Public — needs the user's own confirmation, by the same rule
+  // and prompt as the game page update. Asked before the checkpoint, so a
+  // refusal leaves nothing committed, built, uploaded or published.
+  const visibilityPlan: Plan = {
+    op: "verse8_deploy.publish",
+    target: { verseId },
+    // The visibility the publish body will carry (buildPublishBody).
+    body: { visibility: input.visibility ?? existing?.visibility ?? "Public" },
+    state: {
+      visibility: existing?.visibility ?? null,
+      published: mode === "update",
+      title: input.title ?? existing?.title ?? null,
+      tag: tags,
+    },
+  };
+  const confirmed = await confirmGate(visibilityPlan, host, { ask: !input.dryRun });
+  if (!isConfirmed(confirmed)) {
+    const { error, hint, ok: _ok, ...extras } = confirmed;
+    return fail("confirm", error, hint, { mode, ...extras });
+  }
+  const runCondition = {
+    runCondition: confirmed.runCondition,
+    ...(confirmed.confirmation === undefined ? {} : { confirmation: confirmed.confirmation }),
+  };
+
   if (input.dryRun) {
     const placeholderFields: PublishFields = {
       ...fields,
@@ -1134,6 +1171,9 @@ export async function runDeploy(
         ...steps.map((s) => s.command),
         mode === "first" ? "POST /v1/verse/create" : `POST /v1/verse/update/${verseId}`,
       ],
+      // user_confirm: the real run asks the user in the host's own prompt
+      // (the `confirmation` text) before anything is committed or built.
+      ...runCondition,
       msu,
       nineChronicles,
       warnings,
