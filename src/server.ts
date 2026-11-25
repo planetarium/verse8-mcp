@@ -50,6 +50,13 @@ import {
 import { openProjectInputSchema, runOpenProject } from "./tools/openProject.js";
 import { runStatus, statusInputSchema } from "./tools/status.js";
 import {
+  creditShortfallNote,
+  creditsInputSchema,
+  isAssetGenerationTool,
+  runCredits,
+  topupJamCreditBeforeGeneration,
+} from "./tools/credits.js";
+import {
   callImageTool,
   discoverImageTools,
   type UpstreamTool,
@@ -220,6 +227,25 @@ const UPLOAD_THUMBNAIL_TOOL: Tool = {
   inputSchema: zodToJsonSchema(uploadThumbnailInputSchema),
 };
 
+export const CREDITS_TOOL: Tool = {
+  name: "verse8_credits",
+  description:
+    "Read-only: the Verse8 account's credit balance (USD) and recent tool-usage charges — which asset tool ran, how many times, and the amount actually billed — from the same data as the web settings page. Use it when the user asks how many credits are left or what generation cost, or before a large batch of asset generation. Returns {balanceUsd, toolUsage:{total, page, limit, events:[{tool, usageCount, amountUsd, at}]}, settingsUrl}; page through older charges with `page` / `limit`. It cannot buy credits: buying is a browser checkout at `settingsUrl` — give the user that link. In a MapleStory Universe or Nine Chronicles jam project, eligible accounts get jam credits topped up automatically right before each *_generate call.",
+  inputSchema: zodToJsonSchema(creditsInputSchema),
+};
+
+/** Plain text of a proxied tool's failure, for the credit-shortfall check. */
+function proxiedFailureText(content: unknown, fallback: unknown): string {
+  const parts: string[] = [];
+  if (Array.isArray(content)) {
+    for (const c of content) {
+      if (c && typeof (c as { text?: unknown }).text === "string") parts.push((c as { text: string }).text);
+    }
+  }
+  if (parts.length === 0) parts.push(JSON.stringify(fallback ?? null));
+  return parts.join("\n");
+}
+
 function imageToolToMcpTool(t: UpstreamTool): Tool {
   return {
     name: t.name,
@@ -286,6 +312,7 @@ export function createServer(): Server {
       tools.push(DEPLOY_STATUS_TOOL);
       tools.push(VERSE_OPS_TOOL);
       tools.push(VXSHOP_TOOL);
+      tools.push(CREDITS_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -461,6 +488,13 @@ export function createServer(): Server {
         return { content: jsonContent(result), isError: !result.ok };
       }
 
+      if (name === "verse8_credits") {
+        const parsed = creditsInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runCredits(parsed, cwd), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
       if (name === "verse8_ip_assets") {
         const parsed = ipAssetsInputSchema.parse(args ?? {});
         const result = await dispatchTool(name, () => runIpAssets(parsed, cwd), { projectDir: parsed.projectDir ?? cwd });
@@ -492,23 +526,52 @@ export function createServer(): Server {
         };
       }
 
+      // Jam projects: top up right before credits are spent (the web
+      // container does it per prompt). Awaited so the credit is there when
+      // the generation runs; it never throws and is silent when refused.
+      const argProjectDir =
+        args && typeof (args as Record<string, unknown>).projectDir === "string"
+          ? ((args as Record<string, unknown>).projectDir as string)
+          : cwd;
+      const topupLine = isAssetGenerationTool(name)
+        ? await topupJamCreditBeforeGeneration(argProjectDir, token)
+        : null;
+      const withNotes = async (
+        result: { content: any[]; isError?: boolean },
+        failure: { status: number; text: string } | null,
+      ) => {
+        const notes: string[] = [];
+        if (topupLine) notes.push(topupLine);
+        if (failure) {
+          const shortfall = await creditShortfallNote(failure.status, failure.text, token);
+          if (shortfall) notes.push(shortfall);
+        }
+        if (notes.length === 0) return result;
+        return { ...result, content: [...result.content, ...notes.map((text) => ({ type: "text", text }))] };
+      };
+
       const resp = await dispatchTool(name, () =>
         callImageTool(name, args ?? {}, token),
       );
       if (!resp.ok) {
-        return { content: jsonContent(resp), isError: true };
+        const status = Number(/^upstream_http_(\d+)$/.exec(resp.error)?.[1] ?? 0);
+        return withNotes(
+          { content: jsonContent(resp), isError: true },
+          { status, text: `${resp.error} ${resp.hint ?? ""} ${JSON.stringify(resp.upstream ?? null)}` },
+        );
       }
       const upstream = resp.result as
         | { content?: Array<{ type: string; text?: string; [k: string]: unknown }>; isError?: boolean }
         | null
         | undefined;
       if (upstream && Array.isArray(upstream.content)) {
-        return {
-          content: upstream.content as any,
-          isError: upstream.isError === true,
-        };
+        const isError = upstream.isError === true;
+        return withNotes(
+          { content: upstream.content as any, isError },
+          isError ? { status: 0, text: proxiedFailureText(upstream.content, upstream) } : null,
+        );
       }
-      return { content: jsonContent(resp.result) };
+      return withNotes({ content: jsonContent(resp.result) }, null);
     } catch (e) {
       // Redact thrown errors before they reach the LLM host (US-M0-2).
       return {

@@ -241,7 +241,12 @@ export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 export async function v8Request<T>(
   method: V8Method,
   pathname: string,
-  opts: { token?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown } = {},
+  opts: {
+    token?: string;
+    query?: Record<string, string | number | boolean | undefined>;
+    body?: unknown;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ ok: true; status: number; data: T | null } | { ok: false; status: number; body: string }> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(opts.query ?? {})) {
@@ -255,6 +260,7 @@ export async function v8Request<T>(
     method,
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    signal: opts.signal,
   });
   const raw = await res.text();
   if (res.status >= 200 && res.status < 300) {
