@@ -17,16 +17,30 @@ import { execFileSync } from "node:child_process";
 
 import { createServer } from "../../dist/server.js";
 import { loadToken, resolveToken } from "../../dist/context/token.js";
-import { apiFail } from "../../dist/tools/creatorOps.js";
+import { ensureVerse8GitIgnore } from "../../dist/context/gitIgnore.js";
+import { runPreCommitHook } from "../../dist/cli/preCommitHook.js";
+import { isNeverCommitFile, listChangedFiles, unstageNeverCommitFiles } from "../../dist/tools/checkpoint.js";
 
 const GOOD = "good-token-value-0123456789";
 const STALE = "stale-token-value-0123456789";
 
 /** /v1/auth/verify accepts GOOD only; /v1/auth/device/token grants GOOD. */
 async function startMockApi() {
-  const server = http.createServer((req, res) => {
+  /** Tests set these: a status every verify call answers with, and a step to run before /v1/verse/my answers. */
+  const knobs = { verifyStatus: null, beforeVerseMy: null };
+  const server = http.createServer(async (req, res) => {
+    if (req.url.startsWith("/v1/verse/my")) {
+      if (knobs.beforeVerseMy) await knobs.beforeVerseMy();
+      const ok = req.headers.authorization === `Bearer ${GOOD}`;
+      res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
+      res.end(JSON.stringify(ok ? { total: 0, page: 1, limit: 20, items: [] } : { message: "Unauthorized" }));
+      return;
+    }
     if (req.url === "/v1/auth/verify") {
-      if (req.headers.authorization === `Bearer ${GOOD}`) {
+      if (knobs.verifyStatus) {
+        res.writeHead(knobs.verifyStatus, { "content-type": "text/html" });
+        res.end("<html>upstream unavailable</html>");
+      } else if (req.headers.authorization === `Bearer ${GOOD}`) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ userId: "u1" }));
       } else {
@@ -46,6 +60,7 @@ async function startMockApi() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
+    knobs,
     baseUrl: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
@@ -73,7 +88,7 @@ async function withIsolatedLogin(fn) {
   delete process.env.VERSE8_ACCESS_TOKEN;
   process.chdir(project);
   try {
-    await fn({ project, outside, configToken: path.join(root, "xdg", "verse8", "token") });
+    await fn({ root, project, outside, mock, configToken: path.join(root, "xdg", "verse8", "token") });
   } finally {
     process.chdir(saved.cwd);
     await mock.close();
@@ -224,16 +239,106 @@ test("verse8_login_complete: warns when an env token outranks the login it just 
   });
 });
 
-test("a rejected-token hint from another tool names the source the tool loaded its token from", async () => {
-  await withIsolatedLogin(async ({ project }) => {
+test("a 401 hint from another tool names the source of the token that call used, whatever other calls do meanwhile", async () => {
+  await withIsolatedLogin(async ({ project, outside, configToken, mock }) => {
     const projectToken = path.join(project, ".verse8", "token");
     writeToken(projectToken, STALE);
-    assert.equal(loadToken(project), STALE);
-    const fail = apiFail("GET /v1/verse/my", { status: 401, body: "" });
+    writeToken(configToken, GOOD);
+    // While this call waits for the API, another call loads the token for a
+    // different folder (where the config token is the one in use).
+    mock.knobs.beforeVerseMy = () => {
+      assert.equal(loadToken(outside), GOOD);
+    };
+
+    const fail = await call("verse8_verse", { action: "mine", projectDir: project });
     assert.equal(fail.error, "unauthorized");
     assert.ok(fail.hint.includes(projectToken), fail.hint);
-    assert.match(fail.hint, /verse8_logout/);
-    assert.ok(!fail.hint.includes(STALE));
+    assert.ok(!fail.hint.includes(configToken), fail.hint);
+    assert.ok(fail.hint.includes(`verse8_logout with projectDir ${JSON.stringify(project)}`), fail.hint);
+  });
+});
+
+// A hint has to work when it is followed to the letter.
+
+test("project token in another folder than the server's: the hint names projectDir, and a logout without it is not reported as done", async () => {
+  await withIsolatedLogin(async ({ outside, configToken }) => {
+    // The project is `outside`; the server's working folder is elsewhere.
+    const projectToken = path.join(outside, ".verse8", "token");
+    writeToken(projectToken, STALE);
+    writeToken(configToken, GOOD);
+
+    const stale = await call("verse8_status", { projectDir: outside });
+    assert.equal(stale.error, "token_invalid");
+    assert.deepEqual(stale.tokenSource, { source: "project", path: projectToken });
+    assert.ok(stale.hint.includes(`verse8_logout with projectDir ${JSON.stringify(outside)}`), stale.hint);
+
+    // Without projectDir the token file that is in use is not touched.
+    const bare = await call("verse8_logout");
+    assert.equal(bare.ok, false);
+    assert.equal(bare.error, "logout_incomplete");
+    assert.deepEqual(bare.tokenSource, { source: "project", path: projectToken });
+    assert.ok(bare.hint.includes(`verse8_logout with projectDir ${JSON.stringify(outside)}`), bare.hint);
+    assert.equal(fs.existsSync(projectToken), true);
+
+    // The call the hint asks for.
+    const out = await call("verse8_logout", { projectDir: outside });
+    assert.equal(out.ok, true);
+    assert.equal(out.projectDir, outside);
+    assert.deepEqual(out.removed, [{ source: "project", path: projectToken }]);
+    assert.equal(fs.existsSync(projectToken), false);
+    assert.equal((await call("verse8_status", { projectDir: outside })).error, "not_logged_in");
+
+    // Nothing is remembered about that folder any more.
+    assert.equal((await call("verse8_logout")).ok, true);
+  });
+});
+
+test("verse8_login_complete: warns, with the projectDir to log out of, when a project token outranks the login it just saved", async () => {
+  await withIsolatedLogin(async ({ project, configToken }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    writeToken(projectToken, STALE);
+    const done = await call("verse8_login_complete", { device_code: "dc", max_wait_seconds: 5 });
+    assert.equal(done.ok, true);
+    assert.equal(fs.existsSync(configToken), true);
+    assert.match(done.warning, /NOT in use/);
+    assert.ok(done.warning.includes(projectToken), done.warning);
+    assert.ok(done.warning.includes(`verse8_logout with projectDir ${JSON.stringify(project)}`), done.warning);
+  });
+});
+
+// A failure that is not a rejection must not be answered as one.
+
+test("verse8_status: a 503 from the verify call is not a rejected token", async () => {
+  await withIsolatedLogin(async ({ configToken, mock }) => {
+    writeToken(configToken, GOOD);
+    process.env.VERSE8_ACCESS_TOKEN = GOOD;
+    mock.knobs.verifyStatus = 503;
+
+    const status = await call("verse8_status");
+    assert.equal(status.ok, false);
+    assert.equal(status.error, "auth_check_unavailable");
+    assert.equal(status.status, 503);
+    assert.deepEqual(status.tokenSource, { source: "env" });
+    assert.match(status.hint, /NOT rejected/);
+    assert.doesNotMatch(status.hint, /verse8_logout|remove \(or update\)|verse8_login_start/);
+
+    // A real rejection still is one, for 401 and for 403.
+    for (const code of [401, 403]) {
+      mock.knobs.verifyStatus = code;
+      assert.equal((await call("verse8_status")).error, "token_invalid", `HTTP ${code}`);
+    }
+  });
+});
+
+test("verse8_status: an unreachable API is not a rejected token", async () => {
+  await withIsolatedLogin(async ({ configToken, mock }) => {
+    writeToken(configToken, GOOD);
+    await mock.close(); // nothing listens on that port any more
+    const status = await call("verse8_status");
+    assert.equal(status.error, "auth_check_unavailable");
+    assert.equal(status.status, undefined);
+    assert.deepEqual(status.tokenSource, { source: "config", path: configToken });
+    assert.match(status.hint, /could not be reached/);
   });
 });
 
@@ -422,6 +527,157 @@ test("verse8_logout: a token file that cannot be deleted makes the logout incomp
     } finally {
       fs.chmodSync(path.dirname(configToken), 0o700);
     }
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token with a damaged .git inside another repository is not judged by the outer repository", async () => {
+  await withIsolatedLogin(async ({ root, project }) => {
+    // What a temp folder inside a work tree looks like: a healthy repository
+    // above the project, where the token file is merely untracked.
+    git(root, "init", "-q");
+    const projectToken = path.join(project, ".verse8", "token");
+    git(project, "init", "-q");
+    writeToken(projectToken, GOOD);
+    fs.writeFileSync(path.join(project, ".git", "HEAD"), "garbage\n");
+
+    const where = resolveToken(project);
+    assert.equal(where.token, null);
+    assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "git_check_failed" });
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("project token tracked by git is not read when an inherited git variable changes how the check is read", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    git(project, "init", "-q");
+    writeToken(projectToken, GOOD);
+    git(project, "add", "-f", ".verse8/token");
+
+    const saved = { ...process.env };
+    // Each of these made a tracked file look untracked, or pointed git at
+    // another index, when it reached the check.
+    const hostile = {
+      GIT_LITERAL_PATHSPECS: "1",
+      GIT_INDEX_FILE: path.join(project, "empty-index"),
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.worktree",
+      GIT_CONFIG_VALUE_0: path.join(project, "nowhere"),
+    };
+    try {
+      for (const [key, value] of Object.entries(hostile)) {
+        if (key.startsWith("GIT_CONFIG_")) continue;
+        process.env[key] = value;
+        const where = resolveToken(project);
+        assert.equal(where.token, null, key);
+        assert.equal(where.refusedProjectToken.reason, "git_tracked", key);
+        delete process.env[key];
+      }
+      Object.assign(process.env, hostile);
+      const where = resolveToken(project);
+      assert.equal(where.token, null, "all together");
+      assert.equal(where.refusedProjectToken.reason, "git_tracked", "all together");
+    } finally {
+      for (const key of Object.keys(hostile)) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("a folder named .verse8/token is refused as not a file", async () => {
+  await withIsolatedLogin(async ({ project, configToken }) => {
+    const projectToken = path.join(project, ".verse8", "token");
+    fs.mkdirSync(projectToken, { recursive: true });
+    writeToken(configToken, GOOD);
+
+    const where = resolveToken(project);
+    assert.equal(where.source, "config");
+    assert.deepEqual(where.refusedProjectToken, { path: projectToken, reason: "not_a_file" });
+    const status = await call("verse8_status");
+    assert.equal(status.ok, true);
+    assert.equal(status.projectTokenRefused.reason, "not_a_file");
+    // Not a login and not deleted: logout is complete.
+    const out = await call("verse8_logout");
+    assert.equal(out.ok, true);
+    assert.equal(fs.existsSync(projectToken), true);
+  });
+});
+
+// Refusing a tracked token file only detects the damage. These keep the file
+// from getting tracked in the first place.
+
+// INV-16: The project token file is never read through a link or from git
+test("the managed .verse8/.gitignore keeps a hand-placed project token out of `git add -A`", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    writeToken(path.join(project, ".verse8", "token"), GOOD);
+    fs.writeFileSync(path.join(project, "game.js"), "play()");
+    ensureVerse8GitIgnore(project);
+
+    git(project, "add", "-A");
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: project, encoding: "utf8" });
+    assert.deepEqual(staged.split("\n").filter(Boolean).sort(), [".verse8/.gitignore", "game.js"]);
+    assert.equal(resolveToken(project).source, "project", "and so the token stays usable");
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("a checkpoint drops a staged project token (any letter case) but keeps its staged removal", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    writeToken(path.join(project, ".verse8", "token"), GOOD);
+    fs.writeFileSync(path.join(project, "game.js"), "play()");
+    git(project, "add", "-f", ".verse8/token", "game.js");
+    assert.deepEqual(unstageNeverCommitFiles(project), [".verse8/token"]);
+    assert.deepEqual(listChangedFiles(project).includes(".verse8/token"), false);
+    assert.equal(isNeverCommitFile(".verse8/Token"), true);
+
+    // A token committed before this rule existed: its removal must go through.
+    git(project, "add", "-f", ".verse8/token");
+    git(project, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "x");
+    git(project, "rm", "-q", "--cached", ".verse8/token");
+    assert.deepEqual(unstageNeverCommitFiles(project), []);
+  });
+});
+
+// INV-16: The project token file is never read through a link or from git
+test("the pre-commit hook rejects a commit that adds a project token, and lets its removal through", async () => {
+  await withIsolatedLogin(async ({ project }) => {
+    git(project, "init", "-q");
+    git(project, "remote", "add", "origin", "https://gitlab.verse8.io/u/demo.git");
+    const nested = path.join(project, "games", "demo", ".verse8", "token");
+    writeToken(nested, GOOD);
+    fs.writeFileSync(path.join(project, "game.js"), "play()");
+    git(project, "add", "game.js");
+
+    const run = () => {
+      const writes = [];
+      const orig = process.stderr.write;
+      process.stderr.write = (chunk) => {
+        writes.push(String(chunk));
+        return true;
+      };
+      try {
+        return { code: runPreCommitHook(project), out: writes.join("") };
+      } finally {
+        process.stderr.write = orig;
+      }
+    };
+    assert.equal(run().code, 0, "nothing but game.js staged");
+
+    git(project, "add", "-f", "games/demo/.verse8/token");
+    const rejected = run();
+    assert.equal(rejected.code, 1);
+    assert.match(rejected.out, /games\/demo\/\.verse8\/token is a Verse8 login token/);
+    assert.ok(!rejected.out.includes(GOOD));
+
+    git(project, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "x");
+    git(project, "rm", "-q", "--cached", "games/demo/.verse8/token");
+    assert.equal(run().code, 0, "a staged removal passes");
   });
 });
 

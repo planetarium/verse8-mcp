@@ -16,6 +16,9 @@ import { projectWriter, type ProjectWriter } from "../util/projectWrite.js";
  */
 
 const REQUIRED_ENTRIES = [
+  // INV-16: a hand-placed project token must not ride along with `git add
+  // -A`; once tracked it is public and the token lookup refuses it.
+  "token",
   "ip-assets/",
   "preview.log",
   "mcp.log",

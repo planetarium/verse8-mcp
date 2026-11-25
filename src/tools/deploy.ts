@@ -13,7 +13,7 @@ import {
 import { detectAttachment } from "../context/attachment.js";
 import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
 import { resolveJamProject, type JamProject } from "../context/msuProject.js";
-import { loadToken, rejectedTokenHintForLastLoad } from "../context/token.js";
+import { rejectedTokenHint, resolveToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
@@ -979,7 +979,10 @@ export async function runDeploy(
   if (!project.isVerse) {
     return fail("preflight", "not_a_verse_project", `${cwd} is not a verse8 project (missing .verse8/project.json or wrong origin).`);
   }
-  const token = loadToken(cwd);
+  // Resolved once for the whole deploy, which can run for minutes: the source
+  // stays with this call for the 401 hints below.
+  const auth = resolveToken(cwd);
+  const token = auth.token;
   if (!token) {
     return fail("preflight", "not_logged_in", LOGIN_HINT);
   }
@@ -1055,7 +1058,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. ${rejectedTokenHintForLastLoad()}.`, { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. ${rejectedTokenHint(auth)}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,
@@ -1258,7 +1261,7 @@ export async function runDeploy(
     return fail(
       "publish",
       code,
-      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. ${status === 401 ? `${rejectedTokenHintForLastLoad()}, then` : "Fix the publish fields and"} run verse8_deploy again — the rebuild re-uploads the same sha.`,
+      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. ${status === 401 ? `${rejectedTokenHint(auth)}, then` : "Fix the publish fields and"} run verse8_deploy again — the rebuild re-uploads the same sha.`,
       { status, playUrl, filesLive: true, steps: completed, publishBody },
     );
   }

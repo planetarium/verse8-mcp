@@ -13,7 +13,7 @@ import { recordToolCall } from "./util/v8CallLog.js";
 import { redactHead, safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
 import { LOGIN_HINT } from "./util/hints.js";
-import { loadToken, resolveToken } from "./context/token.js";
+import { loadToken } from "./context/token.js";
 import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
 import { bootstrapInputSchema, runBootstrap } from "./tools/bootstrap.js";
@@ -130,13 +130,13 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "verse8_logout",
     description:
-      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd). Returns {removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards (e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings) or a token file could not be deleted or checked — `hint` says what the user has to remove.",
+      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd — pass `projectDir` when the project token file is in another folder, as the rejected-token hint says). Returns {projectDir, removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards (e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings) or a token file could not be deleted or checked — `hint` says what the user has to remove.",
     inputSchema: zodToJsonSchema(logoutInputSchema),
   },
   {
     name: "verse8_status",
     description:
-      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
+      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start), {error:'token_invalid'} when the server rejected the token (the hint says which source to clear), and {error:'auth_check_unavailable'} when the check itself failed (not a rejection: retry, do not log out). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
     inputSchema: zodToJsonSchema(statusInputSchema),
   },
   {
@@ -274,9 +274,7 @@ export function createServer(): Server {
   // appear as soon as the user logs in (no server restart needed).
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const cwd = process.cwd();
-    // resolveToken, not loadToken: listing tools must not overwrite the
-    // token source a running tool call recorded for its 401 hint.
-    const token = resolveToken(cwd).token;
+    const token = loadToken(cwd);
 
     const tools: Tool[] = [...BASE_TOOLS];
 

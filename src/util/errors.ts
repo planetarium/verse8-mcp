@@ -15,6 +15,7 @@ export const ERROR_CODES = [
   "authorization_pending",
   "token_invalid",
   "logout_incomplete",
+  "auth_check_unavailable",
   "token_expires_soon",
   // IP asset access
   "a2a_not_configured",

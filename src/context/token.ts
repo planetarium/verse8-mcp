@@ -14,6 +14,9 @@ export function getConfigTokenPath(): string {
   return path.join(base, "verse8", "token");
 }
 
+/** The project token file, relative to the project folder, as git writes it. */
+export const PROJECT_TOKEN_REL_PATH = ".verse8/token";
+
 /** Path of the project-folder token file for `cwd`. */
 export function getProjectTokenPath(cwd: string): string {
   return path.join(cwd, ".verse8", "token");
@@ -105,26 +108,38 @@ function lstatStrict(p: string): fs.Stats | "missing" | "error" {
   }
 }
 
-/** Does `dir` or any folder above it hold a `.git` entry (folder or file)? */
-function hasGitEntryAbove(dir: string): boolean {
-  let cur = path.resolve(dir);
+/**
+ * The nearest folder, `start` or above, that holds a `.git` entry (folder or
+ * file). A `.git` that cannot be examined counts as one: only a clean
+ * "missing" says there is no repository there.
+ */
+function nearestGitEntryDir(start: string): string | null {
+  let cur = start;
   for (;;) {
-    // Anything but a clean "missing" counts as "there may be a repository".
-    if (lstatStrict(path.join(cur, ".git")) !== "missing") return true;
+    if (lstatStrict(path.join(cur, ".git")) !== "missing") return cur;
     const parent = path.dirname(cur);
-    if (parent === cur) return false;
+    if (parent === cur) return null;
     cur = parent;
   }
 }
 
-/** Env for the tracked-file check: nothing that points git at another repo or index. */
-function gitCheckEnv(): NodeJS.ProcessEnv {
+/**
+ * Env for the tracked-file check. Every inherited `GIT_*` variable is
+ * dropped by one rule rather than a list: they can point git at another
+ * repository or index (`GIT_DIR`, `GIT_INDEX_FILE`), change how the
+ * pathspec is read (`GIT_LITERAL_PATHSPECS`), or inject config
+ * (`GIT_CONFIG_*`), and each of those can turn "tracked" into "untracked".
+ * If git then cannot work at all, the check fails and the file is refused.
+ */
+function gitCheckEnv(ceiling: string | null): NodeJS.ProcessEnv {
   const env = sanitizeChildEnv();
   for (const key of Object.keys(env)) {
-    if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|CEILING_DIRECTORIES|NAMESPACE)$/i.test(key)) {
-      delete env[key];
-    }
+    if (/^GIT_/i.test(key)) delete env[key];
   }
+  // Stop repository discovery at the nearest `.git`: when that one is
+  // damaged, git must fail instead of silently answering for a repository
+  // further up, where this file is merely "untracked".
+  if (ceiling) env.GIT_CEILING_DIRECTORIES = ceiling;
   // The "not a git repository" answer is matched as text below.
   env.LC_ALL = "C";
   env.LANG = "C";
@@ -138,34 +153,51 @@ type GitTrackedAnswer = "tracked" | "untracked" | "git_unavailable" | "git_check
  * file arrived with a clone or would leave with a push, so it is somebody
  * else's login or about to become public.
  *
- * Only two answers let the file through (`untracked`): git says the path is
- * not in the index (exit 1), or git says in so many words that `cwd` is not
- * in a repository AND no `.git` entry exists in `cwd` or above it. The
- * second condition matters because git gives the same "not a git
- * repository" answer for a damaged repository. Every other failure —
- * exit 128 for dubious ownership, a corrupt index, a bad config; git
- * missing; a timeout — refuses the file.
+ * Only two answers let the file through (`untracked`): the repository at
+ * the nearest `.git` says the path is not in its index (exit 1), or git
+ * says in so many words that `cwd` is not in a repository AND no `.git`
+ * entry exists in `cwd` or above it. Every other failure — exit 128 for
+ * dubious ownership, a corrupt index, a bad config, a damaged repository
+ * (which git also calls "not a git repository"); git missing; a timeout —
+ * refuses the file.
  */
 function checkTrackedByGit(cwd: string): GitTrackedAnswer {
+  let real: string;
+  try {
+    // git works from the physical folder; walk the same one.
+    real = fs.realpathSync(cwd);
+  } catch {
+    return "git_check_failed";
+  }
+  const repoDir = nearestGitEntryDir(real);
+  const above = repoDir ? path.dirname(repoDir) : null;
+  const ceiling = above && above !== repoDir ? above.split(path.sep).join("/") : null;
   const r = spawnSync(
     "git",
-    // icase: on a case-insensitive filesystem `.verse8/Token` in the index
-    // is this very file.
-    ["ls-files", "--error-unmatch", "--", ":(icase).verse8/token"],
+    [
+      // `:(icase)` below must be read as pathspec magic whatever the config.
+      "--no-literal-pathspecs",
+      "ls-files",
+      "--error-unmatch",
+      "--",
+      // icase: on a case-insensitive filesystem `.verse8/Token` in the index
+      // is this very file.
+      ":(icase).verse8/token",
+    ],
     {
-      cwd,
+      cwd: real,
       stdio: ["ignore", "ignore", "pipe"],
       encoding: "utf8",
       timeout: 5000,
       windowsHide: true,
-      env: gitCheckEnv(),
+      env: gitCheckEnv(ceiling),
     },
   );
   if (r.error || r.status === null) return "git_unavailable";
   if (r.status === 0) return "tracked";
   if (r.status === 1) return "untracked";
   const saysNotARepo = /not a git repository/i.test(r.stderr ?? "");
-  if (saysNotARepo && !hasGitEntryAbove(cwd)) return "untracked";
+  if (saysNotARepo && repoDir === null) return "untracked";
   return "git_check_failed";
 }
 
@@ -244,8 +276,7 @@ function readConfigToken(): { path: string; value: string } | null {
  *      inspectProjectToken); a refused file is reported and skipped
  *   3. ${XDG_CONFIG_HOME or ~/.config}/verse8/token
  *
- * Trims trailing whitespace/newlines. Has no side effect on the hint state
- * (see loadToken).
+ * Trims trailing whitespace/newlines.
  */
 export function resolveToken(cwd: string = process.cwd()): TokenResolution {
   const envToken = process.env.VERSE8_ACCESS_TOKEN;
@@ -255,6 +286,7 @@ export function resolveToken(cwd: string = process.cwd()): TokenResolution {
 
   const project = inspectProjectToken(cwd);
   if (project.state === "usable") {
+    projectDirsWithUsedToken.add(path.resolve(cwd));
     return { token: project.value, source: "project", path: project.path };
   }
   const refusedProjectToken =
@@ -268,29 +300,43 @@ export function resolveToken(cwd: string = process.cwd()): TokenResolution {
 }
 
 /**
- * Where the token most recently handed to a tool came from. Tools that turn
- * an upstream 401 into a hint far from where they loaded the token
- * (`apiFail`, the gameserver gateway) read it through
- * `rejectedTokenHintForLastLoad`. Never holds the token itself.
+ * Where a token came from, without the token: what a tool keeps next to the
+ * token it resolved so that a later 401 hint names the right source.
  */
-let lastLoaded: Omit<TokenResolution, "token"> = { source: null };
+export type TokenWhere = Omit<TokenResolution, "token">;
 
 /**
- * Load the Verse8 access token for a tool call. Returns null if no token is
- * available. Same priority and refusals as resolveToken, and remembers the
- * source for `rejectedTokenHintForLastLoad`.
+ * Project folders whose token file this server process has handed to a
+ * tool. verse8_logout checks them all, so a logout called for one folder
+ * does not report "logged out" while another folder's token is still live.
+ * Holds folder paths only.
+ */
+const projectDirsWithUsedToken = new Set<string>();
+
+/** Project folders (absolute) whose token file was used since the server started. */
+export function listProjectDirsWithUsedToken(): string[] {
+  return [...projectDirsWithUsedToken];
+}
+
+/** Forget a folder once its token file is gone. */
+export function forgetProjectDirWithUsedToken(cwd: string): void {
+  projectDirsWithUsedToken.delete(path.resolve(cwd));
+}
+
+/**
+ * Load the Verse8 access token. Returns null if no token is available.
+ * Same priority and refusals as resolveToken; a tool that may have to
+ * explain a rejected token calls resolveToken instead and keeps the source.
  */
 export function loadToken(cwd: string = process.cwd()): string | null {
-  const { token, ...where } = resolveToken(cwd);
-  lastLoaded = where;
-  return token;
+  return resolveToken(cwd).token;
 }
 
 const REFUSAL_TEXT: Record<ProjectTokenRefusal, string> = {
   symlink: "it is (or sits behind) a link, and token files are not read through links",
   not_a_file: "it is not a regular file",
   git_tracked:
-    "git tracks it, so it came with the repository or would be pushed with it (remove it with `git rm --cached .verse8/token` and delete the file)",
+    "git tracks it, so it came with the repository or would be pushed with it (run `git rm --cached .verse8/token`, delete the file, and commit the removal with verse8_checkpoint)",
   unreadable: "it (or the .verse8 folder) could not be examined or read, so it could not be checked",
   git_unavailable:
     "git could not be started (not installed, not on PATH, or timed out), so the file could not be checked for being untracked",
@@ -308,7 +354,7 @@ export function refusedProjectTokenHint(r: RefusedProjectToken): string {
  * fresh login only rewrites the config-folder file, so a stale env or
  * project token has to be cleared first or it keeps winning.
  */
-export function rejectedTokenHint(where: Omit<TokenResolution, "token">): string {
+export function rejectedTokenHint(where: TokenWhere): string {
   if (where.source === "env") {
     return (
       "The rejected token comes from the VERSE8_ACCESS_TOKEN environment variable, which is used before any token file — logging in again does not replace it. " +
@@ -316,10 +362,10 @@ export function rejectedTokenHint(where: Omit<TokenResolution, "token">): string
       `Then, to log in: ${LOGIN_HINT}`
     );
   }
-  if (where.source === "project") {
+  if (where.source === "project" && where.path) {
     return (
       `The rejected token comes from the project token file ${where.path}, which is used before the login token file — logging in again does not replace it. ` +
-      `Call verse8_logout to delete it, then log in: ${LOGIN_HINT}`
+      `${logoutCallHint(where.path)} to delete it, then log in: ${LOGIN_HINT}`
     );
   }
   if (where.source === "config") {
@@ -328,9 +374,14 @@ export function rejectedTokenHint(where: Omit<TokenResolution, "token">): string
   return `To log in: ${LOGIN_HINT}`;
 }
 
-/** rejectedTokenHint for the token the last loadToken() call returned. */
-export function rejectedTokenHintForLastLoad(): string {
-  return rejectedTokenHint(lastLoaded);
+/**
+ * "Call verse8_logout …" for one project token file. Always names the
+ * project folder: without `projectDir` the tool looks in the MCP server's
+ * working folder, which need not be the folder this token file is in.
+ */
+export function logoutCallHint(projectTokenPath: string): string {
+  const projectDir = path.dirname(path.dirname(projectTokenPath));
+  return `Call verse8_logout with projectDir ${JSON.stringify(projectDir)} (without projectDir it only looks in the MCP server's working folder)`;
 }
 
 /**

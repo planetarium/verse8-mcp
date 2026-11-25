@@ -13,7 +13,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 - User says: "verse8 status" / "who am I on verse8" / "내 verse8 프로필"
 - User says: "verse8 logout"
 - User wants to switch to another Verse8 account → `verse8_logout`, then log in
-- Any Verse8 API call returns **401 Unauthorized** → call `verse8_status`: it reports where the rejected token came from (`tokenSource`) and what to do. Logging in again only helps when the source is `config`
+- Any Verse8 API call returns **401 Unauthorized** → call `verse8_status`: it reports where the rejected token came from (`tokenSource`) and what to do. Logging in again only helps when the source is `config`. `auth_check_unavailable` from `verse8_status` is not a rejection (the API could not be asked): retry, and do not log out or log in because of it
 
 ## Tools
 
@@ -21,7 +21,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 |--------|---------|-------|
 | Log in | `verse8_login_start` → `verse8_login_complete` | Split flow: start returns the URL/code immediately so you can show them to the user, then complete polls for the access token (default 120s, max 1800s). |
 | Who am I | `verse8_status` | Profile from `GET /v1/auth/verify`, which token is in use (`tokenSource`), plus this project's attachment state |
-| Log out / switch account | `verse8_logout` | Deletes the local token files. Tell the user the token is **not revoked**: Verse8 has no revocation API, so it stays valid on the server until it expires. `logout_incomplete` means a token is still in use (see below) or a token file is still on disk; its `hint` says what the user has to remove |
+| Log out / switch account | `verse8_logout` (`projectDir` when the project is not the MCP server's working folder) | Deletes the login token file and `<projectDir>/.verse8/token`. Without `projectDir` only the server's working folder is checked for a project token. Tell the user the token is **not revoked**: Verse8 has no revocation API, so it stays valid on the server until it expires. `logout_incomplete` means a token is still in use (see below) or a token file is still on disk; its `hint` says what the user has to remove |
 
 ## How login works
 
@@ -36,7 +36,7 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 verse8-mcp tools resolve the token in this order:
 
 1. `VERSE8_ACCESS_TOKEN` env var
-2. `<cwd>/.verse8/token` (project-scoped, gitignored) — skipped when it is a link, tracked by git, or cannot be checked (git failing or missing, file unreadable); `verse8_status` then shows `projectTokenRefused` with the reason
+2. `<cwd>/.verse8/token` (project-scoped; `verse8_attach` gitignores it and `verse8_checkpoint` never commits it) — skipped when it is a link, tracked by git, or cannot be checked (git failing or missing, file unreadable); `verse8_status` then shows `projectTokenRefused` with the reason
 3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token` (written by `verse8_login_complete`)
 
 A login only rewrites the third one. When a token is rejected, clear whatever outranks it first:
@@ -44,7 +44,7 @@ A login only rewrites the third one. When a token is rejected, clear whatever ou
 | `tokenSource.source` | What to do |
 |---|---|
 | `env` | The user removes `VERSE8_ACCESS_TOKEN` from the MCP server's env settings and restarts the server. No tool can unset it |
-| `project` | `verse8_logout` (deletes the project token file), then log in |
+| `project` | `verse8_logout` with `projectDir` set to the folder that holds `.verse8/token` (the folder above `tokenSource.path`'s `.verse8`), then log in. Without `projectDir` the call only looks in the MCP server's working folder, leaves this file in place and answers `logout_incomplete` |
 | `config` | Log in again |
 
 ## Environment overrides

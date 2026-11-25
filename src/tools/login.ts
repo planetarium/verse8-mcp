@@ -6,6 +6,9 @@ import {
   getConfigTokenPath,
   inspectProjectToken,
   refusedProjectTokenHint,
+  forgetProjectDirWithUsedToken,
+  listProjectDirsWithUsedToken,
+  logoutCallHint,
   resolveToken,
   type ProjectTokenRefusal,
   type TokenSource,
@@ -142,7 +145,7 @@ export async function runLoginComplete(
         inUse.source === "env"
           ? "The new login is saved but NOT in use: the VERSE8_ACCESS_TOKEN environment variable is used before any token file. Ask the user to remove it from the MCP server's env settings and restart the server."
           : inUse.source === "project"
-            ? `The new login is saved but NOT in use: the project token file ${inUse.path} is used before it. Call verse8_logout to delete it, then log in again.`
+            ? `The new login is saved but NOT in use: the project token file ${inUse.path} is used before it. ${logoutCallHint(inUse.path ?? "")} to delete it (this also deletes the login just saved), then log in again.`
             : undefined;
       return {
         ok: true,
@@ -237,6 +240,8 @@ export interface LogoutOk {
   /** Token sources this call left in place, none of which can supply a token. */
   left: LogoutLeft[];
   serverSide: string;
+  /** The project folder whose `.verse8/token` this call handled. */
+  projectDir: string;
   next: string;
 }
 
@@ -249,6 +254,8 @@ export interface LogoutError {
   removed: LogoutEntry[];
   left: LogoutLeft[];
   serverSide: string;
+  /** The project folder whose `.verse8/token` this call handled. */
+  projectDir: string;
 }
 
 /**
@@ -300,6 +307,7 @@ export async function runLogout(
   if (project.state === "usable") {
     const kept = removeTokenFile({ source: "project", path: project.path }, removed, left);
     if (kept) stillThere.push(kept);
+    else forgetProjectDirWithUsedToken(projectDir);
   } else if (project.state === "refused") {
     // Not deleted: behind a linked `.verse8` the file is outside the
     // project, and deleting a tracked file would dirty the repository.
@@ -310,6 +318,30 @@ export async function runLogout(
     };
     left.push(kept);
     if (UNVERIFIED_REFUSALS.has(project.reason)) stillThere.push(kept);
+  }
+
+  // Token files in other project folders this server has been using. This
+  // call was not asked to delete them, but saying "logged out" while tools
+  // called with that projectDir still find a token would be wrong — and it
+  // is exactly what happens when a hint's verse8_logout is called without
+  // the projectDir the token file is in.
+  const elsewhere: LogoutLeft[] = [];
+  for (const dir of listProjectDirsWithUsedToken()) {
+    if (path.resolve(dir) === path.resolve(projectDir)) continue;
+    const other = inspectProjectToken(dir);
+    const live =
+      other.state === "usable" || (other.state === "refused" && UNVERIFIED_REFUSALS.has(other.reason));
+    if (!live) {
+      forgetProjectDirWithUsedToken(dir);
+      continue;
+    }
+    const kept: LogoutLeft = {
+      source: "project",
+      path: other.path,
+      reason: `not deleted: this call handled projectDir ${JSON.stringify(projectDir)} only, and this server has used this token file for projectDir ${JSON.stringify(dir)}`,
+    };
+    left.push(kept);
+    elsewhere.push(kept);
   }
 
   const envToken = process.env.VERSE8_ACCESS_TOKEN;
@@ -329,6 +361,7 @@ export async function runLogout(
     error: "logout_incomplete",
     hint,
     tokenSource,
+    projectDir,
     removed,
     left,
     serverSide: NOT_REVOKED,
@@ -355,12 +388,20 @@ export async function runLogout(
       `Logout is not complete: ${kept.path} is still on disk (${kept.reason}). It is not in use right now but may be used again later. Ask the user to delete that file.`,
     );
   }
+  if (elsewhere.length > 0 && elsewhere[0].path) {
+    const kept = elsewhere[0];
+    return incomplete(
+      { source: kept.source, path: kept.path },
+      `Logout is not complete: tools called with another projectDir still find the project token file ${kept.path}. ${logoutCallHint(elsewhere[0].path)} to delete it too.`,
+    );
+  }
 
   return {
     ok: true,
+    projectDir,
     removed,
     left,
     serverSide: NOT_REVOKED,
-    next: "verse8_status now answers not_logged_in. To switch accounts, call verse8_login_start and have the user approve in a browser signed in to the other Verse8 account.",
+    next: `verse8_status now answers not_logged_in. Only this project folder was checked for a project token file: ${projectDir} — a project in another folder needs verse8_logout with its projectDir. To switch accounts, call verse8_login_start and have the user approve in a browser signed in to the other Verse8 account.`,
   };
 }
