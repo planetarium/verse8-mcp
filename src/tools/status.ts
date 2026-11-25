@@ -132,7 +132,9 @@ function detectStalePreview(projectDir: string): ProjectStatus["stalePreviewWarn
   const dirty = workingTreeDirtyCount(projectDir);
   if (dirty === 0) return undefined;
   for (const port of PREVIEW_PORTS) {
-    if (probePortSync(port, "127.0.0.1")) {
+    // Probe both loopbacks: a dev server may bind only ::1 when `localhost`
+    // resolves to IPv6 first (same reasoning as verse8_preview's port check).
+    if (probePortSync(port, "127.0.0.1") || probePortSync(port, "::1")) {
       return {
         port,
         uncommittedFiles: dirty,
