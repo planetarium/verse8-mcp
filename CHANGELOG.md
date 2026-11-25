@@ -5,6 +5,28 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), versioning
 follows [SemVer](https://semver.org/) — pre-1.0 minor bumps may include
 breaking changes when clearly documented.
 
+## [Unreleased]
+
+### Changed — starting a VX sale or repricing an item on sale needs your own confirmation (#64)
+
+Every changing action now has one of three run conditions, kept in one
+table: immediate (reads, local-only changes), preview (the `planId` of its
+own preview, as before), and user confirmation. A user-confirmation action
+checks the `planId` and then asks you in the host's own prompt (MCP
+elicitation): one line with the target, the price or changed values and
+whether it can be undone, choices `Cancel` (first) and `Run`. Only `Run`
+runs it; anything else returns `user_cancelled`. A host that does not
+declare elicitation gets `confirm_unavailable` and the web address to do the
+same. An action missing from the table does not run (`op_not_classified`).
+
+In `verse8_vxshop` this applies to creating an item on sale, turning the
+on-sale flag on, restoring an archived item whose on-sale flag is set, and
+changing the price of an item on sale. Previews carry `runCondition` and,
+for these, the `confirmation` text. Editing an item is now also refused
+with `plan_mismatch` when its name, price or on-sale flag changed since the
+preview. A host hook that auto-accepts elicitations is indistinguishable
+from you choosing `Run` (see the README).
+
 ## [0.10.0] — 2026-11-23
 
 ### Added — open an existing Verse8 game (#32, #51)

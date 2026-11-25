@@ -2,7 +2,7 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type ConfirmHost, type OpFail, type Plan } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
@@ -10,6 +10,9 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * `verse8_vxshop` — the creator page's VX Shop tab: seller status, item
  * list, create / edit items. Changing actions preview by default and run
  * only with the planId their preview returned (creatorOps plan gate).
+ * Starting a sale (create on sale, turn the on-sale flag on, restore an
+ * on-sale item) and changing the price of an item on sale also need the
+ * user's own confirmation in the host's prompt (creatorOps RUN_RULES).
  *
  * Backend traps this tool closes (g2-sync vxShop.service.ts):
  *  - an update without `purchaseConstraints` DELETES the item's purchase
@@ -151,7 +154,7 @@ export async function findItem(verseId: string, token: string, itemId: number): 
 const NOT_SELLER =
   "This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false). The web creator page hides the VX Shop until a Verse8 admin approves the seller; items would not be sold. Ask Verse8 for seller approval first.";
 
-export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd()): Promise<VxShopResult> {
+export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd(), host?: ConfirmHost): Promise<VxShopResult> {
   const ctx = resolveVerseContext(input, serverCwd);
   if (!ctx.ok) return ctx as OpFail;
   try {
@@ -176,15 +179,15 @@ export async function runVxShop(input: VxShopInput, serverCwd: string = process.
     }
     if (input.action === "sales") return await runSales(input, ctx.verseId, ctx.token);
     if (input.action === "revenue") return await runRevenue(input, ctx.verseId, ctx.token);
-    if (input.action === "archive") return await runArchive(input, ctx.verseId, ctx.token);
+    if (input.action === "archive") return await runArchive(input, ctx.verseId, ctx.token, host);
     if (input.action === "dispute") return await runDispute(input, ctx.verseId, ctx.token);
-    return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token);
+    return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token, host);
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
   }
 }
 
-async function runUpsert(input: VxShopInput, projectDir: string, verseId: string, token: string): Promise<VxShopResult> {
+async function runUpsert(input: VxShopInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VxShopResult> {
   if (input.imagePath && input.imageUrl) return opFail("invalid_input", "Pass either imagePath or imageUrl, not both.");
   if (input.purchaseConstraints && input.clearPurchaseConstraints) {
     return opFail("invalid_input", "Pass either purchaseConstraints or clearPurchaseConstraints, not both.");
@@ -239,7 +242,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       body,
       files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
     };
-    const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings });
+    const gate = await planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings }, host);
     if (!isApproved(gate)) return gate;
     if (input.imagePath) {
       const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
@@ -285,8 +288,16 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (input.clearPurchaseConstraints && parsed.purchaseConstraints) warnings.push("All purchase limits are removed.");
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
   // The current value of every field asked about; the limits and the
-  // archived flag are always read (re-sent / warned about).
-  const state: Record<string, unknown> = { purchaseConstraints: parsed.purchaseConstraints, isArchived: cur.isArchived };
+  // archived flag are always read (re-sent / warned about), and so are the
+  // name, price and on-sale flag: they decide whether the user is asked to
+  // confirm and are what that prompt shows (creatorOps RUN_RULES).
+  const state: Record<string, unknown> = {
+    purchaseConstraints: parsed.purchaseConstraints,
+    isArchived: cur.isArchived,
+    name: cur.name,
+    price: cur.price,
+    isActive: cur.isActive,
+  };
   const asked: Array<[string, unknown, unknown]> = [
     ["name", input.name, cur.name],
     ["price", input.price, cur.price],
@@ -304,7 +315,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     state,
     files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
   };
-  const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings });
+  const gate = await planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings }, host);
   if (!isApproved(gate)) return gate;
   if (input.imagePath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
@@ -368,7 +379,7 @@ async function runRevenue(input: VxShopInput, verseId: string, token: string): P
   return { ok: true, action: "revenue", verseId, stage: input.stage ?? "PROD", ...(r.data ?? {}) };
 }
 
-async function runArchive(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+async function runArchive(input: VxShopInput, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VxShopResult> {
   if (input.itemId === undefined) return opFail("invalid_input", "archive needs itemId (see action list).");
   const found = await findItem(verseId, token, input.itemId);
   if (!found.ok) return found;
@@ -382,7 +393,8 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
     op: "verse8_vxshop.archive",
     target: { verseId, itemId: cur.id },
     body,
-    state: { isArchived: cur.isArchived, isActive: cur.isActive },
+    // name and price are what the confirmation of a restore-to-sale shows.
+    state: { isArchived: cur.isArchived, isActive: cur.isActive, name: cur.name, price: cur.price },
   };
   if (cur.isArchived === want) {
     // A preview never hands out a planId for this state, so a given one is stale.
@@ -393,14 +405,14 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
   const warnings = want
     ? ["Archived items are not sold and are hidden from buyers; restore brings them back. Its productId stays reserved."]
     : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`];
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "archive" as const,
     verseId,
     itemId: cur.id,
     changes: [{ field: "isArchived", from: cur.isArchived, to: want }],
     body,
     warnings,
-  });
+  }, host);
   if (!isApproved(gate)) return gate;
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
@@ -446,7 +458,7 @@ async function runDispute(input: VxShopInput, verseId: string, token: string): P
       disputeResponseMessage: sale.disputeResponseMessage ?? null,
     },
   };
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "dispute" as const,
     verseId,
     sale,

@@ -101,11 +101,29 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_gameserver` | Read-only view of the game server, prod or preview: status (v1/v2, players, rooms), `$collection` data (paged, equality search), user / asset / global state, recent errors and live logs (v2). Uses the gateway's developer API (`/v1/verses/:verse/*`, owner only). | Logged in, verse owner |
 | `verse8_deploy_status` | Read-only: the published commit and time (from the live playUrl), title / visibility / review status, latest release note, how local HEAD relates to the published commit, prod / preview game server state. | Logged in |
 | `verse8_verse` | Creator-page operations without a rebuild: read the listing / your games / release notes / analytics (DAU, MAU, sessions, charts); edit title, texts, tags, cover, preview video, remix / mobile / orientation, visibility, and existing release notes; list, pin and delete comments. Changes preview first and run only with the preview's `planId`, refused if the arguments or the live values changed since; the current visibility is always kept. | Logged in, verse owner |
-| `verse8_vxshop` | VX Shop items: seller status and item list (with purchase limits), sales and revenue; create (hidden by default), edit, archive / restore an item, answer disputes — preview first, then the preview's `planId` to apply (refused if the item changed since); edits keep the current purchase limits. Item images upload to the `vx-shop` category. | Logged in, verse owner, approved seller |
+| `verse8_vxshop` | VX Shop items: seller status and item list (with purchase limits), sales and revenue; create (hidden by default), edit, archive / restore an item, answer disputes — preview first, then the preview's `planId` to apply (refused if the item changed since); starting a sale or repricing an item on sale also asks you in the host's own prompt ([below](#actions-you-confirm-yourself)); edits keep the current purchase limits. Item images upload to the `vx-shop` category. | Logged in, verse owner, approved seller |
 | `verse8_deploy` | Publish: checkpoint → media upload → `bun run build --base ./` (+ gameserver build) → `@agent8/deploy --prod` → `POST /v1/verse/create` (first) or `/v1/verse/update/:id` (update). `dryRun: true` previews the mode + publish body. | Logged in |
 | `image_*`, `music_generate`, `sfx_generate`, `spritesheet_*`, `skybox_*`, `claythis_3d_*`, `cinematic_*`, `crossramp_*`, `ui_theme_*` | Upstream asset-generation proxies. | Logged in |
 
 Resources: `verse8://skill/<name>/SKILL.md`.
+
+### Actions you confirm yourself
+
+On the web a person presses the button and reads the warning. Here an agent calls the tool, so what an action needs before it runs depends on what it does:
+
+| Run condition | Actions | What it takes |
+|---|---|---|
+| Immediate | Reads, and changes to local files only | Nothing |
+| Preview | Changes that can be undone and cost nothing | The `planId` of the action's own preview — it does not run without a preview, or if anything changed since |
+| User confirmation | Changes that cost money, change what is public, affect other people, or are hard to undo | The `planId`, then your own answer in a prompt the host shows in the terminal |
+
+Today the user-confirmation actions are in `verse8_vxshop`: starting a sale (creating an item on sale, turning an item's on-sale flag on, restoring an archived item whose on-sale flag is set) and changing the price of an item that is on sale.
+
+The prompt is an MCP elicitation. It is one line with the target, the price or the values that change, and whether it can be undone; the choices are `Cancel` (first) and `Run`. Your answer goes from the host straight to the MCP server, not through the agent. Only `Run` runs the action — declining, pressing Esc or anything else returns `user_cancelled` and changes nothing.
+
+- **Hosts without elicitation.** A host that does not declare the elicitation capability when it connects cannot show the prompt: the action returns `confirm_unavailable`, changes nothing, and says where to do the same on the web (the game's creator page). Non-interactive runs (`claude -p`, the Agent SDK) cancel the prompt by themselves and get `user_cancelled`.
+- **Hooks that answer for you.** If you configure your host to answer elicitations automatically — for example a Claude Code `Elicitation` hook that returns `accept` — the server receives the same answer as if you had chosen `Run` and cannot tell the two apart. Do not auto-accept prompts from this server unless you mean every such action to run unasked.
+- **Timeouts.** The tool call waits for your answer for up to 10 minutes; a host tool timeout shorter than that ends the call first (nothing runs).
 
 ---
 

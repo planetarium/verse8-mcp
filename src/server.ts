@@ -27,6 +27,7 @@ import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
+import type { ConfirmHost } from "./tools/creatorOps.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -209,7 +210,7 @@ export const VERSE_OPS_TOOL: Tool = {
 export const VXSHOP_TOOL: Tool = {
   name: "verse8_vxshop",
   description:
-    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. sales: purchases and disputes. revenue: VX totals / refunds for a period. archive: archive / restore an item. dispute: answer a buyer dispute (the buyer is notified; no refund). upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert, archive and dispute PREVIEW by default (`changes` / `body` and a `planId`) and change nothing — price and on-sale changes affect real purchases, so show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
+    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. sales: purchases and disputes. revenue: VX totals / refunds for a period. archive: archive / restore an item. dispute: answer a buyer dispute (the buyer is notified; no refund). upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert, archive and dispute PREVIEW by default (`changes` / `body` and a `planId`) and change nothing — price and on-sale changes affect real purchases, so show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. Starting a sale (isActive true, or restoring an on-sale item) and repricing an item on sale (preview says `runCondition: user_confirm`) also open the host's own confirmation prompt when called with the planId, and run only if the user chooses Run there; `user_cancelled` / `confirm_unavailable` mean nothing changed — relay the hint, do not retry. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
   inputSchema: zodToJsonSchema(vxShopInputSchema),
 };
 
@@ -236,6 +237,13 @@ function jsonContent(value: unknown): { type: "text"; text: string }[] {
   return [{ type: "text", text: JSON.stringify(value, null, 2) }];
 }
 
+/**
+ * How long a confirmation prompt may stay open. The SDK's default request
+ * timeout (60 s) is shorter than a person reading a price; past this the
+ * request fails and nothing runs.
+ */
+const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function createServer(): Server {
   const server = new Server(SERVER_INFO, {
     capabilities: {
@@ -260,6 +268,17 @@ export function createServer(): Server {
     Promise.resolve(server.sendToolListChanged()).catch(() => {
       /* best-effort; client will refresh on next tools/list anyway */
     });
+  };
+
+  // The user confirmation of the plan gate (creatorOps RUN_RULES): the
+  // prompt is an MCP elicitation the host shows in its own UI, and the
+  // answer comes back on this connection, not through the agent. A host
+  // that did not declare elicitation at initialize cannot be asked.
+  const confirmHost: ConfirmHost = {
+    get canAsk() {
+      return server.getClientCapabilities()?.elicitation !== undefined;
+    },
+    ask: (message, requestedSchema) => server.elicitInput({ message, requestedSchema }, { timeout: CONFIRM_TIMEOUT_MS }),
   };
 
   // tools/list — re-evaluate token every call so project-scoped tools
@@ -457,7 +476,7 @@ export function createServer(): Server {
       if (name === "verse8_vxshop") {
         const parsed = vxShopInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runVxShop(parsed, cwd), { projectDir: pd });
+        const result = await dispatchTool(name, () => runVxShop(parsed, cwd, confirmHost), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

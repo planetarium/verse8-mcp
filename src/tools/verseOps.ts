@@ -286,7 +286,7 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
       ...(input.videoPath ? { videoPath: mediaPath(projectDir, input.videoPath) } : {}),
     },
   };
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "update" as const,
     verseId,
     changes,
@@ -394,7 +394,7 @@ async function runReleaseNoteUpdate(input: VerseOpsInput, projectDir: string, ve
     state,
     files: input.releaseNoteImagePath ? { releaseNoteImagePath: mediaPath(projectDir, input.releaseNoteImagePath) } : {},
   };
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "release_note_update" as const,
     verseId,
     releaseNote: { id: note.id, buildVersion: note.buildVersion },
@@ -560,7 +560,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
       body: null,
       state: { content: c.content, pinned: isPinned },
     };
-    const gate = planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
+    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
     if (!isApproved(gate)) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);
@@ -589,7 +589,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
         "The commenter is notified that you pinned it.",
       ]
     : [];
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "comment_pin" as const,
     verseId,
     comment: shown,

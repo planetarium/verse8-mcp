@@ -107,6 +107,10 @@ export const ERROR_CODES = [
   "not_seller",
   "product_id_taken",
   "plan_mismatch",
+  // User confirmation of a changing action (creatorOps RUN_RULES)
+  "confirm_unavailable",
+  "user_cancelled",
+  "op_not_classified",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
