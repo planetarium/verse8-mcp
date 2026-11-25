@@ -24,10 +24,15 @@ same. An action missing from the table does not run (`op_not_classified`).
 
 In `verse8_vxshop` this applies to creating an item on sale, turning the
 on-sale flag on, restoring an archived item whose on-sale flag is set, and
-changing the price of an item on sale. Previews carry `runCondition` and,
-for these, the `confirmation` text. Editing an item is now also refused
+changing the price of an item on sale. In `verse8_verse` it applies to an
+`update` that widens who can see the game (Private → Unlisted or Public,
+Unlisted → Public); narrowing it stays a preview. The prompt shows the
+game's title and `Visibility: current → new`. Previews carry `runCondition`
+and, for these, the `confirmation` text. Editing an item is now also refused
 with `plan_mismatch` when its name, price or on-sale flag changed since the
-preview. A host hook that auto-accepts elicitations is indistinguishable
+preview, and a visibility change when the game's title did. The refusal for
+hosts that cannot ask points to the game's own creator page
+(`<create host>/creations/<verseId>`) and names the tab. A host hook that auto-accepts elicitations is indistinguishable
 from you choosing `Run` (see the README).
 
 ## [0.10.0] — 2026-11-23

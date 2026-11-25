@@ -4,7 +4,7 @@ import { loadToken } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
 import { LOGIN_HINT } from "../util/hints.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type ConfirmHost, type OpFail, type Plan } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -15,7 +15,9 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * tags, cover, preview video, flags), read and edit release notes.
  *
  * Changing actions preview by default and only call the API with the
- * planId their preview returned (creatorOps plan gate). Every listing
+ * planId their preview returned (creatorOps plan gate). An update that
+ * widens the visibility also needs the user's own confirmation in the
+ * host's prompt (creatorOps RUN_RULES). Every listing
  * update re-sends the current `visibility`:
  * the backend's update DTO defaults `isPublic` to true, so a body without
  * `visibility` would make a Private / Unlisted game Public
@@ -125,7 +127,7 @@ async function loadOwnedVerse(verseId: string, token: string): Promise<{ ok: tru
   return { ok: true, verse: r.data };
 }
 
-export async function runVerseOps(input: VerseOpsInput, serverCwd: string = process.cwd()): Promise<VerseOpsResult> {
+export async function runVerseOps(input: VerseOpsInput, serverCwd: string = process.cwd(), host?: ConfirmHost): Promise<VerseOpsResult> {
   const ctx = resolveVerseContext(input, serverCwd);
   if (!ctx.ok && !(input.action === "mine" && ctx.error === "missing_verse_env")) return ctx as OpFail;
   try {
@@ -172,7 +174,7 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
       }
       case "update":
         if (!ctx.ok) return ctx as OpFail;
-        return await runUpdate(input, ctx.projectDir, ctx.verseId, ctx.token);
+        return await runUpdate(input, ctx.projectDir, ctx.verseId, ctx.token, host);
       case "release_notes": {
         if (!ctx.ok) return ctx as OpFail;
         const r = await v8Request<Record<string, unknown>>("GET", `/v1/verse/${encodeURIComponent(ctx.verseId)}/release-notes`, {
@@ -216,7 +218,7 @@ export async function runVerseOps(input: VerseOpsInput, serverCwd: string = proc
   }
 }
 
-async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string): Promise<VerseOpsResult> {
+async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VerseOpsResult> {
   if (input.thumbnailPath && input.imageUrl) return opFail("invalid_input", "Pass either thumbnailPath or imageUrl, not both.");
   if ([input.videoPath, input.videoUrl, input.clearVideo ? "x" : undefined].filter(Boolean).length > 1) {
     return opFail("invalid_input", "Pass only one of videoPath, videoUrl, clearVideo.");
@@ -263,8 +265,10 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   for (const c of changes) body[c.field] = c.to;
 
   // The current value of every field asked about, and of what is always re-sent.
+  // A visibility change also reads the title: the user confirmation of a
+  // widening one shows it (creatorOps RUN_RULES).
   const asked: Array<[string, unknown, unknown]> = [
-    ["title", input.title, cur.title],
+    ["title", input.title ?? input.visibility, cur.title],
     ["shortDescription", input.shortDescription, cur.shortDescription],
     ["description", input.description, cur.description],
     ["tag", input.tags ?? input.visibility, cur.tag ?? []],
@@ -293,7 +297,7 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     ...(vis ? {} : { keptVisibility: cur.visibility }),
     warnings,
     publishBody: body,
-  });
+  }, host);
   if (!isApproved(gate)) return gate;
 
   if (input.thumbnailPath) {

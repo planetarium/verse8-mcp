@@ -203,7 +203,7 @@ export const DEPLOY_STATUS_TOOL: Tool = {
 export const VERSE_OPS_TOOL: Tool = {
   name: "verse8_verse",
   description:
-    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history), analytics (DAU / MAU / sessions summary and charts). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags, visibility; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Comments: comments (list), comment_pin (pin / unpin), comment_delete (irreversible). Changing actions PREVIEW by default: they return `changes` and a `planId` and change nothing. Show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. update keeps the current visibility unless `visibility` is given (making a Private game visible can start a review that keeps it hidden) and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
+    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history), analytics (DAU / MAU / sessions summary and charts). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags, visibility; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Comments: comments (list), comment_pin (pin / unpin), comment_delete (irreversible). Changing actions PREVIEW by default: they return `changes` and a `planId` and change nothing. Show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. An update that widens visibility (Private → Unlisted / Public, Unlisted → Public; preview says `runCondition: user_confirm`) also opens the host's own confirmation prompt when called with the planId and runs only if the user chooses Run there; `user_cancelled` / `confirm_unavailable` mean nothing changed — relay the hint, do not retry. update keeps the current visibility unless `visibility` is given (making a Private game visible can start a review that keeps it hidden) and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
   inputSchema: zodToJsonSchema(verseOpsInputSchema),
 };
 
@@ -473,7 +473,7 @@ export function createServer(): Server {
       if (name === "verse8_verse") {
         const parsed = verseOpsInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd), { projectDir: pd });
+        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

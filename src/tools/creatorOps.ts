@@ -233,7 +233,7 @@ export interface RunRule {
   /** Required for a rule that can answer user_confirm. */
   confirm?: (p: Plan) => ConfirmText;
   /** Where the same thing is done on the web, for hosts that cannot ask. */
-  portal?: () => string;
+  portal?: (p: Plan) => string;
 }
 
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -250,7 +250,53 @@ function shown(v: unknown): string {
 }
 /** Create-body fields the prompt already names in its own words (or that only repeat the target). */
 const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", "isActive", "purchaseConstraints"]);
-const vxShopPortal = (): string => `the game's creator page, VX Shop tab (${getCreateBaseUrl()}/creator)`;
+// The web pages a refusal points to. Addresses as the portal serves them
+// (verse8-vibe: the creator host rewrites `/creations/<id>` to the per-game
+// creator page, which looks the game up by the same id this server uses;
+// its tabs are General / Analytics / Server / VX Shop and carry no address
+// of their own, so the tab is named in words).
+const creatorPage = (p: Plan): string => `${getCreateBaseUrl()}/creations/${encodeURIComponent(String(p.target.verseId ?? ""))}`;
+const vxShopPortal = (p: Plan): string => `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab)`;
+const visibilityPortal = (p: Plan): string => `the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
+
+// Who can see a game, narrowest first. A change is widening when it moves
+// to a later entry; a value this list does not know is treated as widening.
+const VISIBILITY_ORDER = ["Private", "Unlisted", "Public"];
+const VISIBILITY_MEANS: Record<string, string> = {
+  Private: "only you can open it",
+  Unlisted: "anyone with the link can play, not listed",
+  Public: "listed on Verse8 for everyone",
+};
+function widensVisibility(p: Plan): boolean {
+  const from = rec(p.state).visibility;
+  const to = rec(p.body).visibility;
+  if (to === undefined || to === from) return false;
+  const a = VISIBILITY_ORDER.indexOf(String(from));
+  const b = VISIBILITY_ORDER.indexOf(String(to));
+  return a < 0 || b < 0 || b > a;
+}
+const userTags = (v: unknown): unknown => (Array.isArray(v) ? v.filter((t) => !(typeof t === "string" && t.startsWith("__"))) : v);
+function visibilityConfirm(p: Plan): ConfirmText {
+  const body = rec(p.body);
+  const state = rec(p.state);
+  const from = String(state.visibility);
+  const to = String(body.visibility);
+  const review = from === "Private" && Array.isArray(state.tag) && state.tag.includes("__review_required");
+  // Everything else the same request changes, with its current and new value.
+  const also = Object.keys(body)
+    .filter((k) => k !== "visibility" && k !== "sendNotificationToFollowers")
+    .sort()
+    .map((k) => `${k}: ${shown(k === "tag" ? userTags(state[k]) : state[k])} → ${shown(body[k])}`);
+  return {
+    question: "Make this game visible to more people?",
+    target: `Game: ${shown(state.title)} (verse ${p.target.verseId})`,
+    change:
+      `Visibility: ${from} → ${to} (${VISIBILITY_MEANS[to] ?? "more people can see it"})` +
+      (review ? "; this starts a Verse8 review and the game may stay hidden until it passes" : "") +
+      (also.length > 0 ? `; also changes ${also.join("; ")}` : ""),
+    undo: `Undo: you can set it back to ${from}; people who opened or saw it meanwhile have seen it`,
+  };
+}
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
 
 /** An edit starts a sale when it turns isActive on; it reprices a live item when the price changes on one that is on sale and stays so. */
@@ -295,7 +341,13 @@ function vxEditConfirm(p: Plan): ConfirmText {
 }
 
 export const RUN_RULES: Readonly<Record<string, RunRule>> = {
-  "verse8_verse.update": { condition: "preview" },
+  // Widening who can see the game (Private → Unlisted / Public, Unlisted →
+  // Public) asks the user; narrowing it and every other edit is a preview.
+  "verse8_verse.update": {
+    condition: (p) => (widensVisibility(p) ? "user_confirm" : "preview"),
+    confirm: visibilityConfirm,
+    portal: visibilityPortal,
+  },
   "verse8_verse.release_note_update": { condition: "preview" },
   "verse8_verse.comment_pin": { condition: "preview" },
   "verse8_verse.comment_delete": { condition: "preview" },
@@ -402,7 +454,7 @@ export function confirmMessage(p: Plan): string | null {
 }
 
 function portalOf(p: Plan): string {
-  const where = RUN_RULES[p.op]?.portal?.() ?? `the Verse8 web (${getCreateBaseUrl()})`;
+  const where = RUN_RULES[p.op]?.portal?.(p) ?? `the Verse8 web (${getCreateBaseUrl()})`;
   return `To do it anyway, the user can do the same on ${where}.`;
 }
 

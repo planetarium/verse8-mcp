@@ -20,6 +20,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { CONFIRM_SCHEMA, RUN_RULES, confirmMessage, planGate, planId, runConditionOf } from "../../dist/tools/creatorOps.js";
+import { runVerseOps, verseOpsInputSchema } from "../../dist/tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "../../dist/tools/vxShop.js";
 import { createServer } from "../../dist/server.js";
 
@@ -52,12 +53,15 @@ const makeItems = () => [
 
 async function withShop(f) {
   const items = makeItems();
+  const verse = { verseId: VERSE, verseShortId: "abc", isOwner: true, title: "Old title", description: "d", tag: ["RPG"], visibility: "Private", allowRemix: false };
   const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN };
   const calls = [];
   globalThis.fetch = async (u, init = {}) => {
     const { pathname } = new URL(u);
     const method = init.method ?? "GET";
     calls.push({ method, path: pathname });
+    if (pathname === "/v1/verse/verseId") return json(200, verse);
+    if (method === "POST" && pathname === `/v1/verse/update/${VERSE}`) return json(201, { ...verse, ...JSON.parse(init.body) });
     if (method === "GET" && pathname === "/v1/vx-wallet") return json(200, { isSeller: true, balance: 0 });
     if (method === "GET" && pathname === "/v1/vx-shop-items") return json(200, { items, total: items.length });
     if (method === "GET" && pathname === "/v1/vx-shop-items/check-product-id") return json(200, { available: true });
@@ -69,7 +73,7 @@ async function withShop(f) {
   };
   process.env.VERSE8_ACCESS_TOKEN = "tok";
   try {
-    return await f(calls, items);
+    return await f(calls, items, verse);
   } finally {
     globalThis.fetch = saved.fetch;
     if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
@@ -77,7 +81,14 @@ async function withShop(f) {
   }
 }
 
-const run = (dir, input, host) => runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
+const run = (dir, input, host) =>
+  input.action === "update"
+    ? runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...input }), dir, host)
+    : runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
+// Where a refusal sends the user: the per-game creator page on the create host, and the tab.
+const PAGE = `https://create[.]verse8[.]io/creations/${VERSE}`;
+const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab[)]`);
+const GAME_PORTAL = new RegExp(`General tab: ${PAGE} [(]the "Visibility" select[)]`);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
 /** A host that can ask and answers with `answer` (a value, or a function that may throw). */
@@ -121,6 +132,18 @@ const CONFIRMED = [
     name: "restore an archived item whose on-sale flag is set",
     input: { action: "archive", itemId: 9, archived: false },
     shows: [/Item 9/, /300 VX/, new RegExp(VERSE), /back on sale/],
+  },
+  {
+    name: "game: Private → Public",
+    input: { action: "update", visibility: "Public" },
+    shows: [/Make this game visible to more people\?/, /Game: "Old title"/, new RegExp(VERSE), /Visibility: Private → Public \(listed on Verse8 for everyone\)/, /set it back to Private/],
+    portal: GAME_PORTAL,
+  },
+  {
+    name: "game: Private → Unlisted, renaming it",
+    input: { action: "update", visibility: "Unlisted", title: "New title" },
+    shows: [/Game: "Old title"/, /Visibility: Private → Unlisted \(anyone with the link can play, not listed\)/, /also changes title: "Old title" → "New title"/],
+    portal: GAME_PORTAL,
   },
 ];
 
@@ -181,7 +204,7 @@ for (const k of CONFIRMED) {
         assert.equal(r.ok, false);
         assert.equal(r.error, "user_cancelled", JSON.stringify(r));
         assert.match(r.hint, /Nothing was changed/);
-        assert.match(r.hint, /\/creator/, "says where to do it on the web");
+        assert.match(r.hint, k.portal ?? SHOP_PORTAL, "says where to do it on the web");
         assert.equal(host.asked.length, 1);
         assert.deepEqual(writes(calls), []);
       });
@@ -197,7 +220,7 @@ for (const k of CONFIRMED) {
         const r = await run(dir, { ...k.input, planId: pre.planId }, host);
         assert.equal(r.error, "confirm_unavailable", JSON.stringify(r));
         assert.match(r.hint, /Nothing was changed/);
-        assert.match(r.hint, /https:\/\/create\.verse8\.io\/creator/);
+        assert.match(r.hint, k.portal ?? SHOP_PORTAL);
         assert.equal(r.confirmation, pre.confirmation);
       }
       assert.equal(mute.asked.length, 0, "a host that cannot ask is not asked");
@@ -397,6 +420,88 @@ test("the form: one required choice, Cancel first, Run second", () => {
   assert.deepEqual(CONFIRM_SCHEMA.required, ["choice"]);
 });
 
+// ── game visibility: only a widening change asks ──
+
+/** [current, new, asks the user]. */
+const VISIBILITY_MOVES = [
+  ["Private", "Unlisted", true],
+  ["Private", "Public", true],
+  ["Unlisted", "Public", true],
+  ["Public", "Unlisted", false],
+  ["Public", "Private", false],
+  ["Unlisted", "Private", false],
+];
+for (const [from, to, asks] of VISIBILITY_MOVES) {
+  test(`game visibility ${from} → ${to}: ${asks ? "user_confirm — declined → no write, Run → one write" : "preview-level, runs with the planId alone"}`, async () => {
+    const dir = project();
+    await withShop(async (calls, _items, verse) => {
+      verse.visibility = from;
+      const input = { action: "update", visibility: to };
+      const host = hostThat({ action: "decline" });
+      const pre = await run(dir, input, host);
+      assert.equal(pre.runCondition, asks ? "user_confirm" : "preview", JSON.stringify(pre));
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      if (!asks) {
+        assert.equal(pre.confirmation, undefined);
+        assert.equal(r.ok, true, JSON.stringify(r));
+        assert.equal(host.asked.length, 0);
+        assert.equal(writes(calls).length, 1);
+        return;
+      }
+      assert.match(pre.confirmation, new RegExp(`Game: "Old title" .*Visibility: ${from} → ${to} `));
+      assert.equal(r.error, "user_cancelled", JSON.stringify(r));
+      assert.deepEqual(writes(calls), []);
+      const done = await run(dir, { ...input, planId: pre.planId }, hostThat(RUN));
+      assert.equal(done.ok, true, JSON.stringify(done));
+      assert.equal(writes(calls).length, 1);
+    });
+  });
+}
+
+test("game update that keeps the visibility (title only, on a Public game) is preview-level", async () => {
+  const dir = project();
+  await withShop(async (calls, _items, verse) => {
+    verse.visibility = "Public";
+    const pre = await run(dir, { action: "update", title: "New title" });
+    assert.equal(pre.runCondition, "preview");
+    assert.equal((await run(dir, { action: "update", title: "New title", planId: pre.planId })).ok, true);
+    assert.equal(writes(calls).length, 1);
+  });
+});
+
+test("game visibility: the title is bound — renamed on the web after the preview → plan_mismatch before anyone is asked", async () => {
+  const dir = project();
+  await withShop(async (calls, _items, verse) => {
+    const host = hostThat(RUN);
+    const pre = await run(dir, { action: "update", visibility: "Public" }, host);
+    verse.title = "Renamed on the web";
+    const r = await run(dir, { action: "update", visibility: "Public", planId: pre.planId }, host);
+    assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+    assert.ok(r.changed.some((c) => c.part === "state.title"));
+    assert.equal(host.asked.length, 0);
+    assert.deepEqual(writes(calls), []);
+  });
+});
+
+test("game visibility: the prompt says when going visible starts a review; system tags are not shown as a tag change", async () => {
+  const dir = project();
+  await withShop(async (_calls, _items, verse) => {
+    verse.tag = ["RPG", "__review_required"];
+    const pre = await run(dir, { action: "update", visibility: "Public", tags: ["RPG", "Arcade"] });
+    assert.match(pre.confirmation, /starts a Verse8 review/);
+    assert.match(pre.confirmation, /also changes tag: \["RPG"\] → \["RPG","Arcade"\]/);
+    assert.doesNotMatch(pre.confirmation, /__review_required/);
+  });
+});
+
+test("game visibility: a value the order does not know counts as widening", () => {
+  const plan = (from, to) => ({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: to }, state: { visibility: from, title: "T" } });
+  assert.equal(runConditionOf(plan("Private", "Friends")), "user_confirm");
+  assert.equal(runConditionOf(plan("Hidden", "Private")), "user_confirm");
+  assert.equal(runConditionOf(plan("Public", "Public")), "preview");
+  assert.equal(runConditionOf({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { title: "x" }, state: { visibility: "Private" } }), "preview");
+});
+
 // ── the table ──
 
 test("RUN_RULES: every op a tool builds a plan for has a row, and every user_confirm row has a prompt and a web address", () => {
@@ -457,7 +562,7 @@ test("MCP host without the elicitation capability: sale start is refused with th
       assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
       const r = await host.callShop({ ...args, planId: pre.planId });
       assert.equal(r.error, "confirm_unavailable", JSON.stringify(r));
-      assert.match(r.hint, /\/creator/);
+      assert.match(r.hint, SHOP_PORTAL);
       assert.deepEqual(writes(calls), []);
     } finally {
       await host.close();
