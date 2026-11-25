@@ -2,9 +2,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { deviceAuthorize, deviceToken } from "../api/v8MemeApi.js";
-import { getConfigTokenPath } from "../context/token.js";
+import {
+  getConfigTokenPath,
+  inspectProjectToken,
+  refusedProjectTokenHint,
+  resolveToken,
+  type TokenSource,
+} from "../context/token.js";
 import { resetProxyCaches } from "../proxy/forward.js";
 import { atomicWriteFileSync } from "../util/atomicWrite.js";
+import { isSafeAbsPath } from "../util/safePath.js";
 
 /**
  * RFC 8628 device flow, split into two tools.
@@ -15,6 +22,8 @@ import { atomicWriteFileSync } from "../util/atomicWrite.js";
  *   2. `verse8_login_complete({device_code, max_wait_seconds?})` — block up
  *      to max_wait_seconds polling the token endpoint. On success, write the
  *      access token to ${XDG_CONFIG_HOME or ~/.config}/verse8/token.
+ *
+ * `verse8_logout` (end of this file) deletes the local token again.
  *
  * Why split: the previous single blocking tool returned the URL only after
  * its 120s window expired, so by the time the user saw the URL the
@@ -62,6 +71,8 @@ export interface LoginCompleteOk {
   ok: true;
   saved_to: string;
   profile_hint: string;
+  /** Set when another token source outranks the file just written. */
+  warning?: string;
 }
 
 export interface LoginCompleteError {
@@ -99,6 +110,7 @@ export async function runLoginStart(): Promise<LoginStartResult | LoginStartErro
 
 export async function runLoginComplete(
   input: z.infer<typeof loginCompleteInputSchema>,
+  cwd: string = process.cwd(),
 ): Promise<LoginCompleteOk | LoginCompleteError> {
   const deviceCode = input.device_code;
   const maxWaitMs = (input.max_wait_seconds ?? 120) * 1000;
@@ -123,10 +135,19 @@ export async function runLoginComplete(
       // and tool schemas tied to the previous bearer. Drop them so the next
       // tools/list rediscovers under the new credentials.
       resetProxyCaches();
+      // The new login only takes effect if nothing outranks the file.
+      const inUse = resolveToken(cwd);
+      const warning =
+        inUse.source === "env"
+          ? "The new login is saved but NOT in use: the VERSE8_ACCESS_TOKEN environment variable is used before any token file. Ask the user to remove it from the MCP server's env settings and restart the server."
+          : inUse.source === "project"
+            ? `The new login is saved but NOT in use: the project token file ${inUse.path} is used before it. Call verse8_logout to delete it, then log in again.`
+            : undefined;
       return {
         ok: true,
         saved_to: tokenPath,
         profile_hint: "Call verse8_status to see the logged-in profile.",
+        ...(warning ? { warning } : {}),
       };
     }
 
@@ -170,4 +191,134 @@ export async function runLoginComplete(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * `verse8_logout` — delete the local login. Removes the config-folder token
+ * file and the project-folder one, and reports what it could not clear (the
+ * VERSE8_ACCESS_TOKEN environment variable, a refused project token file).
+ * There is no server-side revocation API, so the result always says the
+ * token itself stays valid until it expires.
+ */
+export const logoutInputSchema = z
+  .object({
+    projectDir: z
+      .string()
+      .min(1)
+      .refine(isSafeAbsPath, {
+        message:
+          "projectDir must not contain `..`, NUL byte, or redundant separators (rejected at MCP dispatch boundary)",
+      })
+      .optional()
+      .describe(
+        "Absolute path to the verse8 project directory whose .verse8/token should also be removed. If omitted, process.cwd() is used.",
+      ),
+  })
+  .strict();
+
+export interface LogoutEntry {
+  source: TokenSource;
+  /** The token file (`project` and `config`); absent for `env`. */
+  path?: string;
+}
+
+export interface LogoutLeft extends LogoutEntry {
+  reason: string;
+}
+
+const NOT_REVOKED =
+  "Deleting the local token does not revoke it: Verse8 has no token revocation API, so the token stays valid on the server until it expires, and any other copy of it still works.";
+
+export interface LogoutOk {
+  ok: true;
+  /** Token files this call deleted. */
+  removed: LogoutEntry[];
+  /** Token sources this call left in place, none of which is in use. */
+  left: LogoutLeft[];
+  serverSide: string;
+  next: string;
+}
+
+export interface LogoutError {
+  ok: false;
+  error: "logout_incomplete";
+  hint: string;
+  /** The source that still supplies a token. */
+  tokenSource: LogoutEntry;
+  removed: LogoutEntry[];
+  left: LogoutLeft[];
+  serverSide: string;
+}
+
+function removeTokenFile(
+  entry: LogoutEntry & { path: string },
+  removed: LogoutEntry[],
+  left: LogoutLeft[],
+): void {
+  try {
+    // unlink removes a link itself, never the file it points at.
+    fs.unlinkSync(entry.path);
+    removed.push(entry);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    left.push({ ...entry, reason: `could not delete the file (${code ?? "unknown error"})` });
+  }
+}
+
+export async function runLogout(
+  input: z.infer<typeof logoutInputSchema> = {},
+  cwd: string = process.cwd(),
+): Promise<LogoutOk | LogoutError> {
+  const projectDir = input.projectDir ?? cwd;
+  const removed: LogoutEntry[] = [];
+  const left: LogoutLeft[] = [];
+
+  removeTokenFile({ source: "config", path: getConfigTokenPath() }, removed, left);
+
+  const project = inspectProjectToken(projectDir);
+  if (project.state === "usable") {
+    removeTokenFile({ source: "project", path: project.path }, removed, left);
+  } else if (project.state === "refused") {
+    // Never read, so not a login. Deleting behind a linked `.verse8` would
+    // remove a file outside the project, and deleting a tracked file would
+    // dirty the repository — leave both to the user.
+    left.push({
+      source: "project",
+      path: project.path,
+      reason: `not deleted and not used: ${refusedProjectTokenHint({ path: project.path, reason: project.reason })}`,
+    });
+  }
+
+  const envToken = process.env.VERSE8_ACCESS_TOKEN;
+  if (envToken && envToken.trim().length > 0) {
+    left.push({
+      source: "env",
+      reason:
+        "VERSE8_ACCESS_TOKEN is set in the MCP server's environment; the server cannot unset it for the host",
+    });
+  }
+
+  // The previous identity's proxy sessions and tool schemas are stale now.
+  resetProxyCaches();
+
+  const after = resolveToken(projectDir);
+  if (after.source) {
+    const tokenSource: LogoutEntry = after.path
+      ? { source: after.source, path: after.path }
+      : { source: after.source };
+    const hint =
+      after.source === "env"
+        ? "Still logged in: the VERSE8_ACCESS_TOKEN environment variable supplies a token and is used before any token file. Ask the user to remove it from the MCP server's env settings and restart the server."
+        : `Still logged in: ${after.path} could not be deleted. Ask the user to delete that file.`;
+    return { ok: false, error: "logout_incomplete", hint, tokenSource, removed, left, serverSide: NOT_REVOKED };
+  }
+
+  return {
+    ok: true,
+    removed,
+    left,
+    serverSide: NOT_REVOKED,
+    next: "verse8_status now answers not_logged_in. To switch accounts, call verse8_login_start and have the user approve in a browser signed in to the other Verse8 account.",
+  };
 }

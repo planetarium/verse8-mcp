@@ -12,15 +12,16 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 - User says: "verse8 login" / "verse8 로그인" / "verse8로 로그인해줘"
 - User says: "verse8 status" / "who am I on verse8" / "내 verse8 프로필"
 - User says: "verse8 logout"
-- Any Verse8 API call returns **401 Unauthorized** → tell the user to re-login and start the login below
+- User wants to switch to another Verse8 account → `verse8_logout`, then log in
+- Any Verse8 API call returns **401 Unauthorized** → call `verse8_status`: it reports where the rejected token came from (`tokenSource`) and what to do. Logging in again only helps when the source is `config`
 
 ## Tools
 
 | Intent | Tool(s) | Notes |
 |--------|---------|-------|
 | Log in | `verse8_login_start` → `verse8_login_complete` | Split flow: start returns the URL/code immediately so you can show them to the user, then complete polls for the access token (default 120s, max 1800s). |
-| Who am I | `verse8_status` | Profile from `GET /v1/auth/verify`, plus this project's attachment state |
-| Log out | (no tool) | Delete the token file (`${XDG_CONFIG_HOME:-~/.config}/verse8/token`) |
+| Who am I | `verse8_status` | Profile from `GET /v1/auth/verify`, which token is in use (`tokenSource`), plus this project's attachment state |
+| Log out / switch account | `verse8_logout` | Deletes the local token files. Tell the user the token is **not revoked**: Verse8 has no revocation API, so it stays valid on the server until it expires. `logout_incomplete` means a token is still in use (see below) |
 
 ## How login works
 
@@ -35,8 +36,16 @@ Device Authorization Grant (RFC 8628) login for Verse8. The access token is stor
 verse8-mcp tools resolve the token in this order:
 
 1. `VERSE8_ACCESS_TOKEN` env var
-2. `<cwd>/.verse8/token` (project-scoped, gitignored)
+2. `<cwd>/.verse8/token` (project-scoped, gitignored) — skipped when it is a link or tracked by git; `verse8_status` then shows `projectTokenRefused`
 3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token` (written by `verse8_login_complete`)
+
+A login only rewrites the third one. When a token is rejected, clear whatever outranks it first:
+
+| `tokenSource.source` | What to do |
+|---|---|
+| `env` | The user removes `VERSE8_ACCESS_TOKEN` from the MCP server's env settings and restarts the server. No tool can unset it |
+| `project` | `verse8_logout` (deletes the project token file), then log in |
+| `config` | Log in again |
 
 ## Environment overrides
 

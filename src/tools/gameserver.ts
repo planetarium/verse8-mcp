@@ -7,7 +7,7 @@ import {
   type GatewayResult,
 } from "../api/gameserverGateway.js";
 import { safeErrorHint } from "../util/redact.js";
-import { LOGIN_HINT } from "../util/hints.js";
+import { rejectedTokenHintForLastLoad } from "../context/token.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
 /**
@@ -61,7 +61,7 @@ function fromGateway<T>(
     r.status === 401 ? "unauthorized" : r.status === 403 ? "forbidden" : r.status === 404 ? "not_found" : r.status === 429 ? "rate_limited" : "upstream_error";
   const hint =
     r.status === 401
-      ? `The game server gateway rejected the Verse8 login (${r.error}). To log in again: ${LOGIN_HINT}.`
+      ? `The game server gateway rejected the Verse8 login (${r.error}). ${rejectedTokenHintForLastLoad()}.`
       : r.status === 403
         ? `${r.error}. Only the owner of ${verse} can read it — check that the login matches VITE_AGENT8_ACCOUNT.`
         : `Gateway answered HTTP ${r.status}: ${r.error}`;

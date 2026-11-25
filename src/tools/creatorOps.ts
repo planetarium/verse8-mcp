@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { redactHead, safeHint } from "../util/redact.js";
-import { LOGIN_HINT } from "../util/hints.js";
+import { rejectedTokenHintForLastLoad } from "../context/token.js";
 
 /**
  * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop):
@@ -41,7 +41,7 @@ export function apiFail(what: string, r: { status: number; body: string }): OpFa
               : "upstream_error";
   const hint =
     r.status === 401
-      ? `${what}: the Verse8 login was rejected. To log in again: ${LOGIN_HINT}.`
+      ? `${what}: the Verse8 login was rejected. ${rejectedTokenHintForLastLoad()}.`
       : `${what} failed: HTTP ${r.status} ${message}`;
   return opFail(error, hint, { status: r.status });
 }

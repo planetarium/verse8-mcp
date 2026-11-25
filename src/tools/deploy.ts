@@ -13,7 +13,7 @@ import {
 import { detectAttachment } from "../context/attachment.js";
 import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
 import { resolveJamProject, type JamProject } from "../context/msuProject.js";
-import { loadToken } from "../context/token.js";
+import { loadToken, rejectedTokenHintForLastLoad } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
@@ -1055,7 +1055,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. To log in again: ${LOGIN_HINT}.`, { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. ${rejectedTokenHintForLastLoad()}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,

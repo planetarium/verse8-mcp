@@ -13,7 +13,7 @@ import { recordToolCall } from "./util/v8CallLog.js";
 import { redactHead, safeErrorHint, safeHint } from "./util/redact.js";
 import { dispatchTool } from "./util/toolDispatch.js";
 import { LOGIN_HINT } from "./util/hints.js";
-import { loadToken } from "./context/token.js";
+import { loadToken, resolveToken } from "./context/token.js";
 import { ipAssetsInputSchema, runIpAssets } from "./tools/ipAssets.js";
 import { attachInputSchema, runAttach } from "./tools/attach.js";
 import { bootstrapInputSchema, runBootstrap } from "./tools/bootstrap.js";
@@ -38,8 +38,10 @@ import {
 import {
   loginCompleteInputSchema,
   loginStartInputSchema,
+  logoutInputSchema,
   runLoginComplete,
   runLoginStart,
+  runLogout,
 } from "./tools/login.js";
 import {
   newProjectConfirmInputSchema,
@@ -124,6 +126,12 @@ const BASE_TOOLS: Tool[] = [
     description:
       "Finish Verse8 device-flow login. Polls the token endpoint for up to max_wait_seconds (default 120) and, on success, writes the access token to ${XDG_CONFIG_HOME:-~/.config}/verse8/token (mode 0600). Pass the device_code returned by verse8_login_start. Safe to call multiple times with the same device_code if the user is still authorizing — device_code is valid for ~30 minutes.",
     inputSchema: zodToJsonSchema(loginCompleteInputSchema),
+  },
+  {
+    name: "verse8_logout",
+    description:
+      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd). Returns {removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards, e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings.",
+    inputSchema: zodToJsonSchema(logoutInputSchema),
   },
   {
     name: "verse8_status",
@@ -266,7 +274,9 @@ export function createServer(): Server {
   // appear as soon as the user logs in (no server restart needed).
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const cwd = process.cwd();
-    const token = loadToken(cwd);
+    // resolveToken, not loadToken: listing tools must not overwrite the
+    // token source a running tool call recorded for its 401 hint.
+    const token = resolveToken(cwd).token;
 
     const tools: Tool[] = [...BASE_TOOLS];
 
@@ -324,10 +334,20 @@ export function createServer(): Server {
 
       if (name === "verse8_login_complete") {
         const parsed = loginCompleteInputSchema.parse(args ?? {});
-        const result = await dispatchTool(name, () => runLoginComplete(parsed));
+        const result = await dispatchTool(name, () => runLoginComplete(parsed, cwd));
         // Token state likely changed → re-enumerate tools so
         // verse8_checkpoint / verse8_preview / image_* surface.
         if (result.ok) notifyToolListChanged();
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_logout") {
+        const parsed = logoutInputSchema.parse(args ?? {});
+        const result = await dispatchTool(name, () => runLogout(parsed, cwd), {
+          projectDir: parsed.projectDir ?? cwd,
+        });
+        // Token state changed → the logged-in tools must drop out of the list.
+        if (result.removed.length > 0) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }
 

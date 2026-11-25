@@ -2,7 +2,14 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { verifyToken, type VerifyResponse } from "../api/v8MemeApi.js";
 import { detectAttachment, type AttachmentState } from "../context/attachment.js";
-import { loadToken } from "../context/token.js";
+import {
+  refusedProjectTokenHint,
+  rejectedTokenHint,
+  resolveToken,
+  type ProjectTokenRefusal,
+  type TokenResolution,
+  type TokenSource,
+} from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { detectWorkspace } from "../context/workspace.js";
 import { isSafeAbsPath } from "../util/safePath.js";
@@ -69,6 +76,20 @@ function workingTreeDirtyCount(projectDir: string): number {
 
 const PREVIEW_PORTS = [5173, 5174, 5175, 4173]; // vite default + fallbacks
 
+/** Where the token in use came from. Never carries the token itself. */
+export interface TokenSourceInfo {
+  source: TokenSource;
+  /** The token file (`project` and `config`); absent for `env`. */
+  path?: string;
+}
+
+/** A project-folder token file that exists but was not read. */
+export interface ProjectTokenRefusedInfo {
+  path: string;
+  reason: ProjectTokenRefusal;
+  hint: string;
+}
+
 export type StatusResult =
   | {
       ok: true;
@@ -80,6 +101,8 @@ export type StatusResult =
       workflow: BootstrapWorkflow;
       warnings?: string[];
       tokenExpiresAt?: string;
+      tokenSource: TokenSourceInfo;
+      projectTokenRefused?: ProjectTokenRefusedInfo;
       creditRechargeUrl: string;
     }
   | {
@@ -87,6 +110,7 @@ export type StatusResult =
       error: "not_logged_in";
       hint: string;
       project?: ProjectStatus;
+      projectTokenRefused?: ProjectTokenRefusedInfo;
       workflow: BootstrapWorkflow;
     }
   | {
@@ -94,9 +118,20 @@ export type StatusResult =
       error: "token_invalid";
       hint: string;
       status: number;
+      tokenSource: TokenSourceInfo;
       project?: ProjectStatus;
+      projectTokenRefused?: ProjectTokenRefusedInfo;
       workflow: BootstrapWorkflow;
     };
+
+function tokenSourceInfo(source: TokenSource, where: TokenResolution): TokenSourceInfo {
+  return where.path ? { source, path: where.path } : { source };
+}
+
+function projectTokenRefusedInfo(where: TokenResolution): ProjectTokenRefusedInfo | undefined {
+  const r = where.refusedProjectToken;
+  return r ? { path: r.path, reason: r.reason, hint: refusedProjectTokenHint(r) } : undefined;
+}
 
 const TOKEN_EXPIRES_SOON_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -162,16 +197,21 @@ function buildProjectStatus(cwd: string): ProjectStatus {
 export async function runStatus(cwd: string = process.cwd()): Promise<StatusResult> {
   const project = buildProjectStatus(cwd);
   const workspaceMode = detectWorkspace(cwd).workspaceMode;
-  const token = loadToken(cwd);
-  if (!token) {
+  // One resolution answers both "which token" and "from where".
+  const where = resolveToken(cwd);
+  const token = where.token;
+  const projectTokenRefused = projectTokenRefusedInfo(where);
+  if (!token || !where.source) {
     return {
       ok: false,
       error: "not_logged_in",
-      hint: LOGIN_HINT,
+      hint: projectTokenRefused ? `${projectTokenRefused.hint} To log in: ${LOGIN_HINT}` : LOGIN_HINT,
       project,
+      ...(projectTokenRefused ? { projectTokenRefused } : {}),
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),
     };
   }
+  const tokenSource = tokenSourceInfo(where.source, where);
 
   const resp = await verifyToken(token);
   if (resp.ok) {
@@ -185,8 +225,13 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
       profile: resp.profile,
       project,
       workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: true }),
+      tokenSource,
       creditRechargeUrl: CREDIT_RECHARGE_URL,
     };
+    if (projectTokenRefused) {
+      result.projectTokenRefused = projectTokenRefused;
+      warnings.push("project_token_refused");
+    }
     if (expiresAt) result.tokenExpiresAt = expiresAt;
     if (warnings.length > 0) result.warnings = warnings;
     return result;
@@ -199,9 +244,11 @@ export async function runStatus(cwd: string = process.cwd()): Promise<StatusResu
   return {
     ok: false,
     error: "token_invalid",
-    hint: `token rejected by /v1/auth/verify. To log in again: ${LOGIN_HINT}`,
+    hint: `token rejected by /v1/auth/verify. ${rejectedTokenHint(where)}`,
     status: resp.status,
+    tokenSource,
     project,
+    ...(projectTokenRefused ? { projectTokenRefused } : {}),
     workflow: computeBootstrapWorkflow({ workspaceMode, hasToken: false }),
   };
 }
