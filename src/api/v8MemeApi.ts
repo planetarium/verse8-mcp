@@ -231,6 +231,25 @@ export async function updateVerse(
   );
 }
 
+/**
+ * POST /v1/activity/upload-asset `{count}` — the upload activity record the
+ * web editor's Resource panel sends after an upload batch with `count` =
+ * files that uploaded (planetarium/agent8
+ * apps/frontend/src/lib/api/verse8.ts `sendActivityUploadAsset`). Like the
+ * web, a failure is reported, never thrown.
+ */
+export async function recordUploadAssetActivity(
+  count: number,
+  token: string,
+): Promise<{ ok: true } | { ok: false; status: number; body: string }> {
+  try {
+    const r = await v8Request("POST", "/v1/activity/upload-asset", { token, body: { count } });
+    return r.ok ? { ok: true } : r;
+  } catch (e) {
+    return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
+  }
+}
+
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 
 /**

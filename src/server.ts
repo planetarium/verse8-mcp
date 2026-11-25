@@ -27,6 +27,7 @@ import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
+import { assetsInputSchema, runAssets } from "./tools/assets.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -174,8 +175,15 @@ const PREVIEW_TOOL: Tool = {
 const UPLOAD_ASSET_TOOL: Tool = {
   name: "verse8_upload_asset",
   description:
-    "Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via agent8-backend /api/upload-attachment. Pass `filePath` (absolute or relative to projectDir) + `cdnPath` (relative subpath under the verse, e.g. 'assets/images' / 'assets/3d/characters' / 'assets/audio'). Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` where `url` is the public https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned-filename>. IMPORTANT: the V8 asset convention is driven by `src/assets.json` — before calling this tool, read the project's manifest to match existing URL-path patterns (each template uses its own scheme such as `assets/3d/animations/mixamorig/`); and AFTER upload, register the returned url into `src/assets.json` so it is actually consumed by the runtime. Allowed extensions: png/jpg/jpeg/gif/svg/webp/glb/gltf/vrm/mp3/wav/ogg/m4a/mp4/webm/mov/ttf/otf/woff/woff2/txt/md/json/csv/xml. Requires a logged-in Verse8 project run through `verse8_attach` (uses VITE_AGENT8_VERSE from .env).",
+    "Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via agent8-backend /api/upload-attachment. Pass `filePath` (absolute or relative to projectDir) + `cdnPath` (relative subpath under the verse, e.g. 'assets/images' / 'assets/3d/characters' / 'assets/audio'). Returns `{ url, filename, cdnPath, verse, sizeBytes, contentType }` where `url` is the public https://agent8-games.verse8.io/<verse>/<cdnPath>/<server-assigned-filename>. IMPORTANT: the V8 asset convention is driven by `src/assets.json` — before calling this tool, read the project's manifest to match existing URL-path patterns (each template uses its own scheme such as `assets/3d/animations/mixamorig/`); and AFTER upload, register the returned url into `src/assets.json` so it is actually consumed by the runtime. Allowed extensions: png/jpg/jpeg/gif/svg/webp/glb/gltf/vrm/mp3/wav/ogg/m4a/mp4/webm/mov/ttf/otf/woff/woff2/txt/md/json/csv/xml. Requires a logged-in Verse8 project run through `verse8_attach` (uses VITE_AGENT8_VERSE from .env). To upload several files AND register them in src/assets.json in one call, use verse8_assets action upload instead.",
   inputSchema: zodToJsonSchema(uploadAssetInputSchema),
+};
+
+export const ASSETS_TOOL: Tool = {
+  name: "verse8_assets",
+  description:
+    "The web editor's asset panel. search: find ready-made assets in the Verse8 asset library by `category` (2d, 2d/sprite_characters, 3d, 3d/characters, 3d/objects, 3d/monsters, 3d/polyhaven, 3d/vehicles, 3d/weapons, 3d/textures) and optional `keyword`, 20 per `page`; returns items {id, url, description, metadata} and pagination. add: put items from a search (`ids`) into src/assets.json under `categoryPath` (e.g. [\"3d\",\"characters\"]). upload: upload local `files` (same allowlist as verse8_upload_asset) to CDN folder assets/<categoryPath>, register each in src/assets.json under `categoryPath`, and record the upload activity. Entries use the web editor's shape (key <name>_<timestamp>_<n>, {url, description, metadata}); existing entries are kept, and a categoryPath that runs into an existing asset is refused. Read src/assets.json first and reuse its categories. Prefer a library asset before generating a new one.",
+  inputSchema: zodToJsonSchema(assetsInputSchema),
 };
 
 export const DEPLOY_TOOL: Tool = {
@@ -280,6 +288,7 @@ export function createServer(): Server {
       tools.push(CHECKPOINT_TOOL);
       tools.push(PREVIEW_TOOL);
       tools.push(UPLOAD_ASSET_TOOL);
+      tools.push(ASSETS_TOOL);
       tools.push(UPLOAD_THUMBNAIL_TOOL);
       tools.push(DEPLOY_TOOL);
       tools.push(GAMESERVER_TOOL);
@@ -410,6 +419,13 @@ export function createServer(): Server {
           () => runUploadAsset(parsed, cwd),
           { projectDir: pd },
         );
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_assets") {
+        const parsed = assetsInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runAssets(parsed, cwd), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

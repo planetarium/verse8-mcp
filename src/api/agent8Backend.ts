@@ -377,6 +377,88 @@ export async function uploadAttachment(
   };
 }
 
+export interface ResourceItem {
+  /** As the backend sent it (a number today); `String(id)` is the lookup key. */
+  id: string | number;
+  url: string;
+  description: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResourcePagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+export type SearchResourcesResult =
+  | { ok: true; items: ResourceItem[]; pagination: ResourcePagination }
+  | { ok: false; status: number; body: string };
+
+/**
+ * GET /api/resources — the asset library (public game-asset catalog) the
+ * web editor's Resource panel searches. The query is built the way the web
+ * editor's `fetchResources` builds it (planetarium/agent8
+ * apps/frontend/src/lib/api/agent8.ts): `tags` comma-joined, `page`,
+ * `limit`, and `keyword` only when it is non-blank after trimming. The
+ * answer is `{success, data, pagination}`; a 2xx with `success: false` is
+ * a failure too.
+ */
+export async function searchResources(params: {
+  tags: readonly string[];
+  page: number;
+  limit: number;
+  keyword?: string;
+  token: string;
+}): Promise<SearchResourcesResult> {
+  const qs = new URLSearchParams({
+    tags: params.tags.join(","),
+    page: String(params.page),
+    limit: String(params.limit),
+  });
+  const keyword = params.keyword?.trim();
+  if (keyword) qs.append("keyword", keyword);
+  const r = await getJson<{
+    success?: boolean;
+    error?: unknown;
+    data?: unknown;
+    pagination?: ResourcePagination;
+  }>(`${getAgent8BackendBaseUrl()}/api/resources?${qs.toString()}`, params.token);
+  if (!r.ok) return r;
+  if (r.data.success !== true || !Array.isArray(r.data.data)) {
+    return { ok: false, status: r.status, body: redactHead(JSON.stringify(r.data), 300) };
+  }
+  const items: ResourceItem[] = [];
+  for (const raw of r.data.data) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    if (typeof o.url !== "string" || o.url.length === 0) continue;
+    if (typeof o.id !== "string" && typeof o.id !== "number") continue;
+    items.push({
+      id: o.id,
+      url: o.url,
+      description: typeof o.description === "string" ? o.description : "",
+      metadata:
+        o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)
+          ? (o.metadata as Record<string, unknown>)
+          : {},
+    });
+  }
+  const p = r.data.pagination;
+  const pagination: ResourcePagination = {
+    page: typeof p?.page === "number" ? p.page : params.page,
+    limit: typeof p?.limit === "number" ? p.limit : params.limit,
+    total: typeof p?.total === "number" ? p.total : items.length,
+    totalPages: typeof p?.totalPages === "number" ? p.totalPages : 0,
+    hasNext: p?.hasNext === true,
+    hasPrev: p?.hasPrev === true,
+  };
+  return { ok: true, items, pagination };
+}
+
 /**
  * Parse a `cloneCommand` string emitted by the backend into the pieces we
  * need to call `git clone` via `execFileSync` with an argv array (so the

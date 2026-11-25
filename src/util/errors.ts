@@ -98,6 +98,11 @@ export const ERROR_CODES = [
   "bad_request",
   "upload_failed",
   "upload_response_malformed",
+  // Asset library / src/assets.json (verse8_assets)
+  "resource_not_found",
+  "assets_manifest_invalid",
+  "assets_manifest_write_failed",
+  "asset_category_conflict",
   // Credits / billing
   "insufficient_credits",
   // Game server / creator operations

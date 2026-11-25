@@ -97,6 +97,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. `serverOnly: true`: gameserver build + `@agent8/deploy --preview` only (server.js always re-uploaded). | Logged in |
 | `verse8_upload_asset` | Upload a local file (image / audio / video / 3D / font / small text) to the Verse8 CDN via `agent8-backend /api/upload-attachment`. Pass `filePath` + `cdnPath`; the host is expected to mirror the project's `src/assets.json` URL patterns and to register the returned URL back into that manifest. | Logged in |
+| `verse8_assets` | The web editor's asset panel: `search` the Verse8 asset library (`GET /api/resources`, by category + keyword), `add` found items to `src/assets.json`, `upload` several files to `assets/<categoryPath>`, register them in `src/assets.json` and record the upload activity. Writes the web editor's entry shape and keeps existing entries. | Logged in |
 | `verse8_upload_thumbnail` | Upload a verse cover image (png/jpg/gif/webp ≤4 MB) or preview video (mp4 ≤10 MiB) to `contents.verse8.io` via verse8.io `/api/upload`. | Logged in |
 | `verse8_gameserver` | Read-only view of the game server, prod or preview: status (v1/v2, players, rooms), `$collection` data (paged, equality search), user / asset / global state, recent errors and live logs (v2). Uses the gateway's developer API (`/v1/verses/:verse/*`, owner only). | Logged in, verse owner |
 | `verse8_deploy_status` | Read-only: the published commit and time (from the live playUrl), title / visibility / review status, latest release note, how local HEAD relates to the published commit, prod / preview game server state. | Logged in |
@@ -113,14 +114,14 @@ Resources: `verse8://skill/<name>/SKILL.md`.
 
 ### `insufficient_credits`
 
-`verse8_new_project_start` / `_confirm` or `verse8_upload_asset` returns `insufficient_credits` (usually HTTP 402) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
+`verse8_new_project_start` / `_confirm`, `verse8_upload_asset` or `verse8_assets` `upload` returns `insufficient_credits` (usually HTTP 402; for `verse8_assets` per file in `failed` when other files uploaded) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
 
 - **New account** — credits are not granted at sign-up. Verify a phone number (SMS) on Verse8, then claim the one-time welcome credit.
 - **Existing account** — recharge at <https://verse8.io/settings>. `verse8_status` also returns this link as `creditRechargeUrl`.
 
 Then:
 
-- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call.
+- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — retry with only the files listed in `failed` (the others are already uploaded and registered).
 - From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow
