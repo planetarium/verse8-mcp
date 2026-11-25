@@ -28,7 +28,7 @@ function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "verse8-preview-ready-"));
 }
 
-// Pick a likely-free high port. We probe isPortInUse-style with a throwaway
+// Pick a likely-free high port. We probe isLoopbackPortInUse-style with a throwaway
 // socket — if it's already bound, advance.
 import { createServer } from "node:net";
 async function reservePort() {
