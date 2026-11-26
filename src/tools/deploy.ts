@@ -287,12 +287,18 @@ function fail(
  * that it was the limit, not the network.
  */
 async function getVerseWithin(verseId: string, token: string, ms: number): Promise<Awaited<ReturnType<typeof getVerse>>> {
-  const signal = AbortSignal.timeout(ms);
+  // A timer of its own, not AbortSignal.timeout(): that one is unref'd, so
+  // it does not keep the process alive, and the limit must hold even when
+  // nothing else does.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
   try {
-    return await getVerse(verseId, token, signal);
+    return await getVerse(verseId, token, ctl.signal);
   } catch (e) {
-    if (signal.aborted) throw new Error(`no answer within ${Math.round(ms / 100) / 10} s (the request was cancelled)`);
+    if (ctl.signal.aborted) throw new Error(`no answer within ${Math.round(ms / 100) / 10} s (the request was cancelled)`);
     throw e;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
