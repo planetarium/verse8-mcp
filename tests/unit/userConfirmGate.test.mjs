@@ -1044,3 +1044,68 @@ test("two long values that differ only past the cut are not shown as the same te
   const short = confirmMessage({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: "Public", description: "new" }, state: { visibility: "Private", title: "T", description: "old" } });
   assert.doesNotMatch(short, /differ past/);
 });
+
+// ── values read before a media upload are not written after it ──
+
+/** Runs `f` with a fetch that calls `during` when the media upload request arrives. */
+async function withUploadHook(during, f) {
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (u, init = {}) => {
+    if (new URL(u).pathname === "/api/upload") during();
+    return inner(u, init);
+  };
+  try {
+    return await f();
+  } finally {
+    globalThis.fetch = inner;
+  }
+}
+
+test("game page update with a cover upload: the game is set to Private on the web while the upload runs → the update is not sent (it would put the old visibility back)", async () => {
+  const dir = project();
+  await withShop(async (calls, _items, verse) => {
+    verse.visibility = "Public";
+    const input = { action: "update", title: "New title", thumbnailPath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "preview");
+    assert.equal(pre.publishBody.visibility, "Public", "the body re-sends the visibility read for the preview");
+    const r = await withUploadHook(() => { verse.visibility = "Private"; }, () => run(dir, { ...input, planId: pre.planId }));
+    assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+    assert.equal(r.afterUpload, true);
+    assert.match(r.hint, /^The record was not changed \(the media file is already uploaded and unused\): it changed while the upload ran/);
+    assert.ok(r.changed.some((c) => c.part === "state.visibility" && c.now === "Private"), JSON.stringify(r.changed));
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload"], "the upload ran, the update did not");
+  });
+});
+
+test("shop item edit with an image upload: the purchase limits are changed on the web while the upload runs → the edit is not sent (it would put the old limits back)", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const input = { action: "upsert", itemId: 12, name: "Renamed", imagePath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "preview");
+    assert.deepEqual(pre.body.purchaseConstraints, { maxPurchasePerUser: 2 });
+    const r = await withUploadHook(
+      () => { items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 1 } }); },
+      () => run(dir, { ...input, planId: pre.planId }),
+    );
+    assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+    assert.equal(r.afterUpload, true);
+    assert.ok(r.changed.some((c) => c.part === "state.purchaseConstraints"), JSON.stringify(r.changed));
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload"]);
+  });
+});
+
+test("an upload during which nothing changed on the server → the write goes out (a local file edited after the gate does not stop it: its hashed bytes were uploaded)", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 12, name: "Renamed", imagePath: "item.png" };
+    const pre = await run(dir, input);
+    const r = await withUploadHook(
+      () => { fs.writeFileSync(path.join(dir, "item.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 5, 5, 5, 5])); },
+      () => run(dir, { ...input, planId: pre.planId }),
+    );
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"]);
+  });
+});

@@ -31,7 +31,7 @@ import {
   deriveProjectPathFromOrigin,
   detectGameserver,
 } from "./preview.js";
-import { confirmGate, isConfirmed, rereadWith, type ConfirmHost, type Plan, type PlanProbe } from "./creatorOps.js";
+import { confirmGate, isConfirmed, planId, rereadWith, runConditionOf, type ConfirmHost, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 
 /**
@@ -51,6 +51,9 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  *
  * Before step 2 the run condition is checked (creatorOps RUN_RULES): a deploy
  * that widens who can see the game asks the user in the host's own prompt.
+ * Before step 6 an update reads the game again and publishes from that
+ * reading; if it would then widen the visibility in a way the user did not
+ * confirm, it stops without publishing.
  *
  * Mirrors agent8 container-agent deploy (message-handler.ts
  * handleDeployOperation + deploy-command.ts) and verse8-vibe's publish
@@ -1146,18 +1149,22 @@ export async function runDeploy(
   // towards Public — needs the user's own confirmation, by the same rule
   // and prompt as the game page update. Asked before the checkpoint, so a
   // refusal leaves nothing committed, built, uploaded or published.
-  const visibilityPlan: Plan = {
+  // The plan of the visibility this deploy will publish, against a given
+  // reading of the game. Built now for the confirmation and again right
+  // before the publish call (step 8), by the same rule.
+  const visibilityPlanFor = (seen: VerseInfo | null, seenTags: string[]): Plan => ({
     op: "verse8_deploy.publish",
     target: { verseId },
     // The visibility the publish body will carry (buildPublishBody).
-    body: { visibility: input.visibility ?? existing?.visibility ?? "Public" },
+    body: { visibility: input.visibility ?? seen?.visibility ?? "Public" },
     state: {
-      visibility: existing?.visibility ?? null,
+      visibility: seen?.visibility ?? null,
       published: mode === "update",
-      title: input.title ?? existing?.title ?? null,
-      tag: tags,
+      title: input.title ?? seen?.title ?? null,
+      tag: seenTags,
     },
-  };
+  });
+  const visibilityPlan = visibilityPlanFor(existing, tags);
   if (probe) {
     probe.plan = visibilityPlan;
     return fail("confirm", "plan_mismatch", "plan probe");
@@ -1305,7 +1312,52 @@ export async function runDeploy(
 
   // ── 8. Publish verse record ───────────────────────────────────────────
   const playUrl = buildPlayUrl(verseId, deployedSha, projectPath, Date.now());
-  const publishBody = buildPublishBody({ mode, verseId, playUrl, fields, tags, existing, parentVerseId });
+  // The build and upload took minutes. An update is published from what
+  // the game is NOW, not from the reading taken at the start: a title or
+  // visibility changed on the web meanwhile is kept, not put back. (The
+  // update API has no "leave the visibility alone": a body without it
+  // makes the game Public, so the current value is always sent.)
+  let current = existing;
+  let publishTags = tags;
+  if (mode === "update") {
+    const uploaded = `The checkpoint is pushed and the game files are already uploaded at ${playUrl}; only the verse record was not updated.`;
+    let again;
+    try {
+      again = await getVerse(verseId, token);
+    } catch (e) {
+      return fail("publish", "upstream_unreachable", `${safeErrorHint(e)} The game could not be read again before publishing. ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
+    }
+    if (!again.ok) {
+      const next = again.status === 401 ? `${rejectedTokenHint(auth)}, then run verse8_deploy again` : "Run verse8_deploy again";
+      return fail(
+        "publish",
+        again.status === 401 ? "unauthorized" : "upstream_error",
+        `The game could not be read again before publishing: HTTP ${again.status} ${again.body.slice(0, 200)}. ${uploaded} ${next}.`,
+        { status: again.status, steps: completed, playUrl, filesLive: true },
+      );
+    }
+    current = again.data;
+    publishTags = buildPublishTags(input.tags, current.tag, jam);
+    // INV-17: the same rule as at the start (creatorOps RUN_RULES), against
+    // the game as it is now. If publishing would widen who can see it and
+    // that is not exactly the change the user confirmed — it was never
+    // asked, or the game has since moved (set to Private on the web, renamed)
+    // — the deploy stops here instead of publishing.
+    const nowPlan = visibilityPlanFor(current, publishTags);
+    if (runConditionOf(nowPlan) !== "preview" && planId(nowPlan) !== planId(visibilityPlan)) {
+      const was = existing?.visibility ?? "not set";
+      const now = current.visibility ?? "not set";
+      const to = String((nowPlan.body as { visibility: unknown }).visibility);
+      const asked = confirmed.runCondition === "user_confirm" ? `the user confirmed ${was} → ${to} for "${existing?.title ?? ""}"` : `the user was not asked (it was ${was} → ${to} then, not a widening)`;
+      return fail(
+        "publish",
+        "plan_mismatch",
+        `Not published: the game changed on the web during the build. It is now ${now} ("${current.title ?? ""}"), so publishing ${to} would make it visible to more people in a way the user did not confirm — ${asked}. ${uploaded} Nothing about who can see the game was changed. Run verse8_deploy again (a dryRun first shows what it will ask the user).`,
+        { steps: completed, playUrl, filesLive: true, visibility: { atStart: existing?.visibility ?? null, now: current.visibility ?? null, requested: input.visibility ?? null } },
+      );
+    }
+  }
+  const publishBody = buildPublishBody({ mode, verseId, playUrl, fields, tags: publishTags, existing: current, parentVerseId });
   let published;
   try {
     published = mode === "first" ? await createVerse(publishBody, token) : await updateVerse(verseId, publishBody, token);

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
@@ -259,6 +259,10 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     if (input.imagePath) {
       const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
       if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
+      // The upload took time: read once more before the write. (Before the
+      // uploaded URL goes into the body: the plan holds the body as previewed.)
+      const still = await planStillHolds(plan, again);
+      if (!isApproved(still)) return still;
       body.imageUrl = up.url;
     }
     const r = await v8Request<VxShopItem>("POST", "/v1/vx-shop-items", { token, body });
@@ -338,6 +342,11 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (input.imagePath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
     if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
+    // The upload took time, and the body re-sends the purchase limits read
+    // before it: read the item once more before the write. (Before the
+    // uploaded URL goes into the body: the plan holds the body as previewed.)
+    const still = await planStillHolds(plan, again);
+    if (!isApproved(still)) return still;
     body.imageUrl = up.url;
   }
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });

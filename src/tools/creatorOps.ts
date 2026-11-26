@@ -770,26 +770,52 @@ export function rereadWith(run: (probe: PlanProbe) => Promise<unknown>): Reread 
   };
 }
 
-const AFTER_RUN = "Nothing was changed: it changed while the confirmation prompt was open, so the user's Run was not used —";
+const AFTER_PROMPT = "Nothing was changed: it changed while the confirmation prompt was open, so the user's Run was not used —";
+const AFTER_UPLOAD = "The record was not changed (the media file is already uploaded and unused): it changed while the upload ran —";
+
+/** The plan a re-read gives, or the failure of that read. */
+async function readAgain(reread: Reread): Promise<Plan | OpFail> {
+  try {
+    const fresh = await reread();
+    return "op" in fresh && typeof fresh.op === "string" ? (fresh as Plan) : (fresh as OpFail);
+  } catch (e) {
+    return opFail("plan_mismatch", safeErrorHint(e));
+  }
+}
+const isPlan = (x: Plan | OpFail): x is Plan => "op" in x && typeof x.op === "string";
+/** A plan_mismatch that says when the change happened. */
+function changedDuring(when: string, mark: Record<string, unknown>, r: OpFail, rePreview: boolean): OpFail {
+  return { ...r, error: "plan_mismatch", hint: safeHint(`${when} ${r.hint.replace(/^Nothing was changed: /, "")}${rePreview ? ` ${RE_PREVIEW}` : ""}`), ...mark };
+}
 
 /** Approved (with freshly hashed file bytes) when the plan read again is still `id`; otherwise plan_mismatch. */
 async function sameAfterRun(p: Plan, id: string, reread: Reread | undefined): Promise<PlanApproved | OpFail> {
   if (!reread) {
     return opFail("op_not_classified", `Nothing was changed: '${p.op}' asks the user but gives no way to read its target again after the answer. This is a bug in @verse8/mcp.`);
   }
-  let fresh: Plan | OpFail;
-  try {
-    fresh = await reread();
-  } catch (e) {
-    fresh = opFail("plan_mismatch", safeErrorHint(e));
-  }
-  if (!("op" in fresh) || typeof fresh.op !== "string") {
-    const f = fresh as OpFail;
-    return opFail("plan_mismatch", `${AFTER_RUN} ${f.hint} ${RE_PREVIEW}`, { afterConfirmation: true });
-  }
-  const again = checkPlan(fresh as Plan, id);
-  if (isApproved(again)) return again;
-  return { ...again, hint: safeHint(`${AFTER_RUN} ${again.hint.replace(/^Nothing was changed: /, "")}`), afterConfirmation: true };
+  const mark = { afterConfirmation: true };
+  const fresh = await readAgain(reread);
+  if (!isPlan(fresh)) return changedDuring(AFTER_PROMPT, mark, fresh, true);
+  const again = checkPlan(fresh, id);
+  return isApproved(again) ? again : changedDuring(AFTER_PROMPT, mark, again, false);
+}
+
+/**
+ * The same check for the other wait inside a run: a local image or video is
+ * uploaded after the gate and before the write, and a large one takes a
+ * while. The write re-sends values read before that (the visibility, the
+ * purchase limits), so the target is read once more after the upload.
+ * Only what was read from the server is compared: the local files were
+ * hashed at the gate and those bytes are what was uploaded, whatever the
+ * file on disk is by now.
+ */
+export async function planStillHolds(p: Plan, reread: Reread): Promise<PlanApproved | OpFail> {
+  const mark = { afterUpload: true };
+  const fresh = await readAgain(reread);
+  if (!isPlan(fresh)) return changedDuring(AFTER_UPLOAD, mark, fresh, true);
+  const serverSide = (x: Plan): Plan => ({ ...x, files: {} });
+  const again = checkPlan(serverSide(fresh), planId(serverSide(p)));
+  return isApproved(again) ? again : changedDuring(AFTER_UPLOAD, mark, again, false);
 }
 
 /**

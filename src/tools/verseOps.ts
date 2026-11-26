@@ -4,7 +4,7 @@ import { resolveToken, type TokenResolution } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
 import { LOGIN_HINT } from "../util/hints.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -311,15 +311,26 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   }, host, again);
   if (!isApproved(gate)) return gate;
 
+  const uploadedUrls: Record<string, string> = {};
   if (input.thumbnailPath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.thumbnailPath), token, "image", undefined, gate.files.thumbnailPath);
     if (!up.ok) return opFail(up.error, `thumbnailPath: ${up.hint}`);
-    body.imageUrl = up.url;
+    uploadedUrls.imageUrl = up.url;
   }
   if (input.videoPath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.videoPath), token, "video", undefined, gate.files.videoPath);
     if (!up.ok) return opFail(up.error, `videoPath: ${up.hint}`);
-    body.videoUrl = up.url;
+    uploadedUrls.videoUrl = up.url;
+  }
+  if (input.thumbnailPath || input.videoPath) {
+    // The uploads took time (a video up to 10 MiB), and the body re-sends
+    // the visibility read before them: read the game once more before the
+    // write, so a game set to Private on the web meanwhile is not put back.
+    // (Before the uploaded URLs go into the body: the plan holds the body
+    // as previewed.)
+    const still = await planStillHolds(plan, again);
+    if (!isApproved(still)) return still;
+    Object.assign(body, uploadedUrls);
   }
   const res = await updateVerse(verseId, body, token);
   if (!res.ok) return apiFail(`POST /v1/verse/update/${verseId}`, res);
