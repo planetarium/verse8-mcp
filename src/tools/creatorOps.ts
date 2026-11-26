@@ -157,10 +157,10 @@ export interface PlanApproved {
   approved: true;
   files: Record<string, Buffer<ArrayBuffer>>;
   /**
-   * What planGate decided for this run: the prompt the user answered (when
-   * they were asked), and the decision later steps compare against.
+   * What planGate decided for this run, with every start date taken as
+   * reached: the decision later steps compare against.
    */
-  decided?: { confirmation?: string; decision: string | null };
+  decided?: { decision: string | null };
 }
 
 export function isApproved(g: unknown): g is PlanApproved {
@@ -1024,7 +1024,7 @@ export async function planGate<T extends { action: string }>(
   const refused = await askUser(p, message, host);
   if (refused) return refused;
   const still = await sameAfterRun(p, given, reread, message, host, decision);
-  return isApproved(still) ? { ...still, decided: { confirmation: message, decision } } : still;
+  return isApproved(still) ? { ...still, decided: { decision } } : still;
 }
 
 export interface Change {
