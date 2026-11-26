@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.planetarium/verse8-mcp",
+  "title": "Verse8",
+  "description": "Build and publish Verse8 web games from Claude Code, Codex, Cursor or any MCP client.",
+  "repository": {
+    "url": "https://github.com/planetarium/verse8-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://verse8.io",
+  "version": "0.10.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@verse8/mcp",
+      "version": "0.10.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

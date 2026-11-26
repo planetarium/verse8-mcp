@@ -64,6 +64,16 @@ bash scripts/prepublish-guard.sh
 
 `npm publish` 시 `prepublishOnly` 스크립트로 자동 실행됩니다. AC-SECURITY-2 강제 — 타볼이 secret-shape 문자열이나 sourcemap을 운반하지 않음.
 
+## MCP Registry
+
+The server is listed on the official MCP Registry (registry.modelcontextprotocol.io) as `io.github.planetarium/verse8-mcp`, from `server.json`.
+
+On every release:
+
+1. Bump `version` in `package.json` and both `version` fields in `server.json` together (`tests/unit/serverJson.test.mjs` fails otherwise, and `prepublishOnly` runs it).
+2. `npm publish` — the registry checks that the published package carries `mcpName`.
+3. Run the **MCP Registry** workflow (Actions → workflow_dispatch), or push a `v*` tag. It signs in with GitHub OIDC, which grants the `io.github.planetarium/*` namespace, and publishes `server.json`.
+
 ## 클린
 
 ```bash
