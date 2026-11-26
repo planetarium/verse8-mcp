@@ -42,7 +42,10 @@ async function withApi(routes, f) {
   }
 }
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
-const V = (dir, i) => runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...i }), dir);
+// Widening the visibility also asks the user after the planId matched
+// (userConfirmGate.test.mjs covers that step); here the user says Run.
+const USER_RUNS = { canAsk: true, ask: async () => ({ action: "accept", content: { choice: "Run" } }) };
+const V = (dir, i) => runVerseOps(verseOpsInputSchema.parse({ projectDir: dir, ...i }), dir, USER_RUNS);
 const X = (dir, i) => runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...i }), dir);
 
 // Preview, then run with the planId the preview returned (as a host does

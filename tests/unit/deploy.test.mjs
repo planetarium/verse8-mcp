@@ -28,7 +28,10 @@ import {
   unsafeInstallCommandTokens,
 } from "../../dist/tools/deploy.js";
 import { buildV8CommitMessage } from "../../dist/format/v8CommitMessage.js";
-import { DEPLOY_TOOL } from "../../dist/server.js";
+import { DEPLOY_TOOL, createServer } from "../../dist/server.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { isMsuProject, isNineChroniclesProject, resolveJamProject, stripComments } from "../../dist/context/msuProject.js";
 import { sanitizeChildEnv } from "../../dist/util/childEnv.js";
 import { unsafeShellTokens } from "../../dist/util/shellArgv.js";
@@ -890,4 +893,210 @@ test("publishFailedHint: a 401 after the upload names the token source; other fa
   const other = publishFailedHint({ ...base, status: 400, tokenWhere: { source: "config", path: "x" } });
   assert.match(other, /Fix the publish fields and run verse8_deploy again/);
   assert.doesNotMatch(other, /log in/);
+});
+
+// ── INV-17: a deploy that widens who can see the game asks the user ─────────
+// The deploy sends a visibility with its publish, so it goes through the same
+// rule and prompt as the game page update (creatorOps RUN_RULES). The prompt
+// comes before the checkpoint: refused, nothing is committed, built or sent.
+
+const LIVE_GAME = { verseId: VERSE, isOwner: true, title: "Live Game", description: "d", imageUrl: "https://x/i.png", tag: ["rpg"], category: "ALL", isPublic: true };
+const firstRoutes = () => ({
+  "GET /v1/verse/verseId": () => json(404, { message: "Verse not found" }),
+  "GET /v1/verse/id-available": () => json(200, { verseId: VERSE, available: true }),
+});
+const updateRoutes = (visibility) => ({
+  "GET /v1/verse/verseId": () => json(200, visibility === undefined ? LIVE_GAME : { ...LIVE_GAME, visibility }),
+});
+function confirmHostThat(answer, { canAsk = true } = {}) {
+  const asked = [];
+  return { asked, canAsk, ask: async (message, schema) => { asked.push({ message, schema }); return answer; } };
+}
+
+/** [name, routes, input, run condition, what the prompt shows]. */
+const DEPLOY_VISIBILITY = [
+  ["first deploy, visibility not given (defaults to Public)", firstRoutes, FULL_FIRST, "user_confirm", [/Game: "My Game"/, /Visibility: not published yet → Public \(listed on Verse8 for everyone\)/, /to Private afterwards/]],
+  ["first deploy, Unlisted", firstRoutes, { ...FULL_FIRST, visibility: "Unlisted" }, "user_confirm", [/not published yet → Unlisted/]],
+  ["first deploy, Private", firstRoutes, { ...FULL_FIRST, visibility: "Private" }, "preview"],
+  ["update, Private kept", () => updateRoutes("Private"), NOTES, "preview"],
+  ["update, Private → Public", () => updateRoutes("Private"), { ...NOTES, visibility: "Public" }, "user_confirm", [/Game: "Live Game"/, /Visibility: Private → Public/, /back to Private/]],
+  ["update, Private → Unlisted", () => updateRoutes("Private"), { ...NOTES, visibility: "Unlisted" }, "user_confirm", [/Private → Unlisted/]],
+  ["update, Unlisted → Public", () => updateRoutes("Unlisted"), { ...NOTES, visibility: "Public" }, "user_confirm", [/Unlisted → Public/]],
+  ["update, Public → Private", () => updateRoutes("Public"), { ...NOTES, visibility: "Private" }, "preview"],
+  ["update, Public → Unlisted", () => updateRoutes("Public"), { ...NOTES, visibility: "Unlisted" }, "preview"],
+  ["update, Public kept", () => updateRoutes("Public"), NOTES, "preview"],
+  ["update of a record without a visibility (the body falls back to Public)", () => updateRoutes(undefined), NOTES, "user_confirm", [/Visibility: not set → Public/]],
+];
+
+for (const [name, routes, input, condition, shows = []] of DEPLOY_VISIBILITY) {
+  test(`runDeploy dryRun run condition: ${name} → ${condition}; the dryRun asks nobody`, async () => {
+    const dir = makeProject();
+    const { calls, handler } = router(routes());
+    const host = confirmHostThat({ action: "accept", content: { choice: "Run" } });
+    const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir, input), dir, host)));
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.runCondition, condition);
+    if (condition === "preview") assert.equal(res.confirmation, undefined);
+    else {
+      assert.doesNotMatch(res.confirmation, /[\r\n]/);
+      assert.match(res.confirmation, new RegExp(`\(verse ${VERSE}\)`));
+      assert.match(res.confirmation, /applied when this deploy publishes the new build/);
+      for (const re of shows) assert.match(res.confirmation, re);
+      // The prompt names the visibility the publish body will carry.
+      assert.ok(res.confirmation.includes(`→ ${res.publishBody.visibility} `), res.confirmation);
+    }
+    assert.equal(host.asked.length, 0);
+    assert.ok(!calls.some((c) => !c.key.startsWith("GET")));
+  });
+}
+
+const DEPLOY_REFUSALS = [
+  ["decline", confirmHostThat({ action: "decline" }), "user_cancelled", 1],
+  ["cancel", confirmHostThat({ action: "cancel" }), "user_cancelled", 1],
+  ["accept with the Cancel choice", confirmHostThat({ action: "accept", content: { choice: "Cancel" } }), "user_cancelled", 1],
+  ["accept without content", confirmHostThat({ action: "accept" }), "user_cancelled", 1],
+  ["a host that did not declare elicitation", confirmHostThat({ action: "accept", content: { choice: "Run" } }, { canAsk: false }), "confirm_unavailable", 0],
+  ["no host", undefined, "confirm_unavailable", 0],
+];
+for (const [name, routes, input] of [
+  ["first deploy (Public by default)", firstRoutes, FULL_FIRST],
+  ["update Private → Public", () => updateRoutes("Private"), { ...NOTES, visibility: "Public" }],
+]) {
+  for (const [label, host, error, asks] of DEPLOY_REFUSALS) {
+    test(`runDeploy ${name}: ${label} → ${error} before the checkpoint; no commit, no write call`, async () => {
+      const dir = makeProject();
+      fs.writeFileSync(path.join(dir, "pending.txt"), "not committed yet\n");
+      if (host) host.asked.length = 0;
+      const { calls, handler } = router(routes());
+      const real = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, ...input });
+      const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+      assert.equal(res.ok, false, JSON.stringify(res));
+      assert.equal(res.stage, "confirm");
+      assert.equal(res.error, error);
+      assert.match(res.hint, /Nothing was changed/);
+      assert.match(res.hint, new RegExp(`General tab: https://create[.]verse8[.]io/creations/${VERSE} `), "says where to widen it on the web");
+      assert.equal(host ? host.asked.length : 0, asks);
+      if (asks) assert.deepEqual(host.asked[0].schema.properties.choice.enum, ["Cancel", "Run"]);
+      assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), [], "no write call");
+      assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, stdio: "pipe" }), "the checkpoint did not commit");
+      assert.match(execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" }), /pending\.txt/);
+    });
+  }
+}
+
+// ── what the user saw is what the deploy publishes ──
+
+test("runDeploy update Private → Public: the visibility is changed on the web while the prompt is open → plan_mismatch after Run; no commit, no write call", async () => {
+  const dir = makeProject();
+  fs.writeFileSync(path.join(dir, "pending.txt"), "not committed yet\n");
+  let live = "Private";
+  const { calls, handler } = router({ "GET /v1/verse/verseId": () => json(200, { ...LIVE_GAME, visibility: live }) });
+  const asked = [];
+  const host = {
+    canAsk: true,
+    ask: async (message) => {
+      asked.push(message);
+      live = "Unlisted";
+      return { action: "accept", content: { choice: "Run" } };
+    },
+  };
+  const real = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, ...NOTES, visibility: "Public" });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /Visibility: Private → Public/);
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "confirm");
+  assert.equal(res.error, "plan_mismatch");
+  assert.equal(res.afterConfirmation, true);
+  assert.ok(res.changed.some((c) => c.part === "state.visibility" && c.now === "Unlisted"), JSON.stringify(res.changed));
+  assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), []);
+  assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, stdio: "pipe" }), "the checkpoint did not commit");
+});
+
+test("runDeploy update Private → Public: Run with nothing changed → the deploy goes on past the confirmation (it stops later, at a step this test makes fail)", async () => {
+  const dir = makeProject();
+  // Pushes go to a local bare repository, and the install step is a command
+  // that fails at once: the run gets past the prompt without the network or
+  // a real build, and never reaches the publish call.
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-deploy-bare-"));
+  execFileSync("git", ["init", "-q", "--bare"], { cwd: bare });
+  execFileSync("git", ["config", "remote.origin.pushurl", bare], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "t@example.invalid"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, "pending.txt"), "to commit\n");
+  const { calls, handler } = router(updateRoutes("Private"));
+  const host = confirmHostThat({ action: "accept", content: { choice: "Run" } });
+  const real = deployInputSchema.parse({
+    projectDir: dir,
+    skipAttachCheck: true,
+    ...NOTES,
+    visibility: "Public",
+    installCommand: "git this-subcommand-does-not-exist",
+    stepTimeoutMs: 20000,
+  });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+  assert.equal(host.asked.length, 1, "asked once");
+  assert.equal(res.ok, false, JSON.stringify(res).slice(0, 600));
+  assert.notEqual(res.stage, "confirm", JSON.stringify(res).slice(0, 600));
+  assert.ok(["checkpoint", "build"].includes(res.stage), `stopped at ${res.stage}: ${res.error}`);
+  assert.ok(!calls.some((c) => c.key.startsWith("POST /v1/verse/")), "the publish call was not reached");
+  // The game was read twice: for the plan, and again after Run.
+  assert.equal(calls.filter((c) => c.key === "GET /v1/verse/verseId").length, 2);
+});
+
+test("MCP: verse8_deploy is wired to the host — a widening deploy opens the host's prompt; cancel → stage confirm, nothing sent", async () => {
+  const dir = makeProject();
+  const { calls, handler } = router(updateRoutes("Private"));
+  const server = createServer();
+  const client = new Client({ name: "test-host", version: "0" }, { capabilities: { elicitation: { form: {} } } });
+  const seen = [];
+  client.setRequestHandler(ElicitRequestSchema, async (req) => {
+    seen.push(req.params);
+    return { action: "cancel" };
+  });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+  try {
+    const res = await withEnvToken(() =>
+      withFetch(handler, async () => {
+        const out = await client.callTool({ name: "verse8_deploy", arguments: { projectDir: dir, skipAttachCheck: true, ...NOTES, visibility: "Public" } });
+        return JSON.parse(out.content[0].text);
+      }),
+    );
+    assert.equal(seen.length, 1, "the host was asked");
+    assert.match(seen[0].message, /Deploy this game so that more people can see it\? Game: "Live Game"/);
+    assert.equal(seen[0].requestedSchema.properties.choice.enum[0], "Cancel");
+    assert.equal(res.stage, "confirm", JSON.stringify(res));
+    assert.equal(res.error, "user_cancelled");
+    assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("runDeploy update Private → Public: the read after Run is rejected (401) → stage stays confirm, the failed step is named apart; no commit, no write", async () => {
+  const dir = makeProject();
+  let rejected = false;
+  const { calls, handler } = router({
+    "GET /v1/verse/verseId": () => (rejected ? json(401, { message: "Unauthorized" }) : json(200, { ...LIVE_GAME, visibility: "Private" })),
+  });
+  const host = {
+    canAsk: true,
+    ask: async () => {
+      rejected = true;
+      return { action: "accept", content: { choice: "Run" } };
+    },
+  };
+  const real = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, ...NOTES, visibility: "Public" });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "confirm", "the refusal happened at the confirmation");
+  assert.equal(res.rereadStage, "resolve_mode", "the step of the second run that failed");
+  assert.equal(res.error, "unauthorized");
+  assert.equal(res.status, 401);
+  assert.equal(res.afterConfirmation, true);
+  assert.match(res.hint, /^Nothing was changed: the target could not be read again before the write/);
+  assert.doesNotMatch(res.hint, /fresh preview/);
+  assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), []);
+  assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, stdio: "pipe" }), "the checkpoint did not commit");
 });
