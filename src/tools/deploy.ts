@@ -68,10 +68,22 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 const GAMES_BASE_URL = "https://agent8-games.verse8.io";
 /**
  * Reading the game again before the publish call: how many tries, the wait
- * before try n (× n), the time one try may take, and the time all of it may
- * take. Exported so a test can shorten the waits.
+ * before try n (× n), and the time one try may take before it is aborted.
+ * Exported so a test can shorten the waits.
+ *
+ * tryMs is not measured — the response times of this API have not been
+ * recorded. It is the limit this server already gives one JSON request to
+ * a Verse8 API (gameserverGateway's REQUEST_TIMEOUT_MS, 20 s; the token
+ * exchange uses 15 s). The read stands between a finished upload and its
+ * publish, so a slow answer that would have come is worth waiting for: 5 s
+ * threw such answers away. Everything together is bounded by
+ * rereadTotalMs() — 61.2 s with these values.
  */
-export const REREAD = { tries: 3, waitMs: 400, tryMs: 5000, totalMs: 12000 };
+export const REREAD = { tries: 3, waitMs: 400, tryMs: 20_000 };
+/** The longest the whole read can take: every try at its limit, plus the waits between them. */
+export function rereadTotalMs(): number {
+  return REREAD.tries * REREAD.tryMs + (REREAD.waitMs * REREAD.tries * (REREAD.tries - 1)) / 2;
+}
 const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__9C", "__review_required"]);
 const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
   MSU: ["__MSU", "__review_required"],
@@ -269,21 +281,19 @@ function fail(
   return { ok: false, stage, error, hint: safeHint(hint), ...extras };
 }
 
-/** `p`, or a rejection after `ms`. The request itself is not cancelled; its late answer is ignored. */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no answer within ${Math.round(ms / 100) / 10} s`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
+/**
+ * The game, read with a limit of `ms`. At the limit the request itself is
+ * aborted (not left running with its answer ignored), and the error says
+ * that it was the limit, not the network.
+ */
+async function getVerseWithin(verseId: string, token: string, ms: number): Promise<Awaited<ReturnType<typeof getVerse>>> {
+  const signal = AbortSignal.timeout(ms);
+  try {
+    return await getVerse(verseId, token, signal);
+  } catch (e) {
+    if (signal.aborted) throw new Error(`no answer within ${Math.round(ms / 100) / 10} s (the request was cancelled)`);
+    throw e;
+  }
 }
 
 function dropUndefined(obj: Record<string, unknown>): Record<string, unknown> {
@@ -1360,17 +1370,14 @@ export async function runDeploy(
     // error or a 5xx / 429 answer is tried again a moment later.
     let again: Awaited<ReturnType<typeof getVerse>> | undefined;
     let lastError: unknown;
-    // The whole read has a deadline: a request that hangs must not hold the
-    // publish back for long, and each try is cut off on its own.
-    const deadline = Date.now() + REREAD.totalMs;
+    // Each try has its own limit and is aborted at it, so a request that
+    // hangs cannot hold the publish back for longer than rereadTotalMs().
     let tries = 0;
     for (let attempt = 0; attempt < REREAD.tries; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, REREAD.waitMs * attempt));
-      const left = deadline - Date.now();
-      if (left <= 0) break;
       tries++;
       try {
-        again = await withTimeout(getVerse(verseId, token), Math.min(REREAD.tryMs, left));
+        again = await getVerseWithin(verseId, token, REREAD.tryMs);
         lastError = undefined;
         if (again.ok || !(again.status >= 500 || again.status === 429)) break;
       } catch (e) {
@@ -1379,7 +1386,7 @@ export async function runDeploy(
       }
     }
     if (!again) {
-      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${tries} ${tries === 1 ? "try" : "tries"} within ${Math.round(REREAD.totalMs / 1000)} s). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
+      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${tries} ${tries === 1 ? "try" : "tries"} within ${Math.round(rereadTotalMs() / 1000)} s). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
     }
     if (!again.ok) {
       const next = again.status === 401 ? `${rejectedTokenHint(auth)}, then run verse8_deploy again` : "Run verse8_deploy again";

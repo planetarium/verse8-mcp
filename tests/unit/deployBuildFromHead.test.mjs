@@ -720,7 +720,7 @@ async function deployWithGets(onGet, { tune } = {}) {
   const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true };
   globalThis.fetch = async (url, init) => {
     const p = new URL(url).pathname;
-    if (p === "/v1/verse/verseId") return onGet(++gets, () => new Response(JSON.stringify(live), { status: 200 }));
+    if (p === "/v1/verse/verseId") return onGet(++gets, () => new Response(JSON.stringify(live), { status: 200 }), init);
     if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
       posts.push(JSON.parse(init.body));
       return new Response(JSON.stringify({ verseId: VERSE, title: "Live" }), { status: 200 });
@@ -729,9 +729,8 @@ async function deployWithGets(onGet, { tune } = {}) {
   };
   try {
     const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
-    const started = Date.now();
     const res = await runDeploy(input, dir);
-    return { res, posts, gets, tookMs: Date.now() - started };
+    return { res, posts, gets };
   } finally {
     globalThis.fetch = saved.fetch;
     process.env.PATH = saved.path;
@@ -751,18 +750,41 @@ test("deploy: the read before publishing throws once (a network error) and is tr
   assert.equal(posts.length, 1);
 });
 
-test("deploy: the read before publishing never answers → it gives up within its deadline and does not publish", async () => {
-  const hang = () => new Promise(() => {});
-  const { res, posts, gets, tookMs } = await deployWithGets((n, ok) => (n === 1 ? ok() : hang()), { tune: { tryMs: 300, totalMs: 700, waitMs: 50 } });
+// The test has its own timeout: without the limit on the read this deploy
+// never returns, and the run should fail here instead of hanging.
+test("deploy: the read before publishing never answers → every try is aborted at its limit, and it does not publish", { timeout: 60_000 }, async () => {
+  // Like fetch: answers only by rejecting when its signal aborts.
+  const signals = [];
+  const hang = (init) =>
+    new Promise((_, reject) => {
+      signals.push(init?.signal);
+      init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+    });
+  const { res, posts, gets } = await deployWithGets((n, ok, init) => (n === 1 ? ok() : hang(init)), { tune: { tryMs: 300, waitMs: 50 } });
   assert.equal(res.ok, false, JSON.stringify(res));
   assert.equal(res.stage, "publish");
   assert.equal(res.error, "upstream_unreachable");
-  assert.match(res.hint, /no answer within 0\.[1-3] s/);
-  assert.match(res.hint, /could not be read again before publishing \(\d (try|tries) within/);
+  // The limit that was set, not a time that was measured: it reads the same on a slow machine.
+  assert.match(res.hint, /no answer within 0\.3 s \(the request was cancelled\)/);
+  assert.match(res.hint, /could not be read again before publishing \(3 tries within 1 s\)/);
   assert.match(res.hint, /already uploaded/);
   assert.equal(res.filesLive, true);
   assert.deepEqual(posts, []);
-  assert.ok(gets >= 2 && gets <= 4, `${gets}`);
-  // The whole deploy (fake build included) ends soon after the 0.7 s deadline, not after tries × a long wait.
-  assert.ok(tookMs < 15000, `${tookMs} ms`);
+  assert.equal(gets, 4, "the reading at the start and three tries");
+  assert.equal(signals.length, 3);
+  assert.ok(signals.every((s) => s instanceof AbortSignal && s.aborted), "each timed-out request was really cancelled");
+});
+
+test("deploy: the read before publishing answers slowly, inside its limit → it is waited for and published", { timeout: 60_000 }, async () => {
+  const slow = (ok) => new Promise((resolve) => setTimeout(() => resolve(ok()), 250));
+  const { res, posts, gets } = await deployWithGets((n, ok) => (n === 1 ? ok() : slow(ok)), { tune: { tryMs: 5000, waitMs: 50 } });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(gets, 2, "one try was enough");
+  assert.equal(posts.length, 1);
+});
+
+test("REREAD: the limit of one try is not below what this server gives other single API requests, and the total follows from it", async () => {
+  const { REREAD, rereadTotalMs } = await import("../../dist/tools/deploy.js");
+  assert.ok(REREAD.tryMs >= 15_000, `${REREAD.tryMs}`);
+  assert.equal(rereadTotalMs(), REREAD.tries * REREAD.tryMs + REREAD.waitMs * 3);
 });

@@ -1325,7 +1325,13 @@ test("purchase dates without an offset are read as UTC, as the server reads them
   assert.equal(vxSaleLevel(v, Date.parse("2026-12-01T20:01:00Z")), 2);
 });
 
-/** Makes Date.now() jump forward by `ms` when `f` is called, until restore(). */
+/**
+ * The distance of every "soon" date in these tests, and a third of every
+ * jump: wide enough that a slow machine cannot cross a date by itself
+ * between two lines of a test.
+ */
+const HOUR = 3_600_000;
+/** Makes Date.now() jump forward by `ms` on jump(ms), until restore(). */
 function clockJump() {
   const real = Date.now;
   let shift = 0;
@@ -1336,20 +1342,20 @@ function clockJump() {
 test("an end date passes while the image uploads: extending it now re-opens an ended sale → stopped, the user was not asked", async () => {
   const dir = project();
   await withShop(async (calls, items) => {
-    // On sale now, ending in one minute.
-    const soon = new Date(Date.now() + 60_000).toISOString();
+    // On sale now, ending in an hour.
+    const soon = new Date(Date.now() + HOUR).toISOString();
     items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
     const input = { action: "upsert", itemId: 12, purchaseConstraints: { purchaseEndDate: FUTURE }, imagePath: "item.png" };
     const pre = await run(dir, input);
     assert.equal(pre.runCondition, "preview", "extending the end of a sale that is still running is not a start");
     const clock = clockJump();
     try {
-      const r = await withUploadHook(() => clock.jump(5 * 60_000), () => run(dir, { ...input, planId: pre.planId }));
+      const r = await withUploadHook(() => clock.jump(3 * HOUR), () => run(dir, { ...input, planId: pre.planId }));
       assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
       assert.equal(r.afterUpload, true);
       assert.equal(r.runCondition, "user_confirm");
-      assert.match(r.hint, /a sale date passed, and the action now needs the user's own confirmation, which it was not asked for/);
-      assert.match(r.hint, /Start selling this VX Shop item\?/);
+      assert.match(r.hint, /a sale date passed, so this change now needs the user's own confirmation, and this run was started without one/);
+      assert.match(r.hint, /It would now ask: Start selling this VX Shop item\?/);
     } finally {
       clock.restore();
     }
@@ -1357,10 +1363,10 @@ test("an end date passes while the image uploads: extending it now re-opens an e
   });
 });
 
-test("an end date passes while the prompt is open: the prompt no longer says what would happen → not run", async () => {
+test("an end date passes while the prompt is open: the user was asked and saw these values, and nothing can ask more than that → Run runs", async () => {
   const dir = project();
   await withShop(async (calls, items) => {
-    const soon = new Date(Date.now() + 60_000).toISOString();
+    const soon = new Date(Date.now() + HOUR).toISOString();
     items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
     // A repricing of an item on sale: asked as "change the price of an item on sale".
     const input = { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { purchaseEndDate: FUTURE } };
@@ -1368,16 +1374,16 @@ test("an end date passes while the prompt is open: the prompt no longer says wha
     assert.match(pre.confirmation, /^Change the price of a VX Shop item that is on sale\?/);
     const clock = clockJump();
     try {
-      const host = hostAfter(() => clock.jump(5 * 60_000));
+      const host = hostAfter(() => clock.jump(3 * HOUR));
       const r = await run(dir, { ...input, planId: pre.planId }, host);
-      assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
-      assert.equal(r.afterConfirmation, true);
-      assert.match(r.hint, /a sale date passed, and the action is no longer the one the user confirmed/);
-      assert.match(r.hint, /now: Start selling this VX Shop item at a new price\?/);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(host.asked.length, 1);
+      // The prompt they answered showed the price and the new end date in full.
+      assert.ok(host.asked[0].message.includes("Price: 300 → 350 VX") && host.asked[0].message.includes(`→ "${FUTURE}"`), host.asked[0].message);
     } finally {
       clock.restore();
     }
-    assert.deepEqual(writes(calls), []);
+    assert.equal(writes(calls).length, 1);
   });
 });
 
@@ -1435,8 +1441,6 @@ test("vxSaleLevel: a start after the end is not on sale and not scheduled — th
   assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-11-27", purchaseEndDate: "2026-12-01" }), now), 1, "in order: scheduled");
   assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-11-01", purchaseEndDate: "2026-12-01" }), now), 2);
   assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-12-01", purchaseEndDate: "2026-12-01" }), now), 1, "the same instant is a window (the server allows start ≤ now ≤ end)");
-  // Even with every start date taken as reached (how two decisions are compared), a reversed window stays closed.
-  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2027-12-01", purchaseEndDate: "2027-06-01" }), now, { startArrived: true }), 0);
 });
 
 test("an item whose start is after its end: moving the start before the end schedules a sale → asked; repricing it is a preview", async () => {
@@ -1488,9 +1492,9 @@ test("purchase dates without a time zone are UTC on a machine in Asia/Seoul too 
 
 // ── a start date that passes is not a change; an end date that passes is ──
 
-/** Sets item `id` on sale from one minute from now (scheduled), optionally until `end`. */
+/** Sets item `id` on sale from an hour from now (scheduled), optionally until `end`. */
 const startsSoon = (items, id, extra = {}) => {
-  const soon = new Date(Date.now() + 60_000).toISOString();
+  const soon = new Date(Date.now() + HOUR).toISOString();
   items.find((i) => i.id === id).metadata = JSON.stringify({ purchaseConstraints: { purchaseStartDate: soon, ...extra } });
   return soon;
 };
@@ -1506,7 +1510,7 @@ test("the start date passes while the prompt is open: the prompt would now say '
     assert.ok(pre.confirmation.includes(`buyers can purchase it from "${soon}"`), pre.confirmation);
     const clock = clockJump();
     try {
-      const host = hostAfter(() => clock.jump(5 * 60_000));
+      const host = hostAfter(() => clock.jump(3 * HOUR));
       const r = await run(dir, { ...input, planId: pre.planId }, host);
       assert.equal(r.ok, true, JSON.stringify(r));
       assert.equal(host.asked.length, 1);
@@ -1531,7 +1535,7 @@ test("the start date passes while an image uploads: a confirmed sale start is st
     assert.equal(pre.runCondition, "user_confirm");
     const clock = clockJump();
     try {
-      const r = await withUploadHook(() => clock.jump(5 * 60_000), () => run(dir, { ...input, planId: pre.planId }, hostThat(RUN)));
+      const r = await withUploadHook(() => clock.jump(3 * HOUR), () => run(dir, { ...input, planId: pre.planId }, hostThat(RUN)));
       assert.equal(r.ok, true, JSON.stringify(r));
     } finally {
       clock.restore();
@@ -1540,30 +1544,209 @@ test("the start date passes while an image uploads: a confirmed sale start is st
   });
 });
 
-test("after the prompt and after an upload the same comparison decides: an end date passing stops both, with the same words", async () => {
+test("a run the user confirmed is not stopped by a date that passes, during the prompt or during the upload (an end date here)", async () => {
   const dir = project();
-  await withShop(async (calls, items) => {
-    const soon = new Date(Date.now() + 60_000).toISOString();
-    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
-    // Asked (a repricing); the end passes during the prompt and during the upload of another run.
-    const input = { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { purchaseEndDate: FUTURE }, imagePath: "item.png" };
-    const pre = await run(dir, input);
-    const hints = [];
-    for (const during of ["prompt", "upload"]) {
+  for (const during of ["prompt", "upload"]) {
+    await withShop(async (calls, items) => {
+      const soon = new Date(Date.now() + HOUR).toISOString();
+      items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
+      // Asked (a repricing that also extends the end); once the old end has passed the same write re-opens the sale.
+      const input = { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { purchaseEndDate: FUTURE }, imagePath: "item.png" };
+      const pre = await run(dir, input);
+      assert.equal(pre.runCondition, "user_confirm");
       const clock = clockJump();
       try {
-        const host = during === "prompt" ? hostAfter(() => clock.jump(5 * 60_000)) : hostThat(RUN);
-        const r = await withUploadHook(() => { if (during === "upload") clock.jump(5 * 60_000); }, () => run(dir, { ...input, planId: pre.planId }, host));
-        assert.equal(r.error, "plan_mismatch", `${during}: ${JSON.stringify(r)}`);
-        assert.equal(r.runCondition, "user_confirm");
-        hints.push(r.hint.replace(/^.*? — /, ""));
+        const host = during === "prompt" ? hostAfter(() => clock.jump(3 * HOUR)) : hostThat(RUN);
+        const r = await withUploadHook(() => { if (during === "upload") clock.jump(3 * HOUR); }, () => run(dir, { ...input, planId: pre.planId }, host));
+        assert.equal(r.ok, true, `${during}: ${JSON.stringify(r)}`);
       } finally {
         clock.restore();
       }
+      assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"], during);
+    });
+  }
+});
+
+// ═══ fourth review (42f2c47): one rule for the time that passes; one reader for dates ═══
+
+// ── the run is held to the confirmation it actually got ──
+
+test("not asked, and it comes to need asking: a scheduled start moved to an earlier day arrives while the image uploads → stopped", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    // Scheduled for the far future; the edit moves the start to an hour from now.
+    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseStartDate: FUTURE } });
+    const sooner = new Date(Date.now() + HOUR).toISOString();
+    const input = { action: "upsert", itemId: 12, purchaseConstraints: { purchaseStartDate: sooner }, imagePath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "preview", "scheduled before and after: nobody is asked");
+    const clock = clockJump();
+    try {
+      const r = await withUploadHook(() => clock.jump(3 * HOUR), () => run(dir, { ...input, planId: pre.planId }));
+      // Written now, it would put the item on sale at once.
+      assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+      assert.equal(r.afterUpload, true);
+      assert.equal(r.runCondition, "user_confirm");
+      assert.match(r.hint, /this run was started without one/);
+      assert.match(r.hint, /It would now ask: Start selling this VX Shop item\?.*from now on/);
+    } finally {
+      clock.restore();
     }
-    assert.equal(hints[0], hints[1], "one rule, one wording");
-    assert.match(hints[0], /^a sale date passed, and the action is no longer the one the user confirmed \(now: Start selling this VX Shop item at a new price\?/);
-    assert.ok(!writes(calls).some((c) => c.path === "/v1/vx-shop-items/12"), "the edit was never sent");
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload"], "the edit was not sent");
+  });
+});
+
+for (const [name, newStart] of [["removes the start date", undefined], ["moves the start date into the past", "2020-01-01T00:00:00.000Z"]]) {
+  test(`asked, and the old end date passes while the prompt is open: an edit that ${name} and extends the end → it was confirmed, so it runs`, async () => {
+    const dir = project();
+    await withShop(async (calls, items) => {
+      // Scheduled: opens in half an hour, closes in an hour.
+      const at = (ms) => new Date(Date.now() + ms).toISOString();
+      items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseStartDate: at(HOUR / 2), purchaseEndDate: at(HOUR) } });
+      const input = { action: "upsert", itemId: 12, purchaseConstraints: { ...(newStart ? { purchaseStartDate: newStart } : {}), purchaseEndDate: FUTURE } };
+      const pre = await run(dir, input);
+      assert.equal(pre.runCondition, "user_confirm");
+      assert.match(pre.confirmation, /^Start selling this VX Shop item\?/);
+      const clock = clockJump();
+      try {
+        const host = hostAfter(() => clock.jump(3 * HOUR));
+        const r = await run(dir, { ...input, planId: pre.planId }, host);
+        assert.equal(r.ok, true, JSON.stringify(r));
+        // The prompt they answered is the one a preview would still give now.
+        assert.equal((await run(dir, input)).confirmation, host.asked[0].message);
+      } finally {
+        clock.restore();
+      }
+      assert.equal(writes(calls).length, 1);
+    });
+  });
+}
+
+test("not asked, and it still would not ask: a start date arriving during the upload of a description edit does not stop it", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    startsSoon(items, 12);
+    const input = { action: "upsert", itemId: 12, description: "new text", imagePath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "preview");
+    const clock = clockJump();
+    try {
+      const r = await withUploadHook(() => clock.jump(3 * HOUR), () => run(dir, { ...input, planId: pre.planId }));
+      assert.equal(r.ok, true, JSON.stringify(r));
+    } finally {
+      clock.restore();
+    }
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"]);
+  });
+});
+
+// ── purchase dates are read in one form only ──
+
+test("readPurchaseDate: only YYYY-MM-DD[THH:MM[:SS[.sss]]][Z|±HH:MM]; everything else is not read at all", () => {
+  const { readPurchaseDate, dateOf } = creatorOps;
+  const ok = {
+    "2026-12-01": ["2026-12-01T00:00:00Z", true],
+    "2026-12-01T20:00": ["2026-12-01T20:00:00Z", true],
+    "2026-12-01 20:00:05": ["2026-12-01T20:00:05Z", true],
+    "2026-12-01T20:00:05.5": ["2026-12-01T20:00:05.500Z", true],
+    "2026-12-01T20:00:05.250Z": ["2026-12-01T20:00:05.250Z", false],
+    "2026-12-01 20:00+09:00": ["2026-12-01T11:00:00Z", false],
+    "2026-12-01T20:00:00-05:30": ["2026-12-02T01:30:00Z", false],
+    "2028-02-29": ["2028-02-29T00:00:00Z", true],
+  };
+  for (const [text, [iso, zoneless]] of Object.entries(ok)) {
+    assert.deepEqual(readPurchaseDate(text), { ms: Date.parse(iso), zoneless }, text);
+  }
+  const refused = [
+    "2026-12 20:00", // the server takes it; JavaScript reads it in local time
+    "+2026-12-01 20:00", // a signed year: the same
+    "+002026-12-01T20:00:00Z",
+    "2026-12",
+    "2026",
+    "12/01/2026",
+    "Dec 1, 2026 20:00",
+    "2026-12-01T20",
+    "2026-12-01T20:00:00+0900",
+    "2026-12-01T20:00:00z",
+    "2026-12-01Z", // a time zone only after a time
+    "2026-12-01+09:00",
+    " 2026-12-01",
+    "2026-12-01 ",
+    "2026-13-01",
+    "2026-02-30",
+    "2026-02-29", // not a leap year
+    "2026-12-01T24:00",
+    "2026-12-01T20:60",
+    "2026-12-01T20:00:00+24:00",
+    "2026-12-01T20:00:00.2505",
+    "20261201",
+    "1796083200000",
+    "",
+  ];
+  for (const text of refused) {
+    assert.equal(readPurchaseDate(text), null, JSON.stringify(text));
+    assert.equal(dateOf(text), null, JSON.stringify(text));
+  }
+  for (const v of [1796083200000, null, undefined, {}, true]) assert.equal(readPurchaseDate(v), null);
+});
+
+test("verse8_vxshop: a purchase date in another form is refused as invalid_input, on create and on edit, before anything is read or written", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    for (const bad of ["2026-12 20:00", "+2026-12-01 20:00", "2026-02-30"]) {
+      for (const key of ["purchaseStartDate", "purchaseEndDate"]) {
+        const create = await run(dir, { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 5, isActive: true, purchaseConstraints: { [key]: bad } });
+        assert.equal(create.error, "invalid_input", `${key} ${bad}: ${JSON.stringify(create)}`);
+        assert.match(create.hint, new RegExp(`purchaseConstraints\\.${key} must be a calendar date written as YYYY-MM-DD`));
+        assert.match(create.hint, /without Z or an offset it is UTC/);
+        const edit = await run(dir, { action: "upsert", itemId: 12, purchaseConstraints: { [key]: bad } });
+        assert.equal(edit.error, "invalid_input", `${key} ${bad}`);
+      }
+    }
+    assert.deepEqual(calls, [], "no request at all");
+    // The accepted form still goes through, sent as it was given.
+    const fine = await run(dir, { action: "upsert", itemId: 12, purchaseConstraints: { purchaseEndDate: "2999-12-01 20:00" } });
+    assert.equal(fine.ok, true, JSON.stringify(fine));
+  });
+});
+
+test("the review's case: on a machine in Asia/Seoul an end date '2026-12 20:00' is not read at all (it used to be read 9 hours early and make a sale start a preview)", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const mod = url.pathToFileURL(path.resolve(SRC_TOOLS, "..", "..", "dist", "tools", "creatorOps.js")).href;
+  const script = `
+    const { dateOf, vxSaleLevel, purchaseDateProblem } = await import(${JSON.stringify(mod)});
+    const limits = { purchaseStartDate: "2026-12-01T15:00:00Z", purchaseEndDate: "2026-12 20:00" };
+    console.log(JSON.stringify({
+      offsetHours: (Date.parse("2026-12-01T20:00:00Z") - new Date("2026-12-01T20:00:00").getTime()) / 3600000,
+      // What JavaScript makes of it here: 11:00 UTC, before the 15:00 UTC start. The server (UTC) reads 20:00.
+      jsReadsBeforeStart: new Date("2026-12 20:00").getTime() < Date.parse(limits.purchaseStartDate),
+      end: dateOf(limits.purchaseEndDate),
+      signed: dateOf("+2026-12-01 20:00"),
+      problem: purchaseDateProblem(limits),
+    }));`;
+  const out = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TZ: "Asia/Seoul" }, encoding: "utf8" });
+  assert.equal(out.status, 0, out.stderr);
+  const r = JSON.parse(out.stdout.trim().split("\n").pop());
+  assert.equal(r.offsetHours, 9, "the child really runs in Asia/Seoul");
+  assert.equal(r.jsReadsBeforeStart, true, "the trap is real on this runtime");
+  assert.equal(r.end, null);
+  assert.equal(r.signed, null);
+  assert.match(r.problem, /purchaseConstraints\.purchaseEndDate must be/);
+});
+
+test("an item that already holds a purchase date this server cannot read: its sale state is unknown, so a change that leaves it switched on asks; one that hides or archives it does not", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: "2026-12 20:00" } });
+    const edit = await run(dir, { action: "upsert", itemId: 12, description: "new text" });
+    assert.equal(edit.runCondition, "user_confirm", JSON.stringify(edit));
+    assert.match(edit.confirmation, /until "2026-12 20:00" \(a purchase date of this item is in a form this server cannot read, so its real sale window may differ\)/);
+    assert.doesNotMatch(edit.confirmation, /2026-12 20:00" UTC/, "not marked UTC: it was not read");
+    // Replacing it with a readable one is asked too: what it was before is not known.
+    assert.equal((await run(dir, { action: "upsert", itemId: 12, purchaseConstraints: { purchaseEndDate: FUTURE } })).runCondition, "user_confirm");
+    assert.equal((await run(dir, { action: "upsert", itemId: 12, isActive: false })).runCondition, "preview");
+    assert.equal((await run(dir, { action: "archive", itemId: 12 })).runCondition, "preview");
+    assert.deepEqual(writes(calls), []);
   });
 });
 

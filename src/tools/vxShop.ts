@@ -2,7 +2,7 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
@@ -36,8 +36,8 @@ const purchaseConstraintsSchema = z
     maxPurchasePerUser: z.number().int().min(1).optional().describe("Max units one user may buy in total."),
     maxPurchasePerPeriod: z.number().int().min(1).optional().describe("Max units per user within purchasePeriodDays."),
     purchasePeriodDays: z.number().int().min(1).optional().describe("Length of the period for maxPurchasePerPeriod."),
-    purchaseStartDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales open. Without a time zone (Z or an offset such as +09:00) it is UTC."),
-    purchaseEndDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales close. Without a time zone (Z or an offset such as +09:00) it is UTC."),
+    purchaseStartDate: z.string().min(1).max(40).optional().describe("Date (-time) sales open: YYYY-MM-DD[THH:MM[:SS]][Z or +09:00]. Without a time zone it is UTC; other forms are refused."),
+    purchaseEndDate: z.string().min(1).max(40).optional().describe("Date (-time) sales close: YYYY-MM-DD[THH:MM[:SS]][Z or +09:00]. Without a time zone it is UTC; other forms are refused."),
   })
   .strict();
 
@@ -204,6 +204,10 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (input.metadata && "purchaseConstraints" in input.metadata) {
     return opFail("invalid_input", "Put purchase limits in purchaseConstraints, not in metadata.");
   }
+  // Only the dates the request gives: the ones an item already holds are
+  // re-sent as they are (and make its sale state unknown when unreadable).
+  const badDate = purchaseDateProblem(input.purchaseConstraints);
+  if (badDate) return opFail("invalid_input", badDate);
   // Not on the re-read after the upload: the checked bytes are already
   // sent, and the file may have been moved or removed since.
   if (input.imagePath && !probe?.skipLocalFiles) {
