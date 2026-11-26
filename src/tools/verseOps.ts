@@ -4,7 +4,7 @@ import { resolveToken, type TokenResolution } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
 import { LOGIN_HINT } from "../util/hints.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -224,7 +224,7 @@ async function runVerseOpsWith(input: VerseOpsInput, serverCwd: string, auth: To
   }
 }
 
-async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VerseOpsResult> {
+async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VerseOpsResult> {
   if (input.thumbnailPath && input.imageUrl) return opFail("invalid_input", "Pass either thumbnailPath or imageUrl, not both.");
   if ([input.videoPath, input.videoUrl, input.clearVideo ? "x" : undefined].filter(Boolean).length > 1) {
     return opFail("invalid_input", "Pass only one of videoPath, videoUrl, clearVideo.");
@@ -296,6 +296,11 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
       ...(input.videoPath ? { videoPath: mediaPath(projectDir, input.videoPath) } : {}),
     },
   };
+  if (probe) {
+    probe.plan = plan;
+    return PROBED;
+  }
+  const again = rereadWith((pr) => runUpdate(input, projectDir, verseId, token, undefined, pr));
   const gate = await planGate(plan, input.planId, {
     action: "update" as const,
     verseId,
@@ -303,7 +308,7 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     ...(vis ? {} : { keptVisibility: cur.visibility }),
     warnings,
     publishBody: body,
-  }, host);
+  }, host, again);
   if (!isApproved(gate)) return gate;
 
   if (input.thumbnailPath) {
@@ -546,7 +551,7 @@ async function findComment(
   return { ok: true, comment: null, pinnedId };
 }
 
-async function runCommentChange(input: VerseOpsInput, verseId: string, token: string, host: ConfirmHost | undefined): Promise<VerseOpsResult> {
+async function runCommentChange(input: VerseOpsInput, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VerseOpsResult> {
   if (input.commentId === undefined) return opFail("invalid_input", `${input.action} needs commentId (see action comments).`);
   const owned = await loadOwnedVerse(verseId, token);
   if (!owned.ok) return owned;
@@ -571,7 +576,12 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
       // author and content are what the user confirmation shows (creatorOps RUN_RULES).
       state: { content: c.content, pinned: isPinned, author: c.userHandle ?? c.userDisplayName ?? `uid ${c.userUid}` },
     };
-    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings }, host);
+    if (probe) {
+      probe.plan = plan;
+      return PROBED;
+    }
+    const again = rereadWith((pr) => runCommentChange(input, verseId, token, undefined, pr));
+    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings }, host, again);
     if (!isApproved(gate)) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);

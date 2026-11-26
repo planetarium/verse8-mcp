@@ -31,7 +31,7 @@ import {
   deriveProjectPathFromOrigin,
   detectGameserver,
 } from "./preview.js";
-import { confirmGate, isConfirmed, type ConfirmHost, type Plan } from "./creatorOps.js";
+import { confirmGate, isConfirmed, rereadWith, type ConfirmHost, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 
 /**
@@ -996,6 +996,7 @@ export async function runDeploy(
   input: DeployInput,
   serverCwd: string = process.cwd(),
   host?: ConfirmHost,
+  probe?: PlanProbe,
 ): Promise<DeployResult> {
   const cwd = path.resolve(input.projectDir ?? serverCwd);
   const warnings: string[] = [];
@@ -1157,7 +1158,16 @@ export async function runDeploy(
       tag: tags,
     },
   };
-  const confirmed = await confirmGate(visibilityPlan, host, { ask: !input.dryRun });
+  if (probe) {
+    probe.plan = visibilityPlan;
+    return fail("confirm", "plan_mismatch", "plan probe");
+  }
+  // After the user's Run the game is read again: a visibility or title
+  // changed on the web while the prompt was open ends the deploy here.
+  const confirmed = await confirmGate(visibilityPlan, host, {
+    ask: !input.dryRun,
+    reread: rereadWith((pr) => runDeploy(input, serverCwd, undefined, pr)),
+  });
   if (!isConfirmed(confirmed)) {
     const { error, hint, ok: _ok, ...extras } = confirmed;
     return fail("confirm", error, hint, { mode, ...extras });

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { redactHead, safeErrorHint, safeHint } from "../util/redact.js";
 import { getCreateBaseUrl } from "./preview.js";
+import { getVerse8WebBaseUrl } from "../api/verse8Web.js";
 import { rejectedTokenHint, type TokenWhere } from "../context/token.js";
 
 /**
@@ -241,6 +242,15 @@ export interface ConfirmText {
   change: string;
   /** Whether and how it can be undone. */
   undo: string;
+  /**
+   * Other changes of the same request, each `field: current → new`. Shown
+   * after `change` as far as the prompt has room; what does not fit is
+   * counted in the prompt, never cut silently. The target, `change` and
+   * `undo` are kept whole first.
+   */
+  also?: string[];
+  /** Words before `also` (default "also changes"). */
+  alsoLabel?: string;
 }
 
 export interface RunRule {
@@ -252,6 +262,28 @@ export interface RunRule {
 }
 
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+/**
+ * Text as a prompt may carry it. Format characters go first (bidi
+ * overrides, zero-width characters, the byte-order mark: they reorder or
+ * hide what the user reads), then any whitespace run becomes one space
+ * (`\s` covers the line and paragraph separators; NEL is added), then the
+ * remaining control characters go. A game title, an item name or a comment
+ * comes from outside and can hold any of them.
+ */
+const oneLine = (s: string): string => s.replace(/\p{Cf}/gu, "").replace(/[\s\x85]+/g, " ").replace(/\p{Cc}/gu, "").trim();
+/** The same, for every string inside a value (keys too), before it is written out as JSON. */
+function cleaned(v: unknown): unknown {
+  if (typeof v === "string") return oneLine(v);
+  if (Array.isArray(v)) return v.map(cleaned);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [oneLine(k), cleaned(x)]));
+  return v;
+}
+/** One value in full, never cut — for the values the user is agreeing to (purchase limits, sale dates). */
+function full(v: unknown): string {
+  if (v === null || v === undefined) return "none";
+  const c = cleaned(v);
+  return typeof c === "string" ? JSON.stringify(c) : canonicalJson(c);
+}
 const MAX_VALUE_CHARS = 80;
 /**
  * One value as the prompt shows it: a string quoted, anything else as
@@ -259,9 +291,18 @@ const MAX_VALUE_CHARS = 80;
  * value (a description) cannot push the other changes out of the prompt.
  */
 function shown(v: unknown): string {
-  if (v === null || v === undefined) return "none";
-  const s = typeof v === "string" ? JSON.stringify(v) : canonicalJson(v);
+  const s = full(v);
   return s.length > MAX_VALUE_CHARS ? `${s.slice(0, MAX_VALUE_CHARS - 1)}…` : s;
+}
+/**
+ * `current → new`, each cut like `shown`. Two long values that differ only
+ * past the cut would read as the same text on both sides, so that case is
+ * said in words instead of looking like no change.
+ */
+function arrow(from: unknown, to: unknown): string {
+  const a = shown(from);
+  const b = shown(to);
+  return a === b && full(from) !== full(to) ? `${a} → ${b} (they differ past the part shown — see the preview)` : `${a} → ${b}`;
 }
 /** Create-body fields the prompt already names in its own words (or that only repeat the target). */
 const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", "isActive", "purchaseConstraints"]);
@@ -271,7 +312,8 @@ const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", 
 // its tabs are General / Analytics / Server / VX Shop and carry no address
 // of their own, so the tab is named in words).
 const creatorPage = (p: Plan): string => `${getCreateBaseUrl()}/creations/${encodeURIComponent(String(p.target.verseId ?? ""))}`;
-const vxShopPortal = (p: Plan): string => `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab)`;
+const vxShopPortal = (p: Plan): string =>
+  `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab and use the item's edit dialog — the on/off switch and Restore on that tab send no purchase limits, and the server then removes the item's limits)`;
 const visibilityPortal = (p: Plan): string => `the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
 
 // Who can see a game, narrowest first. A change is widening when it moves
@@ -307,62 +349,142 @@ function visibilityConfirm(p: Plan): ConfirmText {
   const also = Object.keys(body)
     .filter((k) => k !== "visibility" && k !== "sendNotificationToFollowers")
     .sort()
-    .map((k) => `${k}: ${shown(k === "tag" ? userTags(state[k]) : state[k])} → ${shown(body[k])}`);
+    .map((k) => `${k}: ${arrow(k === "tag" ? userTags(state[k]) : state[k], body[k])}`);
   return {
     question: p.op === DEPLOY_OP ? "Deploy this game so that more people can see it?" : "Make this game visible to more people?",
     target: `Game: ${shown(state.title)} (verse ${p.target.verseId})`,
     change:
       `Visibility: ${from} → ${to} (${VISIBILITY_MEANS[to] ?? "more people can see it"})` +
       (p.op === DEPLOY_OP ? "; applied when this deploy publishes the new build" : "") +
-      (review ? "; this starts a Verse8 review and the game may stay hidden until it passes" : "") +
-      (also.length > 0 ? `; also changes ${also.join("; ")}` : ""),
+      (review ? "; this starts a Verse8 review and the game may stay hidden until it passes" : ""),
+    also,
     undo: `Undo: you can set it ${known ? `back to ${from}` : "to Private afterwards"}; people who opened or saw it meanwhile have seen it`,
   };
 }
 const deployPortal = (p: Plan): string =>
   `the web after deploying without widening it — pass visibility "Private" on a first deploy, or leave visibility out on an update — then use the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
 // The portal deletes a comment from the comment panel of the game's own
-// page (the comment's menu → Delete); that panel has no address of its own.
-const commentPortal = (): string => `the game's page on Verse8: open the comments, then the comment's "…" menu → Delete`;
+// page, with the trash button next to the comment (verse8-vibe
+// CommentOverlay). The page takes the verse id and redirects to its short
+// address.
+const commentPortal = (p: Plan): string =>
+  `the game's page: ${getVerse8WebBaseUrl()}/${encodeURIComponent(String(p.target.verseId ?? ""))} (open the comments and press the trash button next to the comment)`;
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
 
-/** An edit starts a sale when it turns isActive on; it reprices a live item when the price changes on one that is on sale and stays so. */
-function vxEditKind(p: Plan): { startsSale: boolean; repricesLive: boolean } {
+// ── when a VX Shop item can be bought ──
+//
+// The server sells an item when it is active, not archived, has stock, and
+// now is inside its purchase dates (g2-sync vxShop.service
+// createConfirmedPurchase / validatePurchaseConstraints). One function
+// reads that from an item's values, and every shop rule asks it about the
+// item before and after the change:
+//
+//   0  cannot be bought, and will not become buyable by itself
+//   1  scheduled: everything is set, the start date is still ahead
+//   2  can be bought now
+//
+// A change that raises the level starts a sale — whichever field does it:
+// the on-sale flag, a restore, stock from 0, a start date removed, an end
+// date extended. The per-user / per-period count limits are not part of
+// it: they bound how much one buyer gets, not whether the item is on sale.
+
+interface VxSaleValues {
+  isActive: unknown;
+  isArchived: unknown;
+  stock: unknown;
+  limits: Record<string, unknown>;
+}
+type SaleLevel = 0 | 1 | 2;
+/** Milliseconds of a date value, or null when there is none (or it does not parse — then it bounds nothing). */
+function dateOf(v: unknown): number | null {
+  if (typeof v !== "string" && typeof v !== "number") return null;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+export function vxSaleLevel(v: VxSaleValues, now: number = Date.now()): SaleLevel {
+  if (v.isActive !== true || v.isArchived === true) return 0;
+  if (!(Number(v.stock) >= 1)) return 0;
+  const end = dateOf(v.limits.purchaseEndDate);
+  if (end !== null && now > end) return 0;
+  const start = dateOf(v.limits.purchaseStartDate);
+  return start !== null && now < start ? 1 : 2;
+}
+/** The sale values of a shop plan's item before and after it runs. */
+function vxBeforeAfter(p: Plan): { before: VxSaleValues; after: VxSaleValues } {
   const body = rec(p.body);
   const state = rec(p.state);
-  const startsSale = body.isActive === true;
-  const onSale = state.isActive === true && state.isArchived !== true && body.isActive !== false;
-  return { startsSale, repricesLive: "price" in body && onSale };
+  if (p.op === "verse8_vxshop.upsert.create") {
+    return {
+      before: { isActive: false, isArchived: false, stock: 0, limits: {} },
+      after: { isActive: body.isActive, isArchived: false, stock: body.stock, limits: rec(body.purchaseConstraints) },
+    };
+  }
+  const before: VxSaleValues = { isActive: state.isActive, isArchived: state.isArchived, stock: state.stock, limits: rec(state.purchaseConstraints) };
+  if (p.op === "verse8_vxshop.archive") return { before, after: { ...before, isArchived: body.isArchived } };
+  return {
+    before,
+    after: {
+      isActive: "isActive" in body ? body.isActive : state.isActive,
+      isArchived: state.isArchived,
+      stock: "stock" in body ? body.stock : state.stock,
+      // An edit's body always carries the limits it keeps; absent means removed.
+      limits: rec(body.purchaseConstraints),
+    },
+  };
+}
+/** Whether a shop plan opens purchases (the level rises), and whether it reprices an item that is on sale or scheduled and stays so. */
+export function vxSaleKind(p: Plan, now: number = Date.now()): { opens: boolean; reprices: boolean; after: VxSaleValues; level: SaleLevel } {
+  const { before, after } = vxBeforeAfter(p);
+  const from = vxSaleLevel(before, now);
+  const level = vxSaleLevel(after, now);
+  return { opens: level > from, reprices: "price" in rec(p.body) && from >= 1 && level >= 1, after, level };
+}
+/** "buyers can purchase it from <when> [until <end>]" — the dates in full, as the server will apply them. */
+function saleWindow(after: VxSaleValues, level: SaleLevel): string {
+  const from = level === 1 ? `from ${full(after.limits.purchaseStartDate)}` : "from now on";
+  const end = after.limits.purchaseEndDate;
+  return `buyers can purchase it ${from}${end === undefined || end === null ? "" : ` until ${full(end)}`}`;
+}
+/** Each purchase limit that differs, `key: current → new`, in full. */
+function limitChanges(now: Record<string, unknown>, to: Record<string, unknown>): string[] {
+  const keys = [...new Set([...Object.keys(now), ...Object.keys(to)])].sort();
+  return keys
+    .filter((k) => canonicalJson(now[k] ?? null) !== canonicalJson(to[k] ?? null))
+    .map((k) => `${k}: ${full(now[k])} → ${full(to[k])}`);
 }
 
 function vxEditConfirm(p: Plan): ConfirmText {
   const body = rec(p.body);
   const state = rec(p.state);
-  const { startsSale } = vxEditKind(p);
+  const { opens, after, level } = vxSaleKind(p);
   const priceChanges = "price" in body;
   const price = priceChanges ? `Price: ${state.price} → ${body.price} VX` : `Price: ${state.price} VX`;
-  // Everything else the request changes, each with its current and new
-  // value. The body always carries the limits (re-sent when kept), so they
-  // are compared with the current ones; absent means they are removed.
-  const also: string[] = [];
-  const limitsNow = state.purchaseConstraints ?? null;
-  const limitsTo = body.purchaseConstraints ?? null;
-  if (canonicalJson(limitsNow) !== canonicalJson(limitsTo)) {
-    also.push(limitsTo === null ? `ALL purchase limits REMOVED (now ${shown(limitsNow)})` : `purchase limits: ${shown(limitsNow)} → ${shown(limitsTo)}`);
+  // What decides whether and how it sells is part of `change`, in full:
+  // the price, the stock when it changes, every purchase limit that
+  // changes. The body always carries the limits (re-sent when kept), so
+  // they are compared with the current ones; absent means removed.
+  const core: string[] = [opens ? `${price}; ${saleWindow(after, level)}` : `${price} for every buyer from now on`];
+  if ("stock" in body) core.push(`stock: ${full(state.stock)} → ${full(body.stock)}`);
+  const limitsNow = rec(state.purchaseConstraints);
+  const limitsTo = rec(body.purchaseConstraints);
+  const limits = limitChanges(limitsNow, limitsTo);
+  if (limits.length > 0) {
+    core.push(`${Object.keys(limitsTo).length === 0 ? "ALL purchase limits REMOVED" : "purchase limits"} (${limits.join(", ")})`);
   }
-  for (const k of Object.keys(body).filter((k) => k !== "price" && k !== "isActive" && k !== "purchaseConstraints").sort()) {
-    also.push(`${k}: ${shown(state[k])} → ${shown(body[k])}`);
-  }
+  // Everything else the request changes, each with its current and new value.
+  const also = Object.keys(body)
+    .filter((k) => !["price", "isActive", "stock", "purchaseConstraints"].includes(k))
+    .sort()
+    .map((k) => `${k}: ${arrow(state[k], body[k])}`);
   return {
-    question: startsSale
+    question: opens
       ? priceChanges
         ? "Start selling this VX Shop item at a new price?"
         : "Start selling this VX Shop item?"
       : "Change the price of a VX Shop item that is on sale?",
     target: `Item: ${shown(state.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
-    change:
-      (startsSale ? `${price}; buyers can purchase it from now on` : `${price} for every buyer from now on`) +
-      (also.length > 0 ? `; also changes ${also.join("; ")}` : ""),
+    change: core.join("; "),
+    also,
     undo: SALE_UNDO,
   };
 }
@@ -402,22 +524,25 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   // Answering a dispute sends the buyer a message; it moves no money and
   // changes nothing public (refunds are not part of it).
   "verse8_vxshop.dispute": { condition: "preview" },
-  // Creating an item on sale starts a sale; created hidden it is a preview.
+  // The three shop rows share one test (vxSaleKind): does the change open
+  // purchases, or reprice an item buyers can buy or are about to?
+  // Created sellable it starts a sale; created hidden, without stock or
+  // past its end date it is a preview.
   "verse8_vxshop.upsert.create": {
-    condition: (p) => (rec(p.body).isActive === true ? "user_confirm" : "preview"),
+    condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
     confirm: (p) => {
       const b = rec(p.body);
-      // Every other value the request sets, purchase limits first.
-      const rest = ["purchaseConstraints", ...Object.keys(b).filter((k) => !CREATE_SHOWN.has(k)).sort()]
-        .filter((k) => b[k] !== undefined)
-        .map((k) => `${k === "purchaseConstraints" ? "purchase limits" : k}: ${shown(b[k])}`);
+      const { after, level } = vxSaleKind(p);
+      const limits = Object.keys(after.limits).sort().map((k) => `${k}: ${full(after.limits[k])}`);
       return {
         question: "Create this VX Shop item and start selling it?",
         target: `Item: ${shown(b.name)} (productId ${shown(b.productId)}) in verse ${p.target.verseId}`,
         change:
-          `Price: ${b.price} VX, stock ${b.stock}; buyers can purchase it from now on` +
-          (b.purchaseConstraints === undefined ? "; no purchase limits" : "") +
-          (rest.length > 0 ? `; with ${rest.join("; ")}` : ""),
+          `Price: ${b.price} VX, stock ${b.stock}; ${saleWindow(after, level)}` +
+          (limits.length === 0 ? "; no purchase limits" : `; purchase limits (${limits.join(", ")})`),
+        // Every other value the request sets.
+        also: Object.keys(b).filter((k) => !CREATE_SHOWN.has(k)).sort().map((k) => `${k}: ${shown(b[k])}`),
+        alsoLabel: "with",
         undo: SALE_UNDO,
       };
     },
@@ -425,21 +550,22 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   },
   "verse8_vxshop.upsert.edit": {
     condition: (p) => {
-      const k = vxEditKind(p);
-      return k.startsSale || k.repricesLive ? "user_confirm" : "preview";
+      const k = vxSaleKind(p);
+      return k.opens || k.reprices ? "user_confirm" : "preview";
     },
     confirm: vxEditConfirm,
     portal: vxShopPortal,
   },
-  // Restoring an item whose on-sale flag is set puts it back on sale.
+  // Restoring an item that can then be bought puts it back on sale.
   "verse8_vxshop.archive": {
-    condition: (p) => (rec(p.body).isArchived === false && rec(p.state).isActive === true ? "user_confirm" : "preview"),
+    condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
     confirm: (p) => {
       const s = rec(p.state);
+      const { after, level } = vxSaleKind(p);
       return {
         question: "Restore this VX Shop item and put it back on sale?",
         target: `Item: ${shown(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
-        change: `Price: ${s.price} VX; buyers can purchase it from now on`,
+        change: `Price: ${s.price} VX, stock ${full(s.stock)}; ${saleWindow(after, level)}`,
         undo: "Undo: you can archive it again; purchases already made stay as they are",
       };
     },
@@ -492,15 +618,33 @@ export interface ConfirmHost {
 }
 
 const MAX_CONFIRM_CHARS = 1200;
-/** Any whitespace run becomes one space (`\s` covers the line and paragraph separators; NEL is added). */
-const oneLine = (s: string): string => s.replace(/[\s\x85]+/g, " ").trim();
-
-/** The one-line prompt of a user-confirm plan, or null when its rule has no text for it. */
+/**
+ * The one-line prompt of a user-confirm plan, or null when its rule has no
+ * text for it. Space goes first to the question, the target, `change` and
+ * the undo note; `also` gets what is left, and what does not fit is counted
+ * ("N more … not shown here") so the user knows the prompt is not all of it.
+ */
 export function confirmMessage(p: Plan): string | null {
   const text = Object.prototype.hasOwnProperty.call(RUN_RULES, p.op) ? RUN_RULES[p.op].confirm?.(p) : undefined;
   if (!text) return null;
-  const line = oneLine(`${text.question} ${[text.target, text.change, text.undo].join(" / ")}`);
-  return line.length > MAX_CONFIRM_CHARS ? `${line.slice(0, MAX_CONFIRM_CHARS - 1)}…` : line;
+  const head = oneLine(`${text.question} ${text.target} / ${text.change}`);
+  const tail = ` / ${oneLine(text.undo)}`;
+  const also = (text.also ?? []).map(oneLine).filter((s) => s.length > 0);
+  const label = text.alsoLabel ?? "also changes";
+  const withAlso = (n: number): string => {
+    const left = also.length - n;
+    const note = left === 0 ? "" : `${n === 0 ? "" : " "}(${left} more change${left === 1 ? "" : "s"} not shown here — see the preview)`;
+    return n === 0 && left === 0 ? "" : `; ${label} ${also.slice(0, n).join("; ")}${note}`;
+  };
+  for (let n = also.length; n >= 0; n--) {
+    const line = `${head}${withAlso(n)}${tail}`;
+    if (line.length <= MAX_CONFIRM_CHARS) return line;
+  }
+  // Even without `also` it is too long (a rule's own text has no bound when
+  // the server holds very long values): cut the middle, keep the undo note,
+  // and say so.
+  const rest = `${withAlso(0)} (cut — see the preview)${tail}`;
+  return `${head.slice(0, Math.max(0, MAX_CONFIRM_CHARS - rest.length - 1))}…${rest}`;
 }
 
 function portalOf(p: Plan): string {
@@ -585,13 +729,67 @@ export function isConfirmed(g: unknown): g is ConfirmPassed {
 export async function confirmGate(
   p: Plan,
   host: ConfirmHost | undefined,
-  opts: { ask: boolean } = { ask: true },
+  opts: { ask: boolean; reread?: Reread } = { ask: true },
 ): Promise<ConfirmPassed | OpFail> {
   const need = runRequirement(p);
   if (!need.ok) return need;
   const out = { confirmed: true as const, runCondition: need.condition, ...(need.message === null ? {} : { confirmation: need.message }) };
   if (need.message === null || !opts.ask) return out;
-  return (await askUser(p, need.message, host)) ?? out;
+  const refused = await askUser(p, need.message, host);
+  if (refused) return refused;
+  const still = await sameAfterRun(p, planId(p), opts.reread);
+  return isApproved(still) ? out : still;
+}
+
+// ── what the user saw is what runs ──
+//
+// The planId is checked before the prompt opens, and a prompt can stay open
+// for minutes. So after "Run" the target is read again and the plan built
+// again: it runs only if that plan is the one the prompt was written from.
+// A price edited on the web meanwhile, limits changed, a game renamed or
+// made public — any of it ends in plan_mismatch with nothing written.
+
+/** Reads the target again and returns the plan the action would have now, or the failure of that read. */
+export type Reread = () => Promise<Plan | OpFail>;
+
+/** Lets a tool's own code be run again up to the point where it has its plan. */
+export interface PlanProbe {
+  plan?: Plan;
+}
+/** What a tool returns when it was only asked for its plan. */
+export const PROBED: OpFail = { ok: false, error: "plan_mismatch", hint: "plan probe" };
+
+/** A Reread made from running the tool's code again with a probe. */
+export function rereadWith(run: (probe: PlanProbe) => Promise<unknown>): Reread {
+  return async () => {
+    const probe: PlanProbe = {};
+    const r = rec(await run(probe));
+    if (probe.plan) return probe.plan;
+    const why = typeof r.hint === "string" ? `: ${typeof r.error === "string" ? `${r.error} — ` : ""}${r.hint}` : "";
+    return opFail("plan_mismatch", `the target is no longer as the preview showed it${why}`);
+  };
+}
+
+const AFTER_RUN = "Nothing was changed: it changed while the confirmation prompt was open, so the user's Run was not used —";
+
+/** Approved (with freshly hashed file bytes) when the plan read again is still `id`; otherwise plan_mismatch. */
+async function sameAfterRun(p: Plan, id: string, reread: Reread | undefined): Promise<PlanApproved | OpFail> {
+  if (!reread) {
+    return opFail("op_not_classified", `Nothing was changed: '${p.op}' asks the user but gives no way to read its target again after the answer. This is a bug in @verse8/mcp.`);
+  }
+  let fresh: Plan | OpFail;
+  try {
+    fresh = await reread();
+  } catch (e) {
+    fresh = opFail("plan_mismatch", safeErrorHint(e));
+  }
+  if (!("op" in fresh) || typeof fresh.op !== "string") {
+    const f = fresh as OpFail;
+    return opFail("plan_mismatch", `${AFTER_RUN} ${f.hint} ${RE_PREVIEW}`, { afterConfirmation: true });
+  }
+  const again = checkPlan(fresh as Plan, id);
+  if (isApproved(again)) return again;
+  return { ...again, hint: safeHint(`${AFTER_RUN} ${again.hint.replace(/^Nothing was changed: /, "")}`), afterConfirmation: true };
 }
 
 /**
@@ -599,14 +797,16 @@ export async function confirmGate(
  * The gate every changing action goes through. Without planId: the preview,
  * with its planId. With a matching planId: approved — run it, uploading the
  * returned file bytes — but a user_confirm action first asks the user
- * through `host` and is approved only on their "Run". Otherwise the refusal.
- * An op with no row in RUN_RULES is refused either way.
+ * through `host` and is approved only on their "Run", and only if the plan
+ * built from `reread` after that answer is still the same one. Otherwise
+ * the refusal. An op with no row in RUN_RULES is refused either way.
  */
 export async function planGate<T extends { action: string }>(
   p: Plan,
   given: string | undefined,
   preview: T,
   host?: ConfirmHost,
+  reread?: Reread,
 ): Promise<(T & { ok: true; dryRun: true; planId: string; next: string; runCondition: GatedCondition; confirmation?: string }) | OpFail | PlanApproved> {
   const need = runRequirement(p);
   if (!need.ok) return need;
@@ -624,7 +824,7 @@ export async function planGate<T extends { action: string }>(
   const checked = checkPlan(p, given);
   if (!isApproved(checked) || message === null) return checked;
   const refused = await askUser(p, message, host);
-  return refused ?? checked;
+  return refused ?? (await sameAfterRun(p, given, reread));
 }
 
 export interface Change {

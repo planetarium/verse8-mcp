@@ -20,6 +20,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { CONFIRM_SCHEMA, RUN_RULES, confirmGate, confirmMessage, planGate, planId, runConditionOf } from "../../dist/tools/creatorOps.js";
+import * as creatorOps from "../../dist/tools/creatorOps.js";
 import { runVerseOps, verseOpsInputSchema } from "../../dist/tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "../../dist/tools/vxShop.js";
 import { createServer } from "../../dist/server.js";
@@ -41,6 +42,9 @@ const item = (id, extra = {}) => ({
 
 // 7: on sale. 8: hidden. 9: archived with the on-sale flag set. 10: archived, hidden.
 // 12: on sale, with purchase limits. 13: hidden, with purchase limits.
+const FUTURE = "2999-12-01T00:00:00.000Z";
+const PAST = "2000-01-01T00:00:00.000Z";
+const RICH_LIMITS = { maxPurchasePerPeriod: 5, maxPurchasePerUser: 10, purchaseEndDate: "2999-12-31T00:00:00.000Z", purchasePeriodDays: 1, purchaseStartDate: "2020-01-01T00:00:00.000Z" };
 const WITH_LIMITS = { metadata: JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 2 } }) };
 const makeItems = () => [
   item(7),
@@ -49,6 +53,13 @@ const makeItems = () => [
   item(10, { isArchived: true, isActive: false }),
   item(12, WITH_LIMITS),
   item(13, { isActive: false, ...WITH_LIMITS }),
+  // 14: on sale, every kind of limit set. 15: on-sale flag set but the sale
+  // starts in the future. 16: on-sale flag set, the sale ended. 17: on-sale
+  // flag set, no stock.
+  item(14, { price: 100, metadata: JSON.stringify({ purchaseConstraints: RICH_LIMITS }) }),
+  item(15, { metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: FUTURE } }) }),
+  item(16, { metadata: JSON.stringify({ purchaseConstraints: { purchaseEndDate: PAST } }) }),
+  item(17, { stock: 0 }),
 ];
 
 async function withShop(f) {
@@ -79,7 +90,7 @@ async function withShop(f) {
   };
   process.env.VERSE8_ACCESS_TOKEN = "tok";
   try {
-    return await f(calls, items, verse);
+    return await f(calls, items, verse, comments);
   } finally {
     globalThis.fetch = saved.fetch;
     if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
@@ -93,9 +104,9 @@ const run = (dir, input, host) =>
     : runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
 // Where a refusal sends the user: the per-game creator page on the create host, and the tab.
 const PAGE = `https://create[.]verse8[.]io/creations/${VERSE}`;
-const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab[)]`);
+const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use the item's edit dialog — the on/off switch and Restore on that tab send no purchase limits`);
 const GAME_PORTAL = new RegExp(`General tab: ${PAGE} [(]the "Visibility" select[)]`);
-const COMMENT_PORTAL = /the game.s page on Verse8: open the comments, then the comment.s "…" menu → Delete/;
+const COMMENT_PORTAL = new RegExp(`the game's page: https://verse8[.]io/${VERSE} [(]open the comments and press the trash button next to the comment[)]`);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
 /** A host that can ask and answers with `answer` (a value, or a function that may throw). */
@@ -333,23 +344,23 @@ test("the prompt stays one line whatever the item is called, and is capped", () 
 
 // ── the prompt shows every value the request changes, not only the price ──
 
-const LIMITS = '\\{"maxPurchasePerUser":2\\}';
+const LIMITS_GONE = /ALL purchase limits REMOVED [(]maxPurchasePerUser: 2 → none[)]/;
 /** [name, input, what the prompt must show, what it must not]. Items 12 (on sale) and 13 (hidden) have purchase limits. */
 const SHOWS_ALL = [
   [
     "start a sale and remove the purchase limits",
     { action: "upsert", itemId: 13, isActive: true, clearPurchaseConstraints: true },
-    [/Start selling/, /Price: 300 VX/, new RegExp(`ALL purchase limits REMOVED \\(now ${LIMITS}\\)`)],
+    [/Start selling/, /Price: 300 VX/, LIMITS_GONE],
   ],
   [
     "reprice a live item and remove the purchase limits",
     { action: "upsert", itemId: 12, price: 350, clearPurchaseConstraints: true },
-    [/300 → 350 VX/, new RegExp(`ALL purchase limits REMOVED \\(now ${LIMITS}\\)`)],
+    [/300 → 350 VX/, LIMITS_GONE],
   ],
   [
     "reprice a live item and change the purchase limits",
     { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { maxPurchasePerUser: 9 } },
-    [new RegExp(`purchase limits: ${LIMITS} → \\{"maxPurchasePerUser":9\\}`)],
+    [/purchase limits [(]maxPurchasePerUser: 2 → 9[)]/],
   ],
   [
     "reprice a live item, limits kept: the re-sent limits are not a change",
@@ -376,7 +387,7 @@ const SHOWS_ALL = [
   [
     "create on sale with limits, description, image and metadata",
     { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true, purchaseConstraints: { maxPurchasePerUser: 1 }, description: "A gem", imagePath: "item.png", metadata: { tier: 2 } },
-    [/purchase limits: \{"maxPurchasePerUser":1\}/, /description: "A gem"/, /imageUrl: "<upload:item\.png>"/, /metadata: "\{\\"tier\\":2\}"/],
+    [/purchase limits [(]maxPurchasePerUser: 1[)]/, /description: "A gem"/, /imageUrl: "<upload:item.png>"/, /metadata: "{\\"tier\\":2}"/],
     [/no purchase limits/],
   ],
   [
@@ -663,7 +674,7 @@ test("confirmGate: asks only for a user_confirm plan, passes only on Run, report
   const kept = { ...widening, body: { visibility: "Private" } };
 
   const yes = hostThat(RUN);
-  const passed = await confirmGate(widening, yes);
+  const passed = await confirmGate(widening, yes, { ask: true, reread: async () => widening });
   assert.equal(passed.confirmed, true, JSON.stringify(passed));
   assert.equal(passed.runCondition, "user_confirm");
   assert.equal(yes.asked.length, 1);
@@ -689,4 +700,347 @@ test("confirmGate: asks only for a user_confirm plan, passes only on Run, report
   const unlisted = await confirmGate({ ...widening, op: "verse8_deploy.unpublish" }, hostThat(RUN));
   assert.equal(unlisted.error, "op_not_classified");
   assert.equal(unlisted.confirmed, undefined);
+});
+
+// ═══ what the user saw is what runs (review of 8c40473) ═══
+
+// ── purchase limits and sale dates are shown key by key, in full ──
+
+test("limits: a change to purchasePeriodDays beside a price change is visible (the limits used to be one cut JSON, identical on both sides)", async () => {
+  const dir = project();
+  await withShop(async () => {
+    const pre = await run(dir, { action: "upsert", itemId: 14, price: 200, purchaseConstraints: { ...RICH_LIMITS, purchasePeriodDays: 30 } });
+    assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
+    assert.match(pre.confirmation, /Price: 100 → 200 VX/);
+    assert.match(pre.confirmation, /purchase limits \(purchasePeriodDays: 1 → 30\)/, "only the key that changes, with both values");
+    assert.doesNotMatch(pre.confirmation, /…/, "nothing is cut");
+  });
+});
+
+test("limits: every changed key is listed in full; a removed key reads → none", async () => {
+  const dir = project();
+  await withShop(async () => {
+    const to = { maxPurchasePerUser: 10, purchaseEndDate: "2999-06-30T00:00:00.000Z", purchasePeriodDays: 7, maxPurchasePerPeriod: 5 };
+    const pre = await run(dir, { action: "upsert", itemId: 14, price: 200, purchaseConstraints: to });
+    for (const part of [
+      'purchaseEndDate: "2999-12-31T00:00:00.000Z" → "2999-06-30T00:00:00.000Z"',
+      "purchasePeriodDays: 1 → 7",
+      'purchaseStartDate: "2020-01-01T00:00:00.000Z" → none',
+    ]) assert.ok(pre.confirmation.includes(part), `${part} missing in: ${pre.confirmation}`);
+    assert.doesNotMatch(pre.confirmation, /maxPurchasePerUser/, "an unchanged key is not listed");
+  });
+});
+
+test("create on sale: the start date is in the prompt — two start dates give two prompts, and a future start is not 'from now on'", async () => {
+  const dir = project();
+  await withShop(async () => {
+    const base = { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true };
+    const a = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: "2999-12-01" } });
+    const b = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: "2999-06-01", purchaseEndDate: "2999-09-01" } });
+    assert.equal(a.runCondition, "user_confirm");
+    assert.notEqual(a.confirmation, b.confirmation);
+    assert.match(a.confirmation, /buyers can purchase it from "2999-12-01";/);
+    assert.match(a.confirmation, /purchase limits \(purchaseStartDate: "2999-12-01"\)/);
+    assert.match(b.confirmation, /buyers can purchase it from "2999-06-01" until "2999-09-01";/);
+    for (const m of [a.confirmation, b.confirmation]) assert.doesNotMatch(m, /from now on/);
+    const open = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: PAST, purchaseEndDate: FUTURE } });
+    assert.match(open.confirmation, new RegExp(`buyers can purchase it from now on until "${FUTURE}";`));
+  });
+});
+
+// ── one test for "can it be bought": the sale level before and after ──
+
+test("vxSaleLevel: the server's purchase conditions — active, not archived, stock, inside the dates", () => {
+  const { vxSaleLevel } = creatorOps;
+  const now = Date.parse("2026-11-26T00:00:00Z");
+  const v = (x = {}) => ({ isActive: true, isArchived: false, stock: 3, limits: {}, ...x });
+  assert.equal(vxSaleLevel(v(), now), 2);
+  assert.equal(vxSaleLevel(v({ isActive: false }), now), 0);
+  assert.equal(vxSaleLevel(v({ isArchived: true }), now), 0);
+  assert.equal(vxSaleLevel(v({ stock: 0 }), now), 0);
+  assert.equal(vxSaleLevel(v({ limits: { purchaseStartDate: "2026-11-27" } }), now), 1, "scheduled");
+  assert.equal(vxSaleLevel(v({ limits: { purchaseStartDate: "2026-11-25" } }), now), 2);
+  assert.equal(vxSaleLevel(v({ limits: { purchaseEndDate: "2026-11-25" } }), now), 0, "ended");
+  assert.equal(vxSaleLevel(v({ limits: { purchaseEndDate: "2026-11-27" } }), now), 2);
+  // Count limits bound how much one buyer gets, not whether it sells.
+  assert.equal(vxSaleLevel(v({ limits: { maxPurchasePerUser: 1, maxPurchasePerPeriod: 1, purchasePeriodDays: 1 } }), now), 2);
+});
+
+/** [name, input, run condition, what the prompt shows]. Item numbers as in makeItems. */
+const OPENS_PURCHASES = [
+  ["remove a future start date", { action: "upsert", itemId: 15, clearPurchaseConstraints: true }, "user_confirm", [/Start selling/, /from now on/, /ALL purchase limits REMOVED \(purchaseStartDate: ".*" → none\)/]],
+  ["move a future start date into the past", { action: "upsert", itemId: 15, purchaseConstraints: { purchaseStartDate: PAST } }, "user_confirm", [/from now on/, /purchaseStartDate: /]],
+  ["extend an end date that has passed", { action: "upsert", itemId: 16, purchaseConstraints: { purchaseEndDate: FUTURE } }, "user_confirm", [new RegExp(`from now on until "${FUTURE}"`)]],
+  ["remove an end date that has passed", { action: "upsert", itemId: 16, clearPurchaseConstraints: true }, "user_confirm", [/Start selling/, /from now on/]],
+  ["stock 0 → 5 on an item whose on-sale flag is set", { action: "upsert", itemId: 17, stock: 5 }, "user_confirm", [/Start selling/, /stock: 0 → 5/]],
+  ["turn the on-sale flag on with a future start date", { action: "upsert", itemId: 8, isActive: true, purchaseConstraints: { purchaseStartDate: FUTURE } }, "user_confirm", [new RegExp(`from "${FUTURE}"`)]],
+  ["reprice an item that is scheduled", { action: "upsert", itemId: 15, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX/]],
+  // Not a sale start: purchases do not open.
+  ["on-sale flag on an archived, hidden item", { action: "upsert", itemId: 10, isActive: true }, "preview"],
+  ["on-sale flag on with stock 0", { action: "upsert", itemId: 8, isActive: true, stock: 0 }, "preview"],
+  ["rename an item that is scheduled", { action: "upsert", itemId: 15, name: "Renamed" }, "preview"],
+  ["reprice an item with no stock", { action: "upsert", itemId: 17, price: 90 }, "preview"],
+  ["reprice an item whose sale ended", { action: "upsert", itemId: 16, price: 90 }, "preview"],
+  ["raise a count limit on an item on sale", { action: "upsert", itemId: 14, purchaseConstraints: { ...RICH_LIMITS, maxPurchasePerUser: 99 } }, "preview"],
+  ["remove the count limits of an item on sale", { action: "upsert", itemId: 12, clearPurchaseConstraints: true }, "preview"],
+  ["create with the on-sale flag but no stock", { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 0, isActive: true }, "preview"],
+  ["create with the on-sale flag but an end date that has passed", { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 5, isActive: true, purchaseConstraints: { purchaseEndDate: PAST } }, "preview"],
+];
+for (const [name, input, condition, shows = []] of OPENS_PURCHASES) {
+  test(`opens purchases? ${name} → ${condition}`, async () => {
+    const dir = project();
+    await withShop(async (calls) => {
+      const host = hostThat({ action: "decline" });
+      const pre = await run(dir, input, host);
+      assert.equal(pre.ok, true, JSON.stringify(pre));
+      assert.equal(pre.runCondition, condition, pre.confirmation);
+      for (const re of shows) assert.match(pre.confirmation, re);
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      if (condition === "preview") {
+        assert.equal(r.ok, true, JSON.stringify(r));
+        assert.equal(host.asked.length, 0);
+        assert.equal(writes(calls).length, 1);
+      } else {
+        assert.equal(r.error, "user_cancelled");
+        assert.deepEqual(writes(calls), []);
+      }
+    });
+  });
+}
+
+test("restore: an archived item is asked about only when it can then be bought", async () => {
+  const dir = project();
+  await withShop(async (_calls, items) => {
+    assert.equal((await run(dir, { action: "archive", itemId: 9, archived: false })).runCondition, "user_confirm");
+    items.find((i) => i.id === 9).stock = 0;
+    assert.equal((await run(dir, { action: "archive", itemId: 9, archived: false })).runCondition, "preview", "no stock: restoring opens nothing");
+    assert.equal((await run(dir, { action: "archive", itemId: 10, archived: false })).runCondition, "preview", "hidden");
+  });
+});
+
+// ── a value that changes while the prompt is open ──
+
+/** A host whose user answers Run, but only after `meanwhile` happened (someone edited it on the web). */
+function hostAfter(meanwhile) {
+  return hostThat(() => {
+    meanwhile();
+    return RUN;
+  });
+}
+
+/** [name, input, what changes while the prompt is open, the plan part named in the refusal (or null when the re-read itself fails)]. */
+const MEANWHILE = [
+  ["sale start: the price is raised on the web", { action: "upsert", itemId: 8, isActive: true }, ({ items }) => { items.find((i) => i.id === 8).price = 900; }, "state.price"],
+  ["sale start: the purchase limits are changed on the web", { action: "upsert", itemId: 13, isActive: true }, ({ items }) => { items.find((i) => i.id === 13).metadata = JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 50 } }); }, "state.purchaseConstraints"],
+  ["repricing: the item is renamed on the web", { action: "upsert", itemId: 7, price: 350 }, ({ items }) => { items.find((i) => i.id === 7).name = "Something else"; }, "state.name"],
+  ["repricing: the price already became the new one (nothing left to change)", { action: "upsert", itemId: 7, price: 350 }, ({ items }) => { items.find((i) => i.id === 7).price = 350; }, null],
+  ["restore: the price is changed on the web", { action: "archive", itemId: 9, archived: false }, ({ items }) => { items.find((i) => i.id === 9).price = 900; }, "state.price"],
+  ["restore: it was restored on the web meanwhile", { action: "archive", itemId: 9, archived: false }, ({ items }) => { items.find((i) => i.id === 9).isArchived = false; }, null],
+  ["create on sale: the local image is replaced", { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true, imagePath: "item.png" }, ({ dir }) => { fs.writeFileSync(path.join(dir, "item.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9, 9])); }, "file.imagePath"],
+  ["game visibility: the game is renamed on the web", { action: "update", visibility: "Public" }, ({ verse }) => { verse.title = "Another game"; }, "state.title"],
+  ["game visibility: it was set to Unlisted on the web", { action: "update", visibility: "Public" }, ({ verse }) => { verse.visibility = "Unlisted"; }, "state.visibility"],
+  ["game visibility: it is already Public (nothing left to change)", { action: "update", visibility: "Public" }, ({ verse }) => { verse.visibility = "Public"; }, null],
+  ["comment deletion: the comment is edited", { action: "comment_delete", commentId: 1 }, ({ comments }) => { comments[0].content = "edited to something harmless"; }, "state.content"],
+  ["comment deletion: the comment is already deleted", { action: "comment_delete", commentId: 1 }, ({ comments }) => { comments[0].isDeleted = true; }, null],
+];
+for (const [name, input, meanwhile, part] of MEANWHILE) {
+  test(`changed while the prompt was open — ${name} → plan_mismatch after Run, no write`, async () => {
+    const dir = project();
+    await withShop(async (calls, items, verse, comments) => {
+      const pre = await run(dir, input);
+      assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
+      const host = hostAfter(() => meanwhile({ items, verse, comments, dir }));
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(host.asked.length, 1, "the planId matched and the user was asked");
+      assert.equal(r.ok, false, JSON.stringify(r));
+      assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+      assert.equal(r.afterConfirmation, true);
+      assert.match(r.hint, /^Nothing was changed: it changed while the confirmation prompt was open/);
+      assert.match(r.hint, /fresh preview/);
+      if (part) assert.ok(r.changed.some((c) => c.part === part), JSON.stringify(r.changed));
+      assert.deepEqual(writes(calls), [], "no write, no upload");
+    });
+  });
+}
+
+test("nothing changed while the prompt was open → Run runs once", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 8, isActive: true };
+    const pre = await run(dir, input);
+    const done = await run(dir, { ...input, planId: pre.planId }, hostAfter(() => {}));
+    assert.equal(done.ok, true, JSON.stringify(done));
+    assert.equal(writes(calls).length, 1);
+  });
+});
+
+test("the gate refuses a user_confirm plan that cannot be read again after the answer (planGate and confirmGate)", async () => {
+  const plan = { op: "verse8_verse.comment_delete", target: { verseId: VERSE, commentId: 1 }, body: null, state: { content: "x", pinned: false, author: "a" } };
+  const host = hostThat(RUN);
+  const r = await planGate(plan, planId(plan), { action: "comment_delete" }, host);
+  assert.equal(r.error, "op_not_classified", JSON.stringify(r));
+  assert.equal(r.approved, undefined);
+  const deploy = { op: "verse8_deploy.publish", target: { verseId: VERSE }, body: { visibility: "Public" }, state: { visibility: "Private", published: true, title: "T" } };
+  const d = await confirmGate(deploy, host);
+  assert.equal(d.error, "op_not_classified", JSON.stringify(d));
+  assert.equal(d.confirmed, undefined);
+  // And with a re-read that now gives another plan, or fails, or throws:
+  for (const reread of [
+    async () => ({ ...deploy, state: { ...deploy.state, visibility: "Unlisted" } }),
+    async () => ({ ok: false, error: "not_found", hint: "gone" }),
+    async () => { throw new Error("network"); },
+  ]) {
+    const x = await confirmGate(deploy, hostThat(RUN), { ask: true, reread });
+    assert.equal(x.error, "plan_mismatch", JSON.stringify(x));
+    assert.equal(x.afterConfirmation, true);
+    assert.equal(x.confirmed, undefined);
+  }
+});
+
+// ── the prompt keeps its target, core values and undo note whatever else is in it ──
+
+test("a visibility change with many other changes: Undo stays, the rest is counted, not cut silently", () => {
+  const body = { visibility: "Public" };
+  const state = { visibility: "Private", title: "T".repeat(300) };
+  for (let i = 0; i < 20; i++) {
+    body[`field${String(i).padStart(2, "0")}`] = `new ${"n".repeat(200)}`;
+    state[`field${String(i).padStart(2, "0")}`] = `old ${"o".repeat(200)}`;
+  }
+  const m = confirmMessage({ op: "verse8_verse.update", target: { verseId: VERSE }, body, state });
+  assert.ok(m.length <= 1200, `${m.length}`);
+  assert.match(m, /^Make this game visible to more people\? Game: "T+… \(verse /);
+  assert.match(m, /Visibility: Private → Public \(listed on Verse8 for everyone\)/);
+  assert.match(m, / \/ Undo: you can set it back to Private; people who opened or saw it meanwhile have seen it$/);
+  const shownFields = m.match(/field\d\d: /g).length;
+  assert.ok(shownFields >= 1 && shownFields < 20, `${shownFields}`);
+  assert.ok(m.includes(`(${20 - shownFields} more changes not shown here — see the preview)`), m.slice(-260));
+});
+
+test("when everything fits nothing is marked as left out; when even the core is too long the cut is said and Undo stays", () => {
+  const few = confirmMessage({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: "Public", title: "New" }, state: { visibility: "Private", title: "Old" } });
+  assert.doesNotMatch(few, /not shown here|cut —/);
+  assert.match(few, /; also changes title: "Old" → "New" \/ Undo: /);
+  const huge = confirmMessage({
+    op: "verse8_vxshop.upsert.create",
+    target: { verseId: VERSE, productId: "gem" },
+    body: { verseId: VERSE, productId: "gem", name: "Gems", price: 5, stock: 1, isActive: true, description: "d", purchaseConstraints: { purchaseStartDate: "9".repeat(4000) } },
+  });
+  assert.ok(huge.length <= 1200, `${huge.length}`);
+  assert.match(huge, /\(cut — see the preview\) \/ Undo: you can stop the sale/);
+  assert.match(huge, /1 more change not shown here/);
+  assert.match(huge, /^Create this VX Shop item and start selling it\? Item: "Gems"/);
+});
+
+// ── no control or format characters reach the prompt ──
+
+test("bidi overrides, zero-width and other control / format characters in a title, item name or comment are dropped", () => {
+  const bad = [0x202e, 0x202d, 0x2066, 0x2069, 0x200b, 0x200d, 0xfeff, 0x00ad, 0x061c, 0x007f, 0x009b, 0x0000, 0x001b].map((c) => String.fromCodePoint(c));
+  const dirty = (s) => bad.join("") + s.split("").join(bad[4]) + bad[0];
+  const plans = [
+    { op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: "Public", description: dirty("desc") }, state: { visibility: "Private", title: dirty("Title"), description: dirty("old") } },
+    { op: "verse8_vxshop.upsert.create", target: { verseId: VERSE, productId: "gem" }, body: { productId: "gem", name: dirty("Gems"), price: 5, stock: 1, isActive: true, description: dirty("d") } },
+    { op: "verse8_vxshop.upsert.edit", target: { verseId: VERSE, itemId: 7 }, body: { isActive: true, name: dirty("New") }, state: { name: dirty("Old"), price: 5, stock: 1, isActive: false, isArchived: false, purchaseConstraints: { purchaseStartDate: dirty("2999-01-01") } } },
+    { op: "verse8_vxshop.archive", target: { verseId: VERSE, itemId: 7 }, body: { isArchived: false }, state: { name: dirty("Old"), price: 5, stock: 1, isActive: true, isArchived: true } },
+    { op: "verse8_verse.comment_delete", target: { verseId: VERSE, commentId: 1 }, body: null, state: { content: dirty("spam"), author: dirty("ana"), pinned: false } },
+    { op: "verse8_deploy.publish", target: { verseId: VERSE }, body: { visibility: "Public" }, state: { visibility: null, published: false, title: dirty("Title") } },
+  ];
+  for (const p of plans) {
+    const m = confirmMessage(p);
+    assert.ok(m, p.op);
+    assert.doesNotMatch(m, /[\p{Cc}\p{Cf}]/u, `${p.op}: ${JSON.stringify(m)}`);
+  }
+  assert.match(confirmMessage(plans[0]), /Game: "Title" /);
+  assert.match(confirmMessage(plans[4]), /by "ana" .* Deletes: "spam"/);
+});
+
+// ── answers and capabilities as a real MCP host sends them ──
+
+test("MCP host answers accept with a choice outside the form, or with no choice → user_cancelled (not 'the prompt could not be shown'), no write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    let answer;
+    const host = await connect({ elicitation: { form: {} } }, () => answer);
+    try {
+      const args = { projectDir: dir, action: "upsert", itemId: 7, price: 350 };
+      const pre = await host.callShop(args);
+      for (answer of [{ action: "accept", content: { choice: "Other" } }, { action: "accept", content: {} }, { action: "accept", content: { choice: "run" } }]) {
+        const r = await host.callShop({ ...args, planId: pre.planId });
+        assert.equal(r.error, "user_cancelled", JSON.stringify(r));
+        assert.equal(r.answer, "accept_without_run");
+      }
+      assert.equal(host.seen.length, 3);
+      assert.deepEqual(writes(calls), []);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+test("MCP host that declares only url elicitation cannot show the form: not asked, confirm_unavailable says so; an empty declaration counts as form", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const args = { projectDir: dir, action: "upsert", itemId: 7, price: 350 };
+    const urlOnly = await connect({ elicitation: { url: {} } });
+    try {
+      const pre = await urlOnly.callShop(args);
+      const r = await urlOnly.callShop({ ...args, planId: pre.planId });
+      assert.equal(r.error, "confirm_unavailable", JSON.stringify(r));
+      assert.match(r.hint, /does not offer one/);
+      assert.deepEqual(writes(calls), []);
+    } finally {
+      await urlOnly.close();
+    }
+    const legacy = await connect({ elicitation: {} }, () => ({ action: "cancel" }));
+    try {
+      const pre = await legacy.callShop(args);
+      assert.equal((await legacy.callShop({ ...args, planId: pre.planId })).error, "user_cancelled");
+      assert.equal(legacy.seen.length, 1, "asked");
+    } finally {
+      await legacy.close();
+    }
+  });
+});
+
+test("MCP: verse8_verse is wired to the host too — widening visibility and deleting a comment open the prompt; cancel → no write, Run → one write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    let answer = { action: "cancel" };
+    const host = await connect({ elicitation: { form: {} } }, () => answer);
+    const callVerse = async (args) => JSON.parse((await host.client.callTool({ name: "verse8_verse", arguments: { projectDir: dir, ...args } })).content[0].text);
+    try {
+      for (const args of [{ action: "update", visibility: "Public" }, { action: "comment_delete", commentId: 1 }]) {
+        const before = host.seen.length;
+        const pre = await callVerse(args);
+        assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
+        answer = { action: "cancel" };
+        const cancelled = await callVerse({ ...args, planId: pre.planId });
+        assert.equal(cancelled.error, "user_cancelled", JSON.stringify(cancelled));
+        assert.equal(host.seen.length, before + 1, "the host was asked");
+        assert.equal(host.seen.at(-1).message, pre.confirmation);
+        const w = writes(calls).length;
+        answer = RUN;
+        const done = await callVerse({ ...args, planId: pre.planId });
+        assert.equal(done.ok, true, JSON.stringify(done));
+        assert.equal(writes(calls).length, w + 1);
+      }
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+test("two long values that differ only past the cut are not shown as the same text on both sides", () => {
+  const a = `${"x".repeat(200)}A`;
+  const b = `${"x".repeat(200)}B`;
+  const edit = confirmMessage({
+    op: "verse8_vxshop.upsert.edit",
+    target: { verseId: VERSE, itemId: 7 },
+    body: { isActive: true, description: b },
+    state: { name: "Item", price: 5, stock: 1, isActive: false, isArchived: false, purchaseConstraints: null, description: a },
+  });
+  assert.match(edit, /description: "x+… → "x+… \(they differ past the part shown — see the preview\)/);
+  const game = confirmMessage({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: "Public", description: b }, state: { visibility: "Private", title: "T", description: a } });
+  assert.match(game, /description: "x+… → "x+… \(they differ past the part shown — see the preview\)/);
+  const short = confirmMessage({ op: "verse8_verse.update", target: { verseId: VERSE }, body: { visibility: "Public", description: "new" }, state: { visibility: "Private", title: "T", description: "old" } });
+  assert.doesNotMatch(short, /differ past/);
 });
