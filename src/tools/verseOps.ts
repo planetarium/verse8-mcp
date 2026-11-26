@@ -233,7 +233,9 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   if (reserved.length > 0) return opFail("invalid_input", `Tags starting with '__' are reserved: ${reserved.join(", ")}`);
   for (const [field, kind] of [["thumbnailPath", "image"], ["videoPath", "video"]] as const) {
     const p = input[field];
-    if (!p) continue;
+    // Not on the re-read after the uploads: the checked bytes are already
+    // sent, and the file may have been moved or removed since.
+    if (!p || probe?.skipLocalFiles) continue;
     const check = validateLocalMedia(mediaPath(projectDir, p), kind);
     if (!check.ok) return opFail(check.error, `${field}: ${check.hint}`, { field });
   }
@@ -328,7 +330,7 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
     // write, so a game set to Private on the web meanwhile is not put back.
     // (Before the uploaded URLs go into the body: the plan holds the body
     // as previewed.)
-    const still = await planStillHolds(plan, again);
+    const still = await planStillHolds(plan, again, gate);
     if (!isApproved(still)) return still;
     Object.assign(body, uploadedUrls);
   }

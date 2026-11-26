@@ -10,11 +10,13 @@ import { projectDirField, resolveVerseContext, verseIdField, type VerseContext }
  * `verse8_vxshop` — the creator page's VX Shop tab: seller status, item
  * list, create / edit items. Changing actions preview by default and run
  * only with the planId their preview returned (creatorOps plan gate).
- * Starting a sale — any change after which buyers can newly purchase the
- * item (on-sale flag, restore, stock from 0, sale dates) — and changing
- * the price of an item on sale or scheduled also need the user's own
- * confirmation in the host's prompt, and run only if the item read again
- * after that answer is still as the prompt showed it (creatorOps RUN_RULES).
+ * Starting a sale — a change that puts the item on sale (on-sale flag,
+ * restore, sale dates; or filling an item on sale from stock 0) — and
+ * changing the price of an item on sale or scheduled also need the user's
+ * own confirmation in the host's prompt, and run only if the item read
+ * again after that answer is still as the prompt showed it (creatorOps
+ * RUN_RULES). The stock is the server's to change (purchases, refunds,
+ * reservations): no plan holds it unless the request changes it.
  *
  * Backend traps this tool closes (g2-sync vxShop.service.ts):
  *  - an update without `purchaseConstraints` DELETES the item's purchase
@@ -202,7 +204,9 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (input.metadata && "purchaseConstraints" in input.metadata) {
     return opFail("invalid_input", "Put purchase limits in purchaseConstraints, not in metadata.");
   }
-  if (input.imagePath) {
+  // Not on the re-read after the upload: the checked bytes are already
+  // sent, and the file may have been moved or removed since.
+  if (input.imagePath && !probe?.skipLocalFiles) {
     const check = validateLocalMedia(mediaPath(projectDir, input.imagePath), "image");
     if (!check.ok) return opFail(check.error, `imagePath: ${check.hint}`);
   }
@@ -261,7 +265,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
       // The upload took time: read once more before the write. (Before the
       // uploaded URL goes into the body: the plan holds the body as previewed.)
-      const still = await planStillHolds(plan, again);
+      const still = await planStillHolds(plan, again, gate);
       if (!isApproved(still)) return still;
       body.imageUrl = up.url;
     }
@@ -305,11 +309,10 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
   // The current value of every field asked about; the limits and the
   // archived flag are always read (re-sent / warned about), and so are the
-  // name, price, stock and on-sale flag: they decide whether the user is asked to
+  // name, price and on-sale flag: they decide whether the user is asked to
   // confirm and are what that prompt shows (creatorOps RUN_RULES).
   const state: Record<string, unknown> = {
     purchaseConstraints: parsed.purchaseConstraints,
-    stock: cur.stock,
     isArchived: cur.isArchived,
     name: cur.name,
     price: cur.price,
@@ -345,7 +348,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     // The upload took time, and the body re-sends the purchase limits read
     // before it: read the item once more before the write. (Before the
     // uploaded URL goes into the body: the plan holds the body as previewed.)
-    const still = await planStillHolds(plan, again);
+    const still = await planStillHolds(plan, again, gate);
     if (!isApproved(still)) return still;
     body.imageUrl = up.url;
   }
@@ -420,10 +423,10 @@ async function runArchive(input: VxShopInput, verseId: string, token: string, ho
     op: "verse8_vxshop.archive",
     target: { verseId, itemId: cur.id },
     body,
-    // name and price are what the confirmation of a restore-to-sale shows.
-    // name, price, stock and the limits are what the confirmation of a
-    // restore-to-sale shows and what decides whether it is one.
-    state: { isArchived: cur.isArchived, isActive: cur.isActive, name: cur.name, price: cur.price, stock: cur.stock, purchaseConstraints },
+    // name, price and the limits are what the confirmation of a
+    // restore-to-sale shows and what decides whether it is one. The stock
+    // is not read: the server changes it on every purchase and refund.
+    state: { isArchived: cur.isArchived, isActive: cur.isActive, name: cur.name, price: cur.price, purchaseConstraints },
   };
   if (cur.isArchived === want) {
     // A preview never hands out a planId for this state, so a given one is stale.

@@ -66,6 +66,9 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  */
 
 const GAMES_BASE_URL = "https://agent8-games.verse8.io";
+/** Reading the game again before the publish call: how many tries, and the wait before try n (× n). */
+const REREAD_TRIES = 3;
+const REREAD_WAIT_MS = 400;
 const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__9C", "__review_required"]);
 const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
   MSU: ["__MSU", "__review_required"],
@@ -1320,12 +1323,34 @@ export async function runDeploy(
   let current = existing;
   let publishTags = tags;
   if (mode === "update") {
-    const uploaded = `The checkpoint is pushed and the game files are already uploaded at ${playUrl}; only the verse record was not updated.`;
-    let again;
-    try {
-      again = await getVerse(verseId, token);
-    } catch (e) {
-      return fail("publish", "upstream_unreachable", `${safeErrorHint(e)} The game could not be read again before publishing. ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
+    // What has happened by now, said as it is: the push may have failed
+    // (the deploy goes on with the local commit), or there was nothing to
+    // commit.
+    const checkpointCode = commit.ok ? "" : (commit as { error: string }).error;
+    const checkpointDone =
+      checkpointCode === "push_failed"
+        ? "The checkpoint is committed locally (its push failed)"
+        : checkpointCode === "nothing_to_commit"
+          ? "There was nothing to commit"
+          : "The checkpoint is pushed";
+    const uploaded = `${checkpointDone} and the game files are already uploaded at ${playUrl}; only the verse record was not updated.`;
+    // One failed read must not cost a finished build and upload: a network
+    // error or a 5xx / 429 answer is tried again a moment later.
+    let again: Awaited<ReturnType<typeof getVerse>> | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < REREAD_TRIES; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, REREAD_WAIT_MS * attempt));
+      try {
+        again = await getVerse(verseId, token);
+        lastError = undefined;
+        if (again.ok || !(again.status >= 500 || again.status === 429)) break;
+      } catch (e) {
+        again = undefined;
+        lastError = e;
+      }
+    }
+    if (!again) {
+      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${REREAD_TRIES} tries). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
     }
     if (!again.ok) {
       const next = again.status === 401 ? `${rejectedTokenHint(auth)}, then run verse8_deploy again` : "Run verse8_deploy again";

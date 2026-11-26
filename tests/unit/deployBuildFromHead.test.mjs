@@ -654,3 +654,54 @@ test("deploy: the game cannot be read again before publishing → not published,
     else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
   }
 });
+
+test("deploy: one failed read before publishing is tried again — a 503 and then an answer → published", async () => {
+  const dir = freshProject();
+  const { bin } = fakeToolchain(dir);
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  let gets = 0;
+  const posts = [];
+  const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true };
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/verse/verseId") {
+      gets++;
+      // 1: the reading at the start. 2: a transient failure before publishing. 3: the retry.
+      return gets === 2 ? new Response(JSON.stringify({ message: "boom" }), { status: 503 }) : new Response(JSON.stringify(live), { status: 200 });
+    }
+    if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
+      posts.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ verseId: VERSE, title: "Live" }), { status: 200 });
+    }
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
+    const res = await runDeploy(input, dir);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(gets, 3);
+    assert.equal(posts.length, 1);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+});
+
+test("deploy stopped before publishing after a failed push: the result does not say the checkpoint is pushed", async () => {
+  const { repo, dir } = makeRepo();
+  git(repo, "config", "user.email", "me@me");
+  git(repo, "config", "user.name", "me");
+  // The push goes to a place that does not exist: the commit stays local and the deploy goes on.
+  git(repo, "config", "remote.origin.pushurl", path.join(os.tmpdir(), `verse8-no-such-remote-${process.pid}`));
+  fs.writeFileSync(path.join(dir, "game.js"), "v2 from this session\n");
+  const { res, posts } = await deployOverTime(dir, { extra: { visibility: "Public" }, readings: [{ visibility: "Public" }, { visibility: "Private" }] });
+  assert.equal(res.error, "plan_mismatch", JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.match(res.hint, /The checkpoint is committed locally \(its push failed\) and the game files are already uploaded/);
+  assert.doesNotMatch(res.hint, /checkpoint is pushed/);
+  assert.deepEqual(posts, []);
+});

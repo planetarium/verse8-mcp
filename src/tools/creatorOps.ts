@@ -156,6 +156,8 @@ export function planId(p: Plan): string {
 export interface PlanApproved {
   approved: true;
   files: Record<string, Buffer<ArrayBuffer>>;
+  /** What planGate decided for this run: whether the user was asked, and the prompt they answered. */
+  decided?: { runCondition: "preview" | "user_confirm"; confirmation?: string };
 }
 
 export function isApproved(g: unknown): g is PlanApproved {
@@ -226,8 +228,11 @@ export const CONFIRM_NEXT =
 // RUN_RULES is the one table of it: every op that calls planGate (or, for a
 // tool without a planId, confirmGate) has a row,
 // and an op without a row does not run. A row may decide by the plan — the
-// same parts the planId hashes — so the condition cannot differ from what
-// the preview showed.
+// same parts the planId hashes — and by the clock (the shop rows read the
+// sale dates against now). So the condition is decided again at every
+// step: at the preview, at the run, after the user's answer and after an
+// upload; a plan whose values did not change can still come to need the
+// user's confirmation because a sale date passed.
 
 export type RunCondition = "immediate" | "preview" | "user_confirm";
 type GatedCondition = Exclude<RunCondition, "immediate">;
@@ -312,8 +317,17 @@ const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", 
 // its tabs are General / Analytics / Server / VX Shop and carry no address
 // of their own, so the tab is named in words).
 const creatorPage = (p: Plan): string => `${getCreateBaseUrl()}/creations/${encodeURIComponent(String(p.target.verseId ?? ""))}`;
-const vxShopPortal = (p: Plan): string =>
-  `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab and use the item's edit dialog — the on/off switch and Restore on that tab send no purchase limits, and the server then removes the item's limits)`;
+// The tab's row for an item offers Edit, or — for an archived item — only
+// Restore (verse8-vibe PaymentsTabContent). The on/off switch and Restore
+// send just their flag, and the server removes an item's purchase limits
+// when an update carries none, so each hint says what to do about that.
+const vxShopPortal = (p: Plan): string => {
+  const tab = `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab`;
+  if (p.op === "verse8_vxshop.archive" || rec(p.state).isArchived === true) {
+    return `${tab}, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there. Restore sends no purchase limits and the server then removes the item's limits: set them again in the item's edit dialog afterwards)`;
+  }
+  return `${tab} and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits)`;
+};
 const visibilityPortal = (p: Plan): string => `the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
 
 // Who can see a game, narrowest first. A change is widening when it moves
@@ -371,39 +385,55 @@ const commentPortal = (p: Plan): string =>
   `the game's page: ${getVerse8WebBaseUrl()}/${encodeURIComponent(String(p.target.verseId ?? ""))} (open the comments and press the trash button next to the comment)`;
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
 
-// ── when a VX Shop item can be bought ──
+// ── when a VX Shop item is on sale ──
 //
-// The server sells an item when it is active, not archived, has stock, and
-// now is inside its purchase dates (g2-sync vxShop.service
-// createConfirmedPurchase / validatePurchaseConstraints). One function
-// reads that from an item's values, and every shop rule asks it about the
-// item before and after the change:
+// Whether an item is on sale is read from what the creator sets: the
+// on-sale flag, the archive flag and the purchase dates (g2-sync
+// vxShop.service createConfirmedPurchase / validatePurchaseConstraints
+// check the same, plus stock). One function reads it, and every shop rule
+// asks it about the item before and after the change:
 //
-//   0  cannot be bought, and will not become buyable by itself
-//   1  scheduled: everything is set, the start date is still ahead
-//   2  can be bought now
+//   0  not on sale, and will not come on sale by itself
+//   1  scheduled: on sale once the start date arrives
+//   2  on sale now
 //
 // A change that raises the level starts a sale — whichever field does it:
-// the on-sale flag, a restore, stock from 0, a start date removed, an end
-// date extended. The per-user / per-period count limits are not part of
-// it: they bound how much one buyer gets, not whether the item is on sale.
+// the on-sale flag, a restore, a start date removed, an end date extended.
+//
+// Stock is NOT part of the level. The creator does not hold it: the server
+// lowers it on every purchase and reservation and raises it again on a
+// refund or an expired reservation, and a reservation already taken is
+// paid at stock 0 (g2-sync vxShop.service refunds, onestoreIap.service
+// restoreReservationStock / stockAlreadyReserved). An item on sale with
+// stock 0 can sell again without anyone editing it, so repricing it or
+// turning it on asks like any other. For the same reason no rule reads the
+// current stock unless the request changes the stock — a plan that bound
+// it would fail whenever someone buys. The one stock change that is itself
+// a sale start is filling an item that is on sale or scheduled from 0.
+//
+// The per-user / per-period count limits are not part of it either: they
+// bound how much one buyer gets, not whether the item is on sale.
 
 interface VxSaleValues {
   isActive: unknown;
   isArchived: unknown;
-  stock: unknown;
   limits: Record<string, unknown>;
 }
 type SaleLevel = 0 | 1 | 2;
-/** Milliseconds of a date value, or null when there is none (or it does not parse — then it bounds nothing). */
-function dateOf(v: unknown): number | null {
+/**
+ * Milliseconds of a date value, or null when there is none (or it does not
+ * parse — then it bounds nothing). A date-time written without an offset is
+ * read as UTC, as the server reads it; JavaScript would read it in this
+ * machine's time zone and put the boundary hours away from the server's.
+ */
+export function dateOf(v: unknown): number | null {
   if (typeof v !== "string" && typeof v !== "number") return null;
-  const t = new Date(v).getTime();
+  const s = typeof v === "string" && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(v.trim()) ? `${v.trim().replace(" ", "T")}Z` : v;
+  const t = new Date(s).getTime();
   return Number.isFinite(t) ? t : null;
 }
 export function vxSaleLevel(v: VxSaleValues, now: number = Date.now()): SaleLevel {
   if (v.isActive !== true || v.isArchived === true) return 0;
-  if (!(Number(v.stock) >= 1)) return 0;
   const end = dateOf(v.limits.purchaseEndDate);
   if (end !== null && now > end) return 0;
   const start = dateOf(v.limits.purchaseStartDate);
@@ -415,35 +445,46 @@ function vxBeforeAfter(p: Plan): { before: VxSaleValues; after: VxSaleValues } {
   const state = rec(p.state);
   if (p.op === "verse8_vxshop.upsert.create") {
     return {
-      before: { isActive: false, isArchived: false, stock: 0, limits: {} },
-      after: { isActive: body.isActive, isArchived: false, stock: body.stock, limits: rec(body.purchaseConstraints) },
+      before: { isActive: false, isArchived: false, limits: {} },
+      after: { isActive: body.isActive, isArchived: false, limits: rec(body.purchaseConstraints) },
     };
   }
-  const before: VxSaleValues = { isActive: state.isActive, isArchived: state.isArchived, stock: state.stock, limits: rec(state.purchaseConstraints) };
+  const before: VxSaleValues = { isActive: state.isActive, isArchived: state.isArchived, limits: rec(state.purchaseConstraints) };
   if (p.op === "verse8_vxshop.archive") return { before, after: { ...before, isArchived: body.isArchived } };
   return {
     before,
     after: {
       isActive: "isActive" in body ? body.isActive : state.isActive,
       isArchived: state.isArchived,
-      stock: "stock" in body ? body.stock : state.stock,
       // An edit's body always carries the limits it keeps; absent means removed.
       limits: rec(body.purchaseConstraints),
     },
   };
 }
-/** Whether a shop plan opens purchases (the level rises), and whether it reprices an item that is on sale or scheduled and stays so. */
+/**
+ * Whether a shop plan starts a sale — the level rises, or an item that is
+ * on sale or scheduled is filled from stock 0 — and whether it reprices an
+ * item that is on sale or scheduled and stays so.
+ */
 export function vxSaleKind(p: Plan, now: number = Date.now()): { opens: boolean; reprices: boolean; after: VxSaleValues; level: SaleLevel } {
   const { before, after } = vxBeforeAfter(p);
+  const body = rec(p.body);
   const from = vxSaleLevel(before, now);
   const level = vxSaleLevel(after, now);
-  return { opens: level > from, reprices: "price" in rec(p.body) && from >= 1 && level >= 1, after, level };
+  // An edit's body carries `stock` only when the request changes it, and
+  // then the plan holds the stock it was read as.
+  const refills = p.op === "verse8_vxshop.upsert.edit" && "stock" in body && !(Number(rec(p.state).stock) >= 1) && Number(body.stock) >= 1 && level >= 1;
+  return { opens: level > from || refills, reprices: "price" in body && from >= 1 && level >= 1, after, level };
 }
-/** "buyers can purchase it from <when> [until <end>]" — the dates in full, as the server will apply them. */
+/**
+ * "whenever it has stock, buyers can purchase it from <when> [until <end>]"
+ * — the dates in full, as the server will apply them. Stock is named as a
+ * condition, not a number: it may be 0 now and come back by itself.
+ */
 function saleWindow(after: VxSaleValues, level: SaleLevel): string {
   const from = level === 1 ? `from ${full(after.limits.purchaseStartDate)}` : "from now on";
   const end = after.limits.purchaseEndDate;
-  return `buyers can purchase it ${from}${end === undefined || end === null ? "" : ` until ${full(end)}`}`;
+  return `whenever it has stock, buyers can purchase it ${from}${end === undefined || end === null ? "" : ` until ${full(end)}`}`;
 }
 /** Each purchase limit that differs, `key: current → new`, in full. */
 function limitChanges(now: Record<string, unknown>, to: Record<string, unknown>): string[] {
@@ -463,7 +504,9 @@ function vxEditConfirm(p: Plan): ConfirmText {
   // the price, the stock when it changes, every purchase limit that
   // changes. The body always carries the limits (re-sent when kept), so
   // they are compared with the current ones; absent means removed.
-  const core: string[] = [opens ? `${price}; ${saleWindow(after, level)}` : `${price} for every buyer from now on`];
+  // The sale window is said for a repricing too: a scheduled item's new
+  // price applies from its start date, not "from now on".
+  const core: string[] = [`${price}; ${saleWindow(after, level)}`];
   if ("stock" in body) core.push(`stock: ${full(state.stock)} → ${full(body.stock)}`);
   const limitsNow = rec(state.purchaseConstraints);
   const limitsTo = rec(body.purchaseConstraints);
@@ -524,10 +567,10 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   // Answering a dispute sends the buyer a message; it moves no money and
   // changes nothing public (refunds are not part of it).
   "verse8_vxshop.dispute": { condition: "preview" },
-  // The three shop rows share one test (vxSaleKind): does the change open
-  // purchases, or reprice an item buyers can buy or are about to?
-  // Created sellable it starts a sale; created hidden, without stock or
-  // past its end date it is a preview.
+  // The three shop rows share one test (vxSaleKind): does the change put
+  // the item on sale, or reprice an item that is on sale or scheduled?
+  // Created with the on-sale flag it starts a sale, whatever its stock;
+  // created hidden or past its end date it is a preview.
   "verse8_vxshop.upsert.create": {
     condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
     confirm: (p) => {
@@ -556,7 +599,8 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
     confirm: vxEditConfirm,
     portal: vxShopPortal,
   },
-  // Restoring an item that can then be bought puts it back on sale.
+  // Restoring an item whose on-sale flag is set and whose sale has not
+  // ended puts it back on sale.
   "verse8_vxshop.archive": {
     condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
     confirm: (p) => {
@@ -565,7 +609,7 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
       return {
         question: "Restore this VX Shop item and put it back on sale?",
         target: `Item: ${shown(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
-        change: `Price: ${s.price} VX, stock ${full(s.stock)}; ${saleWindow(after, level)}`,
+        change: `Price: ${s.price} VX; ${saleWindow(after, level)}`,
         undo: "Undo: you can archive it again; purchases already made stay as they are",
       };
     },
@@ -652,6 +696,22 @@ function portalOf(p: Plan): string {
   return `To do it anyway, the user can do the same on ${where}.`;
 }
 
+/** Whether the host has cancelled the tool call. When that cannot be told, it counts as cancelled. */
+function isCancelledNow(host: ConfirmHost | undefined): boolean {
+  try {
+    return host?.isCancelled?.() ?? false;
+  } catch {
+    return true;
+  }
+}
+function cancelledDuring(p: Plan, message: string): OpFail {
+  return opFail(
+    "confirm_unavailable",
+    `Nothing was changed: the host cancelled this tool call while the confirmation prompt was open (a tool timeout shorter than the time it took to answer), so the answer was not used. Raise the host's tool timeout for this server, or: ${portalOf(p)}`,
+    { confirmation: message },
+  );
+}
+
 /** Ask the user. Resolves to null when they chose Run, otherwise to the refusal. */
 async function askUser(p: Plan, message: string, host: ConfirmHost | undefined): Promise<OpFail | null> {
   if (!host || !host.canAsk) {
@@ -671,19 +731,7 @@ async function askUser(p: Plan, message: string, host: ConfirmHost | undefined):
       { confirmation: message },
     );
   }
-  let cancelled = true;
-  try {
-    cancelled = host.isCancelled?.() ?? false;
-  } catch {
-    /* cannot tell: treat as cancelled */
-  }
-  if (cancelled) {
-    return opFail(
-      "confirm_unavailable",
-      `Nothing was changed: the host cancelled this tool call while the confirmation prompt was open (a tool timeout shorter than the time it took to answer), so the answer was not used. Raise the host's tool timeout for this server, or: ${portalOf(p)}`,
-      { confirmation: message },
-    );
-  }
+  if (isCancelledNow(host)) return cancelledDuring(p, message);
   const action = typeof answer?.action === "string" ? answer.action : "none";
   if (action === "accept" && rec(answer.content).choice === CONFIRM_RUN) return null;
   return opFail(
@@ -735,9 +783,10 @@ export async function confirmGate(
   if (!need.ok) return need;
   const out = { confirmed: true as const, runCondition: need.condition, ...(need.message === null ? {} : { confirmation: need.message }) };
   if (need.message === null || !opts.ask) return out;
+  if (!opts.reread) return noReread(p);
   const refused = await askUser(p, need.message, host);
   if (refused) return refused;
-  const still = await sameAfterRun(p, planId(p), opts.reread);
+  const still = await sameAfterRun(p, planId(p), opts.reread, need.message, host);
   return isApproved(still) ? out : still;
 }
 
@@ -745,26 +794,47 @@ export async function confirmGate(
 //
 // The planId is checked before the prompt opens, and a prompt can stay open
 // for minutes. So after "Run" the target is read again and the plan built
-// again: it runs only if that plan is the one the prompt was written from.
-// A price edited on the web meanwhile, limits changed, a game renamed or
-// made public — any of it ends in plan_mismatch with nothing written.
+// again: it runs only if that plan is the one the prompt was written from,
+// and only if the prompt would still read the same (a sale date can pass
+// while it is open). A price edited on the web meanwhile, limits changed, a
+// game renamed or made public — any of it ends in plan_mismatch with
+// nothing written.
 
-/** Reads the target again and returns the plan the action would have now, or the failure of that read. */
-export type Reread = () => Promise<Plan | OpFail>;
+/**
+ * Reads the target again and returns the plan the action would have now,
+ * or the failure of that read. `skipLocalFiles`: do not look at the local
+ * media files again (after an upload their checked bytes are already sent).
+ */
+export type Reread = (opts?: { skipLocalFiles?: boolean }) => Promise<Plan | OpFail>;
 
 /** Lets a tool's own code be run again up to the point where it has its plan. */
 export interface PlanProbe {
   plan?: Plan;
+  /** Set by the caller: skip the checks of local media files. */
+  skipLocalFiles?: boolean;
 }
 /** What a tool returns when it was only asked for its plan. */
 export const PROBED: OpFail = { ok: false, error: "plan_mismatch", hint: "plan probe" };
 
+/**
+ * Answers of a second run that mean "the target is not what the preview
+ * showed any more" (it is gone, the change is already made, the id is
+ * taken). Any other failure of that run — a rejected login, a server
+ * error, an unreachable API — is not a change of the target: it keeps its
+ * own error code and hint, so the caller is told to log in or to try
+ * again, not to preview again.
+ */
+const TARGET_CHANGED = new Set(["invalid_input", "not_found", "product_id_taken", "plan_mismatch"]);
+
 /** A Reread made from running the tool's code again with a probe. */
 export function rereadWith(run: (probe: PlanProbe) => Promise<unknown>): Reread {
-  return async () => {
-    const probe: PlanProbe = {};
+  return async (opts) => {
+    const probe: PlanProbe = { skipLocalFiles: opts?.skipLocalFiles === true };
     const r = rec(await run(probe));
     if (probe.plan) return probe.plan;
+    if (r.ok === false && typeof r.error === "string" && typeof r.hint === "string" && !TARGET_CHANGED.has(r.error)) {
+      return { ...(r as OpFail), rereadFailed: true };
+    }
     const why = typeof r.hint === "string" ? `: ${typeof r.error === "string" ? `${r.error} — ` : ""}${r.hint}` : "";
     return opFail("plan_mismatch", `the target is no longer as the preview showed it${why}`);
   };
@@ -773,31 +843,50 @@ export function rereadWith(run: (probe: PlanProbe) => Promise<unknown>): Reread 
 const AFTER_PROMPT = "Nothing was changed: it changed while the confirmation prompt was open, so the user's Run was not used —";
 const AFTER_UPLOAD = "The record was not changed (the media file is already uploaded and unused): it changed while the upload ran —";
 
+function noReread(p: Plan): OpFail {
+  return opFail("op_not_classified", `Nothing was changed: '${p.op}' asks the user but gives no way to read its target again after the answer. This is a bug in @verse8/mcp.`);
+}
+
 /** The plan a re-read gives, or the failure of that read. */
-async function readAgain(reread: Reread): Promise<Plan | OpFail> {
+async function readAgain(reread: Reread, opts?: { skipLocalFiles?: boolean }): Promise<Plan | OpFail> {
   try {
-    const fresh = await reread();
-    return "op" in fresh && typeof fresh.op === "string" ? (fresh as Plan) : (fresh as OpFail);
+    return await reread(opts);
   } catch (e) {
-    return opFail("plan_mismatch", safeErrorHint(e));
+    return { ...opFail("upstream_unreachable", safeErrorHint(e)), rereadFailed: true };
   }
 }
 const isPlan = (x: Plan | OpFail): x is Plan => "op" in x && typeof x.op === "string";
-/** A plan_mismatch that says when the change happened. */
-function changedDuring(when: string, mark: Record<string, unknown>, r: OpFail, rePreview: boolean): OpFail {
+/** The refusal for a re-read that did not give the same plan: a plan_mismatch that says when it changed, or the read's own failure. */
+function notSame(when: string, mark: Record<string, unknown>, r: OpFail, rePreview: boolean): OpFail {
+  if (r.rereadFailed === true) {
+    const { rereadFailed: _f, ...own } = r;
+    const what = when === AFTER_UPLOAD ? "The record was not changed (the media file is already uploaded and unused)" : "Nothing was changed";
+    return { ...own, hint: safeHint(`${what}: the target could not be read again before the write — ${r.hint} Then run it again.`), ...mark };
+  }
   return { ...r, error: "plan_mismatch", hint: safeHint(`${when} ${r.hint.replace(/^Nothing was changed: /, "")}${rePreview ? ` ${RE_PREVIEW}` : ""}`), ...mark };
 }
 
-/** Approved (with freshly hashed file bytes) when the plan read again is still `id`; otherwise plan_mismatch. */
-async function sameAfterRun(p: Plan, id: string, reread: Reread | undefined): Promise<PlanApproved | OpFail> {
-  if (!reread) {
-    return opFail("op_not_classified", `Nothing was changed: '${p.op}' asks the user but gives no way to read its target again after the answer. This is a bug in @verse8/mcp.`);
-  }
+/**
+ * Approved (with freshly hashed file bytes) when the plan read again is
+ * still `id`, the prompt would still say `shown`, and the host has not
+ * cancelled the call meanwhile; otherwise the refusal.
+ */
+async function sameAfterRun(p: Plan, id: string, reread: Reread, shown: string, host: ConfirmHost | undefined): Promise<PlanApproved | OpFail> {
   const mark = { afterConfirmation: true };
   const fresh = await readAgain(reread);
-  if (!isPlan(fresh)) return changedDuring(AFTER_PROMPT, mark, fresh, true);
+  // The re-read takes a moment too: a call the host gave up on meanwhile must not write.
+  if (isCancelledNow(host)) return cancelledDuring(p, shown);
+  if (!isPlan(fresh)) return notSame(AFTER_PROMPT, mark, fresh, true);
   const again = checkPlan(fresh, id);
-  return isApproved(again) ? again : changedDuring(AFTER_PROMPT, mark, again, false);
+  if (!isApproved(again)) return notSame(AFTER_PROMPT, mark, again, false);
+  // Same values, but a rule may read the clock (sale dates): the prompt
+  // the user answered must still be the prompt this plan would get now.
+  const now = runRequirement(fresh);
+  if (!now.ok) return now;
+  if (now.message !== shown) {
+    return opFail("plan_mismatch", `${AFTER_PROMPT} a sale date passed, so what the prompt said is no longer what would happen${now.message === null ? "" : ` (now: ${now.message})`}. ${RE_PREVIEW}`, mark);
+  }
+  return again;
 }
 
 /**
@@ -806,16 +895,30 @@ async function sameAfterRun(p: Plan, id: string, reread: Reread | undefined): Pr
  * while. The write re-sends values read before that (the visibility, the
  * purchase limits), so the target is read once more after the upload.
  * Only what was read from the server is compared: the local files were
- * hashed at the gate and those bytes are what was uploaded, whatever the
- * file on disk is by now.
+ * hashed at the gate and those bytes are what was uploaded, so the file on
+ * disk is not looked at again — it may be edited, moved or gone by now.
+ * `gate` is what planGate approved: if the action would now need the
+ * user's confirmation and that is not the confirmation they gave (an end
+ * date passed during the upload, so extending it now re-opens a sale), it
+ * stops.
  */
-export async function planStillHolds(p: Plan, reread: Reread): Promise<PlanApproved | OpFail> {
+export async function planStillHolds(p: Plan, reread: Reread, gate: PlanApproved): Promise<PlanApproved | OpFail> {
   const mark = { afterUpload: true };
-  const fresh = await readAgain(reread);
-  if (!isPlan(fresh)) return changedDuring(AFTER_UPLOAD, mark, fresh, true);
+  const fresh = await readAgain(reread, { skipLocalFiles: true });
+  if (!isPlan(fresh)) return notSame(AFTER_UPLOAD, mark, fresh, true);
   const serverSide = (x: Plan): Plan => ({ ...x, files: {} });
   const again = checkPlan(serverSide(fresh), planId(serverSide(p)));
-  return isApproved(again) ? again : changedDuring(AFTER_UPLOAD, mark, again, false);
+  if (!isApproved(again)) return notSame(AFTER_UPLOAD, mark, again, false);
+  const now = runRequirement(fresh);
+  if (!now.ok) return now;
+  if (now.message !== null && now.message !== gate.decided?.confirmation) {
+    return opFail(
+      "plan_mismatch",
+      `${AFTER_UPLOAD} a sale date passed, and the action now needs the user's own confirmation${gate.decided?.confirmation === undefined ? ", which it was not asked for" : " of something else than they confirmed"} (${now.message}). ${RE_PREVIEW}`,
+      { ...mark, runCondition: "user_confirm" },
+    );
+  }
+  return again;
 }
 
 /**
@@ -848,9 +951,14 @@ export async function planGate<T extends { action: string }>(
     };
   }
   const checked = checkPlan(p, given);
-  if (!isApproved(checked) || message === null) return checked;
+  if (!isApproved(checked)) return checked;
+  if (message === null) return { ...checked, decided: { runCondition: condition } };
+  // Before the prompt, not after it: the user is not asked for an answer that could not be used.
+  if (!reread) return noReread(p);
   const refused = await askUser(p, message, host);
-  return refused ?? (await sameAfterRun(p, given, reread));
+  if (refused) return refused;
+  const still = await sameAfterRun(p, given, reread, message, host);
+  return isApproved(still) ? { ...still, decided: { runCondition: condition, confirmation: message } } : still;
 }
 
 export interface Change {

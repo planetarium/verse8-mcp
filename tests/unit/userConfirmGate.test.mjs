@@ -60,6 +60,8 @@ const makeItems = () => [
   item(15, { metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: FUTURE } }) }),
   item(16, { metadata: JSON.stringify({ purchaseConstraints: { purchaseEndDate: PAST } }) }),
   item(17, { stock: 0 }),
+  // 18: hidden, no stock.
+  item(18, { isActive: false, stock: 0 }),
 ];
 
 async function withShop(f) {
@@ -104,7 +106,9 @@ const run = (dir, input, host) =>
     : runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
 // Where a refusal sends the user: the per-game creator page on the create host, and the tab.
 const PAGE = `https://create[.]verse8[.]io/creations/${VERSE}`;
-const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use the item's edit dialog — the on/off switch and Restore on that tab send no purchase limits`);
+const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits[)]`);
+// An archived item has only Restore on that tab, no edit dialog.
+const ARCHIVED_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there[.] Restore sends no purchase limits and the server then removes the item's limits: set them again in the item's edit dialog afterwards[)]`);
 const GAME_PORTAL = new RegExp(`General tab: ${PAGE} [(]the "Visibility" select[)]`);
 const COMMENT_PORTAL = new RegExp(`the game's page: https://verse8[.]io/${VERSE} [(]open the comments and press the trash button next to the comment[)]`);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
@@ -150,6 +154,7 @@ const CONFIRMED = [
     name: "restore an archived item whose on-sale flag is set",
     input: { action: "archive", itemId: 9, archived: false },
     shows: [/Item 9/, /300 VX/, new RegExp(VERSE), /back on sale/],
+    portal: ARCHIVED_PORTAL,
   },
   {
     name: "game: Private → Public",
@@ -682,9 +687,10 @@ test("confirmGate: asks only for a user_confirm plan, passes only on Run, report
   assert.doesNotMatch(passed.confirmation, /[\r\n]/);
 
   const no = hostThat({ action: "decline" });
-  assert.equal((await confirmGate(widening, no)).error, "user_cancelled");
-  assert.equal((await confirmGate(widening, undefined)).error, "confirm_unavailable");
-  assert.equal((await confirmGate(widening, { ...hostThat(RUN), isCancelled: () => true })).error, "confirm_unavailable");
+  const same = { ask: true, reread: async () => widening };
+  assert.equal((await confirmGate(widening, no, same)).error, "user_cancelled");
+  assert.equal((await confirmGate(widening, undefined, same)).error, "confirm_unavailable");
+  assert.equal((await confirmGate(widening, { ...hostThat(RUN), isCancelled: () => true }, same)).error, "confirm_unavailable");
 
   const silent = hostThat({ action: "decline" });
   const reported = await confirmGate(widening, silent, { ask: false });
@@ -750,14 +756,15 @@ test("create on sale: the start date is in the prompt — two start dates give t
 
 // ── one test for "can it be bought": the sale level before and after ──
 
-test("vxSaleLevel: the server's purchase conditions — active, not archived, stock, inside the dates", () => {
+test("vxSaleLevel: what the creator sets — on-sale flag, archive flag, purchase dates; the stock is not part of it", () => {
   const { vxSaleLevel } = creatorOps;
   const now = Date.parse("2026-11-26T00:00:00Z");
-  const v = (x = {}) => ({ isActive: true, isArchived: false, stock: 3, limits: {}, ...x });
+  const v = (x = {}) => ({ isActive: true, isArchived: false, limits: {}, ...x });
   assert.equal(vxSaleLevel(v(), now), 2);
   assert.equal(vxSaleLevel(v({ isActive: false }), now), 0);
   assert.equal(vxSaleLevel(v({ isArchived: true }), now), 0);
-  assert.equal(vxSaleLevel(v({ stock: 0 }), now), 0);
+  // The server moves the stock by itself (purchases, refunds, reservations): an item on sale with none left is still on sale.
+  assert.equal(vxSaleLevel(v({ stock: 0 }), now), 2);
   assert.equal(vxSaleLevel(v({ limits: { purchaseStartDate: "2026-11-27" } }), now), 1, "scheduled");
   assert.equal(vxSaleLevel(v({ limits: { purchaseStartDate: "2026-11-25" } }), now), 2);
   assert.equal(vxSaleLevel(v({ limits: { purchaseEndDate: "2026-11-25" } }), now), 0, "ended");
@@ -775,15 +782,22 @@ const OPENS_PURCHASES = [
   ["stock 0 → 5 on an item whose on-sale flag is set", { action: "upsert", itemId: 17, stock: 5 }, "user_confirm", [/Start selling/, /stock: 0 → 5/]],
   ["turn the on-sale flag on with a future start date", { action: "upsert", itemId: 8, isActive: true, purchaseConstraints: { purchaseStartDate: FUTURE } }, "user_confirm", [new RegExp(`from "${FUTURE}"`)]],
   ["reprice an item that is scheduled", { action: "upsert", itemId: 15, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX/]],
-  // Not a sale start: purchases do not open.
+  // Stock 0 does not take an item off sale: a refund or an expired
+  // reservation brings stock back without the creator, and a reservation
+  // already taken is paid at stock 0.
+  ["on-sale flag on with stock 0", { action: "upsert", itemId: 8, isActive: true, stock: 0 }, "user_confirm", [/Start selling/, /whenever it has stock, buyers can purchase it from now on/]],
+  ["on-sale flag on for an item that has no stock", { action: "upsert", itemId: 18, isActive: true }, "user_confirm", [/Start selling/]],
+  ["reprice an item on sale with no stock", { action: "upsert", itemId: 17, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX; whenever it has stock, buyers can purchase it from now on/]],
+  ["reprice a scheduled item: the new price applies from its start date, not from now on", { action: "upsert", itemId: 15, price: 80 }, "user_confirm", [new RegExp(`300 → 80 VX; whenever it has stock, buyers can purchase it from "${FUTURE}"`)]],
+  // Not a sale start: the item does not come on sale.
   ["on-sale flag on an archived, hidden item", { action: "upsert", itemId: 10, isActive: true }, "preview"],
-  ["on-sale flag on with stock 0", { action: "upsert", itemId: 8, isActive: true, stock: 0 }, "preview"],
+  ["stock 0 → 5 on a hidden item", { action: "upsert", itemId: 18, stock: 5 }, "preview"],
+  ["stock 3 → 5 on an item on sale (not from 0)", { action: "upsert", itemId: 7, stock: 5 }, "preview"],
   ["rename an item that is scheduled", { action: "upsert", itemId: 15, name: "Renamed" }, "preview"],
-  ["reprice an item with no stock", { action: "upsert", itemId: 17, price: 90 }, "preview"],
   ["reprice an item whose sale ended", { action: "upsert", itemId: 16, price: 90 }, "preview"],
   ["raise a count limit on an item on sale", { action: "upsert", itemId: 14, purchaseConstraints: { ...RICH_LIMITS, maxPurchasePerUser: 99 } }, "preview"],
   ["remove the count limits of an item on sale", { action: "upsert", itemId: 12, clearPurchaseConstraints: true }, "preview"],
-  ["create with the on-sale flag but no stock", { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 0, isActive: true }, "preview"],
+  ["create with the on-sale flag and no stock yet", { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 0, isActive: true }, "user_confirm", [/Create this VX Shop item and start selling it/, /stock 0/]],
   ["create with the on-sale flag but an end date that has passed", { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 5, isActive: true, purchaseConstraints: { purchaseEndDate: PAST } }, "preview"],
 ];
 for (const [name, input, condition, shows = []] of OPENS_PURCHASES) {
@@ -808,12 +822,15 @@ for (const [name, input, condition, shows = []] of OPENS_PURCHASES) {
   });
 }
 
-test("restore: an archived item is asked about only when it can then be bought", async () => {
+test("restore: an archived item is asked about when its on-sale flag is set — with or without stock — and not when it is hidden", async () => {
   const dir = project();
   await withShop(async (_calls, items) => {
     assert.equal((await run(dir, { action: "archive", itemId: 9, archived: false })).runCondition, "user_confirm");
     items.find((i) => i.id === 9).stock = 0;
-    assert.equal((await run(dir, { action: "archive", itemId: 9, archived: false })).runCondition, "preview", "no stock: restoring opens nothing");
+    const soldOut = await run(dir, { action: "archive", itemId: 9, archived: false });
+    assert.equal(soldOut.runCondition, "user_confirm", "stock 0 comes back by itself (refund, expired reservation): restoring puts it on sale");
+    assert.match(soldOut.confirmation, /whenever it has stock, buyers can purchase it from now on/);
+    assert.doesNotMatch(soldOut.confirmation, /stock \d|stock: /, "the stock count is not in the prompt");
     assert.equal((await run(dir, { action: "archive", itemId: 10, archived: false })).runCondition, "preview", "hidden");
   });
 });
@@ -884,17 +901,86 @@ test("the gate refuses a user_confirm plan that cannot be read again after the a
   const d = await confirmGate(deploy, host);
   assert.equal(d.error, "op_not_classified", JSON.stringify(d));
   assert.equal(d.confirmed, undefined);
-  // And with a re-read that now gives another plan, or fails, or throws:
+  assert.equal(host.asked.length, 0, "the user is not asked for an answer that could not be used");
+  // And with a re-read that now gives another plan, or says the target is gone:
   for (const reread of [
     async () => ({ ...deploy, state: { ...deploy.state, visibility: "Unlisted" } }),
-    async () => ({ ok: false, error: "not_found", hint: "gone" }),
-    async () => { throw new Error("network"); },
+    async () => ({ ok: false, error: "plan_mismatch", hint: "gone" }),
   ]) {
     const x = await confirmGate(deploy, hostThat(RUN), { ask: true, reread });
     assert.equal(x.error, "plan_mismatch", JSON.stringify(x));
     assert.equal(x.afterConfirmation, true);
     assert.equal(x.confirmed, undefined);
   }
+});
+
+test("a re-read that fails for its own reason keeps that reason: a rejected login or a server error is not reported as plan_mismatch", async () => {
+  const deploy = { op: "verse8_deploy.publish", target: { verseId: VERSE }, body: { visibility: "Public" }, state: { visibility: "Private", published: true, title: "T" } };
+  // As rereadWith hands them over: the second run's own failure, marked.
+  const { rereadWith } = creatorOps;
+  const cases = [
+    [{ ok: false, error: "unauthorized", status: 401, hint: "GET /v1/verse/verseId: the Verse8 login was rejected." }, "unauthorized"],
+    [{ ok: false, error: "upstream_error", status: 503, hint: "GET /v1/verse/verseId failed: HTTP 503" }, "upstream_error"],
+    [{ ok: false, error: "upstream_unreachable", hint: "fetch failed" }, "upstream_unreachable"],
+    [{ ok: false, error: "rate_limited", status: 429, hint: "slow down" }, "rate_limited"],
+  ];
+  for (const [failure, code] of cases) {
+    const x = await confirmGate(deploy, hostThat(RUN), { ask: true, reread: rereadWith(async () => failure) });
+    assert.equal(x.error, code, JSON.stringify(x));
+    assert.equal(x.status, failure.status);
+    assert.equal(x.afterConfirmation, true);
+    assert.equal(x.confirmed, undefined);
+    assert.match(x.hint, /^Nothing was changed: the target could not be read again before the write/);
+    assert.doesNotMatch(x.hint, /fresh preview/, "not told to preview again for an error that is not a change");
+    assert.equal(x.rereadFailed, undefined);
+  }
+  // A re-read that throws is an unreachable API, not a changed target.
+  const thrown = await confirmGate(deploy, hostThat(RUN), { ask: true, reread: async () => { throw new Error("network"); } });
+  assert.equal(thrown.error, "upstream_unreachable", JSON.stringify(thrown));
+  // Failures that do mean the target changed stay plan_mismatch.
+  for (const error of ["not_found", "invalid_input", "product_id_taken"]) {
+    const x = await confirmGate(deploy, hostThat(RUN), { ask: true, reread: rereadWith(async () => ({ ok: false, error, hint: "h" })) });
+    assert.equal(x.error, "plan_mismatch", error);
+    assert.match(x.hint, /fresh preview/);
+  }
+});
+
+test("through a tool: the login is rejected on the re-read after Run → unauthorized with where the token came from, no write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 7, price: 350 };
+    const pre = await run(dir, input);
+    const inner = globalThis.fetch;
+    let reject = false;
+    globalThis.fetch = async (u, init = {}) => (reject ? new Response(JSON.stringify({ message: "Unauthorized" }), { status: 401 }) : inner(u, init));
+    try {
+      const host = hostThat(() => { reject = true; return RUN; });
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.error, "unauthorized", JSON.stringify(r));
+      assert.equal(r.status, 401);
+      assert.match(r.hint, /VERSE8_ACCESS_TOKEN|token/i);
+      assert.doesNotMatch(r.hint, /fresh preview/);
+    } finally {
+      globalThis.fetch = inner;
+    }
+    assert.deepEqual(writes(calls), []);
+  });
+});
+
+test("the host cancels the call while the target is read again after Run → no write", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 7, price: 350 };
+    const pre = await run(dir, input);
+    // Not cancelled when the answer arrives; cancelled by the time the re-read is done.
+    let checks = 0;
+    const host = { ...hostThat(RUN), isCancelled: () => ++checks > 1 };
+    const r = await run(dir, { ...input, planId: pre.planId }, host);
+    assert.equal(r.error, "confirm_unavailable", JSON.stringify(r));
+    assert.match(r.hint, /cancelled this tool call/);
+    assert.equal(checks, 2, "checked after the answer and again after the re-read");
+    assert.deepEqual(writes(calls), []);
+  });
 });
 
 // ── the prompt keeps its target, core values and undo note whatever else is in it ──
@@ -1107,5 +1193,219 @@ test("an upload during which nothing changed on the server → the write goes ou
     );
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"]);
+  });
+});
+
+// ═══ values the server changes are not held against the request (second review, fe70de3) ═══
+
+// The stock moves with every purchase, reservation and refund. A request
+// that does not change the stock must not fail because someone bought one.
+
+/** [name, input, whether the user is asked]. Item 7 is on sale with stock 100. */
+const WHILE_SELLING = [
+  ["stop selling", { action: "upsert", itemId: 7, isActive: false }, false],
+  ["edit the description", { action: "upsert", itemId: 7, description: "new text" }, false],
+  ["archive", { action: "archive", itemId: 7 }, false],
+  ["change the price", { action: "upsert", itemId: 7, price: 350 }, true],
+  ["restore an archived item", { action: "archive", itemId: 9, archived: false }, true],
+];
+for (const [name, input, asks] of WHILE_SELLING) {
+  test(`a unit is sold after the preview (stock 100 → 99): ${name} still runs`, async () => {
+    const dir = project();
+    await withShop(async (calls, items) => {
+      const host = hostThat(RUN);
+      const pre = await run(dir, input, host);
+      assert.equal(pre.runCondition, asks ? "user_confirm" : "preview", JSON.stringify(pre));
+      items.find((i) => i.id === input.itemId).stock = 99;
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(host.asked.length, asks ? 1 : 0);
+      assert.equal(writes(calls).length, 1);
+    });
+  });
+}
+for (const [name, input] of WHILE_SELLING.filter((c) => c[2])) {
+  test(`a unit is sold while the prompt is open (stock 100 → 99): ${name} still runs on Run`, async () => {
+    const dir = project();
+    await withShop(async (calls, items) => {
+      const pre = await run(dir, input);
+      const host = hostAfter(() => { items.find((i) => i.id === input.itemId).stock = 99; });
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(host.asked.length, 1);
+      assert.equal(writes(calls).length, 1);
+    });
+  });
+}
+
+test("a unit is sold while an image uploads (stock 100 → 99): the edit is still sent, and its body carries the uploaded image URL", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const input = { action: "upsert", itemId: 12, name: "Renamed", imagePath: "item.png" };
+    const pre = await run(dir, input);
+    let put = null;
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (u, init = {}) => {
+      if (new URL(u).pathname === "/v1/vx-shop-items/12" && init.method === "PUT") put = JSON.parse(init.body);
+      return inner(u, init);
+    };
+    try {
+      const r = await withUploadHook(() => { items.find((i) => i.id === 12).stock = 99; }, () => run(dir, { ...input, planId: pre.planId }));
+      assert.equal(r.ok, true, JSON.stringify(r));
+    } finally {
+      globalThis.fetch = inner;
+    }
+    assert.deepEqual(put, { name: "Renamed", imageUrl: "https://contents.verse8.io/vx-shop/x/i.png", purchaseConstraints: { maxPurchasePerUser: 2 } });
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"]);
+  });
+});
+
+test("the stock is held only when the request changes it: a refill planned at stock 0 is refused once the stock is no longer 0", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const input = { action: "upsert", itemId: 17, stock: 5 };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "user_confirm");
+    assert.match(pre.confirmation, /stock: 0 → 5/);
+    items.find((i) => i.id === 17).stock = 2;
+    const r = await run(dir, { ...input, planId: pre.planId }, hostThat(RUN));
+    assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+    assert.ok(r.changed.some((c) => c.part === "state.stock" && c.now === 2));
+    assert.deepEqual(writes(calls), []);
+  });
+});
+
+test("no plan of an edit or an archive holds the stock unless the request changes it (a planId does not move when a unit is sold)", async () => {
+  const dir = project();
+  await withShop(async (_calls, items) => {
+    for (const input of [
+      { action: "upsert", itemId: 7, price: 350 },
+      { action: "upsert", itemId: 7, isActive: false },
+      { action: "upsert", itemId: 8, isActive: true },
+      { action: "archive", itemId: 7 },
+      { action: "archive", itemId: 9, archived: false },
+    ]) {
+      const item = items.find((i) => i.id === input.itemId);
+      const before = (await run(dir, input)).planId;
+      item.stock -= 1;
+      item.soldCount += 1;
+      assert.equal((await run(dir, input)).planId, before, JSON.stringify(input));
+    }
+  });
+});
+
+// ── a rule that reads the clock is decided again at every step ──
+
+test("purchase dates without an offset are read as UTC, as the server reads them (not in this machine's time zone)", () => {
+  const { dateOf, vxSaleLevel } = creatorOps;
+  assert.equal(dateOf("2026-12-01T20:00:00"), Date.parse("2026-12-01T20:00:00Z"));
+  assert.equal(dateOf("2026-12-01 20:00"), Date.parse("2026-12-01T20:00:00Z"));
+  assert.equal(dateOf("2026-12-01T20:00:00.250"), Date.parse("2026-12-01T20:00:00.250Z"));
+  assert.equal(dateOf("2026-12-01"), Date.parse("2026-12-01T00:00:00Z"));
+  // An explicit offset is kept.
+  assert.equal(dateOf("2026-12-01T20:00:00+09:00"), Date.parse("2026-12-01T11:00:00Z"));
+  assert.equal(dateOf("2026-12-01T20:00:00Z"), Date.parse("2026-12-01T20:00:00Z"));
+  assert.equal(dateOf("not a date"), null);
+  assert.equal(dateOf(undefined), null);
+  // One minute before / after a start written without an offset, by the server's clock.
+  const v = { isActive: true, isArchived: false, limits: { purchaseStartDate: "2026-12-01T20:00:00" } };
+  assert.equal(vxSaleLevel(v, Date.parse("2026-12-01T19:59:00Z")), 1);
+  assert.equal(vxSaleLevel(v, Date.parse("2026-12-01T20:01:00Z")), 2);
+});
+
+/** Makes Date.now() jump forward by `ms` when `f` is called, until restore(). */
+function clockJump() {
+  const real = Date.now;
+  let shift = 0;
+  Date.now = () => real() + shift;
+  return { jump: (ms) => { shift += ms; }, restore: () => { Date.now = real; } };
+}
+
+test("an end date passes while the image uploads: extending it now re-opens an ended sale → stopped, the user was not asked", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    // On sale now, ending in one minute.
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
+    const input = { action: "upsert", itemId: 12, purchaseConstraints: { purchaseEndDate: FUTURE }, imagePath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "preview", "extending the end of a sale that is still running is not a start");
+    const clock = clockJump();
+    try {
+      const r = await withUploadHook(() => clock.jump(5 * 60_000), () => run(dir, { ...input, planId: pre.planId }));
+      assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+      assert.equal(r.afterUpload, true);
+      assert.equal(r.runCondition, "user_confirm");
+      assert.match(r.hint, /a sale date passed, and the action now needs the user's own confirmation, which it was not asked for/);
+      assert.match(r.hint, /Start selling this VX Shop item\?/);
+    } finally {
+      clock.restore();
+    }
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload"], "the edit was not sent");
+  });
+});
+
+test("an end date passes while the prompt is open: the prompt no longer says what would happen → not run", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
+    // A repricing of an item on sale: asked as "change the price of an item on sale".
+    const input = { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { purchaseEndDate: FUTURE } };
+    const pre = await run(dir, input);
+    assert.match(pre.confirmation, /^Change the price of a VX Shop item that is on sale\?/);
+    const clock = clockJump();
+    try {
+      const host = hostAfter(() => clock.jump(5 * 60_000));
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+      assert.equal(r.afterConfirmation, true);
+      assert.match(r.hint, /a sale date passed, so what the prompt said is no longer what would happen/);
+      assert.match(r.hint, /now: Start selling this VX Shop item at a new price\?/);
+    } finally {
+      clock.restore();
+    }
+    assert.deepEqual(writes(calls), []);
+  });
+});
+
+// ── after the upload the local file is not looked at again ──
+
+test("the local image is moved away while it uploads: its checked bytes are already sent, the edit goes out", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const input = { action: "upsert", itemId: 12, name: "Renamed", imagePath: "item.png" };
+    const pre = await run(dir, input);
+    const r = await withUploadHook(() => fs.rmSync(path.join(dir, "item.png")), () => run(dir, { ...input, planId: pre.planId }));
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/12"]);
+  });
+});
+
+test("the local cover is moved away while it uploads: the game page update goes out", async () => {
+  const dir = project();
+  await withShop(async (calls, _items, verse) => {
+    verse.visibility = "Public";
+    const input = { action: "update", title: "New title", thumbnailPath: "item.png" };
+    const pre = await run(dir, input);
+    const r = await withUploadHook(() => fs.rmSync(path.join(dir, "item.png")), () => run(dir, { ...input, planId: pre.planId }));
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(writes(calls).length, 2);
+  });
+});
+
+// ── the web hint for an archived item ──
+
+test("the web hint for an archived item names Restore and what it does to the limits; for other items the edit dialog", async () => {
+  const dir = project();
+  await withShop(async () => {
+    const mute = hostThat(RUN, { canAsk: false });
+    const restore = { action: "archive", itemId: 9, archived: false };
+    const r = await run(dir, { ...restore, planId: (await run(dir, restore)).planId }, mute);
+    assert.match(r.hint, ARCHIVED_PORTAL);
+    assert.doesNotMatch(r.hint, /use the item's edit dialog —/);
+    const edit = { action: "upsert", itemId: 8, isActive: true };
+    const e = await run(dir, { ...edit, planId: (await run(dir, edit)).planId }, mute);
+    assert.match(e.hint, SHOP_PORTAL);
   });
 });
