@@ -2,9 +2,9 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, withRejectedTokenHint, type OpFail, type Plan } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
-import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
+import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
 /**
  * `verse8_vxshop` — the creator page's VX Shop tab: seller status, item
@@ -154,6 +154,11 @@ const NOT_SELLER =
 export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd()): Promise<VxShopResult> {
   const ctx = resolveVerseContext(input, serverCwd);
   if (!ctx.ok) return ctx as OpFail;
+  // The source of this call's token goes into any 401 hint.
+  return withRejectedTokenHint(await runVxShopWith(input, ctx), ctx.tokenWhere);
+}
+
+async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok: true }>): Promise<VxShopResult> {
   try {
     if (input.action === "list") {
       const wallet = await getWallet(ctx.token);

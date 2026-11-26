@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { redactHead, safeHint } from "../util/redact.js";
-import { LOGIN_HINT } from "../util/hints.js";
+import { rejectedTokenHint, type TokenWhere } from "../context/token.js";
 
 /**
  * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop):
@@ -41,9 +41,23 @@ export function apiFail(what: string, r: { status: number; body: string }): OpFa
               : "upstream_error";
   const hint =
     r.status === 401
-      ? `${what}: the Verse8 login was rejected. To log in again: ${LOGIN_HINT}.`
+      ? // What to do about it depends on where the token came from, which
+        // only the tool's entry point knows: withRejectedTokenHint adds it.
+        `${what}: the Verse8 login was rejected (HTTP 401).`
       : `${what} failed: HTTP ${r.status} ${message}`;
   return opFail(error, hint, { status: r.status });
+}
+
+/**
+ * Finish a tool result at the tool's entry point: when it is an `apiFail`
+ * 401, append what to do about the rejected token, by the source of the
+ * token this call used. The source travels with the call (`where`), not in
+ * shared state, so a concurrent call from another folder cannot change it.
+ */
+export function withRejectedTokenHint<T extends { ok: boolean }>(result: T, where: TokenWhere): T {
+  const r = result as unknown as OpFail;
+  if (r.ok !== false || r.error !== "unauthorized" || r.status !== 401) return result;
+  return { ...result, hint: safeHint(`${r.hint} ${rejectedTokenHint(where)}.`) };
 }
 
 /** Absolute path of a media input given relative to projectDir. */

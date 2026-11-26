@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { z } from "zod";
 import { readEnvVerse } from "../context/envFile.js";
-import { loadToken } from "../context/token.js";
+import { resolveToken, type TokenResolution, type TokenWhere } from "../context/token.js";
 import { isSafeAbsPath } from "../util/safePath.js";
 import { LOGIN_HINT } from "../util/hints.js";
 
@@ -31,15 +31,27 @@ export const verseIdField = z
   .describe("Verse id to act on. Defaults to VITE_AGENT8_VERSE in <projectDir>/.env.");
 
 export type VerseContext =
-  | { ok: true; projectDir: string; verseId: string; token: string }
+  | {
+      ok: true;
+      projectDir: string;
+      verseId: string;
+      token: string;
+      /** Where `token` came from, for the hint when the server rejects it. */
+      tokenWhere: TokenWhere;
+    }
   | { ok: false; error: "not_logged_in" | "missing_verse_env" | "invalid_input"; hint: string };
 
+/**
+ * `auth` lets a caller that already resolved the token for this project
+ * folder pass it in, so token and source come from one lookup.
+ */
 export function resolveVerseContext(
   input: { projectDir?: string; verseId?: string },
   serverCwd: string,
+  auth?: TokenResolution,
 ): VerseContext {
   const projectDir = path.resolve(input.projectDir ?? serverCwd);
-  const token = loadToken(projectDir);
+  const { token, ...tokenWhere } = auth ?? resolveToken(projectDir);
   if (!token) {
     return {
       ok: false,
@@ -58,5 +70,5 @@ export function resolveVerseContext(
   if (!VERSE_ID.test(verseId)) {
     return { ok: false, error: "invalid_input", hint: "VITE_AGENT8_VERSE in .env contains unexpected characters." };
   }
-  return { ok: true, projectDir, verseId, token };
+  return { ok: true, projectDir, verseId, token, tokenWhere };
 }

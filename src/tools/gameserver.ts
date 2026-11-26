@@ -7,7 +7,7 @@ import {
   type GatewayResult,
 } from "../api/gameserverGateway.js";
 import { safeErrorHint } from "../util/redact.js";
-import { LOGIN_HINT } from "../util/hints.js";
+import { rejectedTokenHint, type TokenWhere } from "../context/token.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
 
 /**
@@ -55,13 +55,15 @@ export type GameserverResult =
 function fromGateway<T>(
   r: GatewayResult<T>,
   verse: string,
+  /** Source of the token this call sent, for the 401 hint. */
+  where: TokenWhere,
 ): { ok: false; error: string; hint: string; status: number } | null {
   if (r.ok) return null;
   const error =
     r.status === 401 ? "unauthorized" : r.status === 403 ? "forbidden" : r.status === 404 ? "not_found" : r.status === 429 ? "rate_limited" : "upstream_error";
   const hint =
     r.status === 401
-      ? `The game server gateway rejected the Verse8 login (${r.error}). To log in again: ${LOGIN_HINT}.`
+      ? `The game server gateway rejected the Verse8 login (${r.error}). ${rejectedTokenHint(where)}.`
       : r.status === 403
         ? `${r.error}. Only the owner of ${verse} can read it — check that the login matches VITE_AGENT8_ACCOUNT.`
         : `Gateway answered HTTP ${r.status}: ${r.error}`;
@@ -81,7 +83,7 @@ export async function runGameserver(
     switch (input.action) {
       case "status": {
         const view = await gatewayGet<{ version?: string | null }>(verse, "/server-view", ctx.token);
-        const bad = fromGateway(view, verse);
+        const bad = fromGateway(view, verse, ctx.tokenWhere);
         if (bad) return bad;
         const overview = await gatewayGet<Record<string, unknown>>(verse, "/overview", ctx.token);
         return {
@@ -93,7 +95,7 @@ export async function runGameserver(
       }
       case "collections": {
         const r = await gatewayGet<{ collections: Array<{ name: string; docCount: number }> }>(verse, "/db/collections", ctx.token);
-        return fromGateway(r, verse) ?? { ...base, collections: r.ok ? r.data.collections : [] };
+        return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, collections: r.ok ? r.data.collections : [] };
       }
       case "items": {
         if (!input.collectionId) {
@@ -111,7 +113,7 @@ export async function runGameserver(
             type: input.field ? input.valueType : undefined,
           },
         );
-        return fromGateway(r, verse) ?? { ...base, collectionId: input.collectionId, ...(r.ok ? r.data : {}) };
+        return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, collectionId: input.collectionId, ...(r.ok ? r.data : {}) };
       }
       case "users": {
         const r = await gatewayGet<Record<string, unknown>>(verse, "/db/users", ctx.token, {
@@ -119,24 +121,24 @@ export async function runGameserver(
           limit: input.limit ?? 20,
           cursor: input.cursor,
         });
-        return fromGateway(r, verse) ?? { ...base, kind: input.kind ?? "users", ...(r.ok ? r.data : {}) };
+        return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, kind: input.kind ?? "users", ...(r.ok ? r.data : {}) };
       }
       case "user": {
         if (!input.account) return { ok: false, error: "invalid_input", hint: "action user needs account (see action users)." };
         const kind = input.kind ?? "users";
         const r = await gatewayGet<Record<string, unknown>>(verse, `/db/${kind}/${encodeURIComponent(input.account)}`, ctx.token);
-        return fromGateway(r, verse) ?? { ...base, kind, account: input.account, state: r.ok ? r.data : null };
+        return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, kind, account: input.account, state: r.ok ? r.data : null };
       }
       case "global": {
         const r = await gatewayGet<Record<string, unknown>>(verse, "/db/global", ctx.token);
-        return fromGateway(r, verse) ?? { ...base, state: r.ok ? r.data : null };
+        return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, state: r.ok ? r.data : null };
       }
       case "errors":
       case "logs": {
         // Logs live in the v2 runtime's stream; a v1 verse answers with an
         // empty list that would read as "no errors".
         const view = await gatewayGet<{ version?: string | null }>(verse, "/server-view", ctx.token);
-        const bad = fromGateway(view, verse);
+        const bad = fromGateway(view, verse, ctx.tokenWhere);
         if (bad) return bad;
         const version = view.ok ? view.data.version ?? null : null;
         if (version !== "v2") {
@@ -151,7 +153,7 @@ export async function runGameserver(
           const r = await gatewayGet<{ entries: GameLogEntry[] }>(verse, "/recent-errors", ctx.token, {
             limit: Math.min(input.limit ?? 20, 50),
           });
-          return fromGateway(r, verse) ?? { ...base, version, entries: r.ok ? r.data.entries : [] };
+          return fromGateway(r, verse, ctx.tokenWhere) ?? { ...base, version, entries: r.ok ? r.data.entries : [] };
         }
         const seconds = input.followSeconds ?? 3;
         const r = await gatewayReadLogStream(verse, ctx.token, {
@@ -168,7 +170,7 @@ export async function runGameserver(
           };
         }
         return (
-          fromGateway(r, verse) ?? {
+          fromGateway(r, verse, ctx.tokenWhere) ?? {
             ...base,
             version,
             level: input.level ?? "log",

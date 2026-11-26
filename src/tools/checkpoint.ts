@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { z } from "zod";
 import { detectAttachment } from "../context/attachment.js";
-import { loadToken } from "../context/token.js";
+import { loadToken, PROJECT_TOKEN_REL_PATH } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import {
   ensureVerse8EnvFile,
@@ -196,8 +196,19 @@ interface RunError extends Error {
  * `@agent8/deploy` after every upload and `.secret` holds project secrets;
  * both are local state, and a committed `.deployed` can make the container's
  * `--preview` upload skip files whose hash matches (emptying the preview).
+ *
+ * `.verse8/token` is this server's own addition (the container has no such
+ * file): a project token placed by hand is a login, and a committed one is
+ * both leaked and, from then on, refused by the token lookup (INV-16).
  */
-export const NEVER_COMMIT_FILES: readonly string[] = [".secret", ".deployed"];
+export const NEVER_COMMIT_FILES: readonly string[] = [".secret", ".deployed", PROJECT_TOKEN_REL_PATH];
+
+/** Is `p` (relative to the project dir) a file a checkpoint never commits? */
+export function isNeverCommitFile(p: string): boolean {
+  // The token name is matched without regard to case: on a case-insensitive
+  // filesystem `.verse8/Token` is the token file.
+  return NEVER_COMMIT_FILES.includes(p) || p.toLowerCase() === PROJECT_TOKEN_REL_PATH;
+}
 
 /** Paths currently staged for commit, relative to `cwd` (the project dir). */
 export function listStagedFiles(cwd: string): string[] {
@@ -245,7 +256,7 @@ function listStagedChanges(cwd: string): StagedChange[] {
  */
 export function unstageNeverCommitFiles(cwd: string): string[] {
   const hits = listStagedChanges(cwd)
-    .filter((c) => NEVER_COMMIT_FILES.includes(c.path) && c.status !== "D")
+    .filter((c) => isNeverCommitFile(c.path) && c.status !== "D")
     .map((c) => c.path);
   if (hits.length === 0) return [];
   execFileSync("git", ["reset", "-q", "--", ...hits], {
@@ -286,7 +297,7 @@ export function listChangedFiles(cwd: string): string[] {
   } catch {
     // not a git repo / git missing: report what the index gave us
   }
-  return [...paths].filter((p) => !NEVER_COMMIT_FILES.includes(p)).sort();
+  return [...paths].filter((p) => !isNeverCommitFile(p)).sort();
 }
 
 /**

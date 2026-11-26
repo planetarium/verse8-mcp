@@ -38,8 +38,10 @@ import {
 import {
   loginCompleteInputSchema,
   loginStartInputSchema,
+  logoutInputSchema,
   runLoginComplete,
   runLoginStart,
+  runLogout,
 } from "./tools/login.js";
 import {
   newProjectConfirmInputSchema,
@@ -126,9 +128,15 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: zodToJsonSchema(loginCompleteInputSchema),
   },
   {
+    name: "verse8_logout",
+    description:
+      "Log out of Verse8 on this machine, or the first step of switching accounts (then verse8_login_start). Deletes the local token files: ${XDG_CONFIG_HOME:-~/.config}/verse8/token and `projectDir`/.verse8/token (default: the MCP server's cwd — pass `projectDir` when the project token file is in another folder, as the rejected-token hint says). Returns {projectDir, removed, left, serverSide}. Verse8 has no token revocation API, so the token stays valid on the server until it expires — tell the user. Returns {error:'logout_incomplete'} when a token is still in use afterwards (e.g. the VERSE8_ACCESS_TOKEN environment variable, which only the user can remove from the MCP server's env settings) or a token file could not be deleted or checked — `hint` says what the user has to remove.",
+    inputSchema: zodToJsonSchema(logoutInputSchema),
+  },
+  {
     name: "verse8_status",
     description:
-      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
+      "Return the current Verse8 profile via GET /v1/auth/verify plus the attachment state of `projectDir` (default: the MCP server's cwd) and `workflow.nextTool` routing. Returns {error:'not_logged_in'} when no token is available (and still provides a workflow pointing at verse8_login_start), {error:'token_invalid'} when the server rejected the token (the hint says which source to clear), and {error:'auth_check_unavailable'} when the check itself failed (not a rejection: retry, do not log out). Safe alternative to verse8_bootstrap when you also want profile + stale-preview + proxy info. Pass `projectDir` when the project is a subdirectory of the MCP server's cwd (otherwise the cwd is checked and reported as not a verse8 project).",
     inputSchema: zodToJsonSchema(statusInputSchema),
   },
   {
@@ -324,10 +332,20 @@ export function createServer(): Server {
 
       if (name === "verse8_login_complete") {
         const parsed = loginCompleteInputSchema.parse(args ?? {});
-        const result = await dispatchTool(name, () => runLoginComplete(parsed));
+        const result = await dispatchTool(name, () => runLoginComplete(parsed, cwd));
         // Token state likely changed → re-enumerate tools so
         // verse8_checkpoint / verse8_preview / image_* surface.
         if (result.ok) notifyToolListChanged();
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_logout") {
+        const parsed = logoutInputSchema.parse(args ?? {});
+        const result = await dispatchTool(name, () => runLogout(parsed, cwd), {
+          projectDir: parsed.projectDir ?? cwd,
+        });
+        // Token state changed → the logged-in tools must drop out of the list.
+        if (result.removed.length > 0) notifyToolListChanged();
         return { content: jsonContent(result), isError: !result.ok };
       }
 

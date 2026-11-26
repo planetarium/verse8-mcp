@@ -13,7 +13,7 @@ import {
 import { detectAttachment } from "../context/attachment.js";
 import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
 import { resolveJamProject, type JamProject } from "../context/msuProject.js";
-import { loadToken } from "../context/token.js";
+import { rejectedTokenHint, resolveToken, type TokenWhere } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
@@ -967,6 +967,23 @@ function looksLikeBotCheck(body: string): boolean {
   return /captcha|turnstile|bot|app.?check/i.test(body);
 }
 
+/**
+ * Hint for a verse record that could not be written after the game files
+ * were uploaded. On a 401 it says where the rejected token came from — the
+ * source of the token this deploy resolved at its start. Exported so the
+ * wording can be tested without running a build and an upload.
+ */
+export function publishFailedHint(a: {
+  mode: DeployMode;
+  status: number;
+  body: string;
+  playUrl: string;
+  tokenWhere: TokenWhere;
+}): string {
+  const next = a.status === 401 ? `${rejectedTokenHint(a.tokenWhere)}, then` : "Fix the publish fields and";
+  return `${a.mode === "first" ? "create" : "update"} verse failed: HTTP ${a.status} ${a.body.slice(0, 300)}. The game files are already uploaded and live at ${a.playUrl} (same order as the web editor); only the verse record was not updated. ${next} run verse8_deploy again — the rebuild re-uploads the same sha.`;
+}
+
 export async function runDeploy(
   input: DeployInput,
   serverCwd: string = process.cwd(),
@@ -979,7 +996,10 @@ export async function runDeploy(
   if (!project.isVerse) {
     return fail("preflight", "not_a_verse_project", `${cwd} is not a verse8 project (missing .verse8/project.json or wrong origin).`);
   }
-  const token = loadToken(cwd);
+  // Resolved once for the whole deploy, which can run for minutes: the source
+  // stays with this call for the 401 hints below.
+  const auth = resolveToken(cwd);
+  const token = auth.token;
   if (!token) {
     return fail("preflight", "not_logged_in", LOGIN_HINT);
   }
@@ -1055,7 +1075,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. To log in again: ${LOGIN_HINT}.`, { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. ${rejectedTokenHint(auth)}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,
@@ -1258,7 +1278,7 @@ export async function runDeploy(
     return fail(
       "publish",
       code,
-      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. Fix the publish fields and run verse8_deploy again — the rebuild re-uploads the same sha.`,
+      publishFailedHint({ mode, status, body, playUrl, tokenWhere: auth }),
       { status, playUrl, filesLive: true, steps: completed, publishBody },
     );
   }
