@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { redactHead, safeErrorHint, safeHint } from "../util/redact.js";
-import { LOGIN_HINT } from "../util/hints.js";
 import { getCreateBaseUrl } from "./preview.js";
+import { rejectedTokenHint, type TokenWhere } from "../context/token.js";
 
 /**
  * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop):
@@ -43,9 +43,23 @@ export function apiFail(what: string, r: { status: number; body: string }): OpFa
               : "upstream_error";
   const hint =
     r.status === 401
-      ? `${what}: the Verse8 login was rejected. To log in again: ${LOGIN_HINT}.`
+      ? // What to do about it depends on where the token came from, which
+        // only the tool's entry point knows: withRejectedTokenHint adds it.
+        `${what}: the Verse8 login was rejected (HTTP 401).`
       : `${what} failed: HTTP ${r.status} ${message}`;
   return opFail(error, hint, { status: r.status });
+}
+
+/**
+ * Finish a tool result at the tool's entry point: when it is an `apiFail`
+ * 401, append what to do about the rejected token, by the source of the
+ * token this call used. The source travels with the call (`where`), not in
+ * shared state, so a concurrent call from another folder cannot change it.
+ */
+export function withRejectedTokenHint<T extends { ok: boolean }>(result: T, where: TokenWhere): T {
+  const r = result as unknown as OpFail;
+  if (r.ok !== false || r.error !== "unauthorized" || r.status !== 401) return result;
+  return { ...result, hint: safeHint(`${r.hint} ${rejectedTokenHint(where)}.`) };
 }
 
 /** Absolute path of a media input given relative to projectDir. */
@@ -561,7 +575,7 @@ export function isConfirmed(g: unknown): g is ConfirmPassed {
 }
 
 /**
- * INV-16: A user-confirmation action writes nothing without the user's "Run".
+ * INV-17: A user-confirmation action writes nothing without the user's "Run".
  * The same table and the same prompt for a tool that has no planId of its
  * own (verse8_deploy, whose preview is its dryRun). `ask: false` only
  * reports the condition and the prompt text, for that preview. Otherwise a
@@ -581,7 +595,7 @@ export async function confirmGate(
 }
 
 /**
- * INV-16: A user-confirmation action writes nothing without the user's "Run".
+ * INV-17: A user-confirmation action writes nothing without the user's "Run".
  * The gate every changing action goes through. Without planId: the preview,
  * with its planId. With a matching planId: approved — run it, uploading the
  * returned file bytes — but a user_confirm action first asks the user

@@ -20,6 +20,7 @@ import {
   detectDebugPanelWithoutShim,
   referencesGlobal,
   missingPublishFields,
+  publishFailedHint,
   readDeployedSha,
   readParentVerseId,
   runDeploy,
@@ -869,9 +870,29 @@ test("runDeploy: token rejected on verse lookup → unauthorized", async () => {
   const { handler } = router({ "GET /v1/verse/verseId": () => json(401, { message: "Unauthorized" }) });
   const res = await withEnvToken(() => withFetch(handler, () => runDeploy(dryRunInput(dir), dir)));
   assert.equal(res.error, "unauthorized");
+  // The hint names the source of the token this deploy used.
+  assert.match(res.hint, /VERSE8_ACCESS_TOKEN environment variable/);
 });
 
-// ── INV-16: a deploy that widens who can see the game asks the user ─────────
+test("publishFailedHint: a 401 after the upload names the token source; other failures point at the publish fields", () => {
+  const base = { mode: "update", body: '{"message":"Unauthorized"}', playUrl: "https://play.example/x" };
+  const projectToken = path.join(os.tmpdir(), "game", ".verse8", "token");
+  const rejected = publishFailedHint({ ...base, status: 401, tokenWhere: { source: "project", path: projectToken } });
+  assert.ok(rejected.includes(projectToken), rejected);
+  assert.ok(rejected.includes(`verse8_logout with projectDir ${JSON.stringify(path.join(os.tmpdir(), "game"))}`), rejected);
+  assert.match(rejected, /then run verse8_deploy again/);
+  assert.doesNotMatch(rejected, /Fix the publish fields/);
+  assert.match(
+    publishFailedHint({ ...base, status: 401, tokenWhere: { source: "env" } }),
+    /VERSE8_ACCESS_TOKEN environment variable/,
+  );
+
+  const other = publishFailedHint({ ...base, status: 400, tokenWhere: { source: "config", path: "x" } });
+  assert.match(other, /Fix the publish fields and run verse8_deploy again/);
+  assert.doesNotMatch(other, /log in/);
+});
+
+// ── INV-17: a deploy that widens who can see the game asks the user ─────────
 // The deploy sends a visibility with its publish, so it goes through the same
 // rule and prompt as the game page update (creatorOps RUN_RULES). The prompt
 // comes before the checkpoint: refused, nothing is committed, built or sent.

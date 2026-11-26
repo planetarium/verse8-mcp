@@ -1,4 +1,4 @@
-// INV-16: A user-confirmation action writes nothing without the user's "Run".
+// INV-17: A user-confirmation action writes nothing without the user's "Run".
 // The user confirmation of the plan gate (creatorOps RUN_RULES): an action
 // that starts a sale or reprices an item on sale runs only after the user
 // chose "Run" in the host's own prompt (MCP elicitation), asked after the

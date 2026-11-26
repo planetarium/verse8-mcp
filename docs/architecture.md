@@ -4,7 +4,7 @@ Invariants are listed in [security.md › Invariants](./security.md#invariants).
 
 ## 핵심 개념
 
-- **토큰 우선순위**: env `VERSE8_ACCESS_TOKEN` → `<cwd>/.verse8/token` → `${XDG_CONFIG_HOME:-~/.config}/verse8/token`.
+- **토큰 우선순위**: env `VERSE8_ACCESS_TOKEN` → `<cwd>/.verse8/token` → `${XDG_CONFIG_HOME:-~/.config}/verse8/token`. `resolveToken` (`src/context/token.ts`) is the one place that decides this; `verse8_status`, the rejected-token hints and `verse8_logout` all read its answer. Details in [environment.md](./environment.md).
 - **프로젝트 감지**: cwd에 `.verse8/project.json` AND `git remote origin` 호스트가 `gitlab.verse8.io`.
 - **Hook entrypoint**: `verse8-mcp hook pre-commit` / `verse8-mcp hook commit-msg` (git이 commit 시 호출).
 - **동적 툴**: 툴 셋이 매 `tools/list` 요청마다 현재 cwd + 토큰 존재로 재평가됨.
