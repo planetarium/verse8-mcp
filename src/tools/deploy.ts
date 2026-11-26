@@ -66,9 +66,12 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  */
 
 const GAMES_BASE_URL = "https://agent8-games.verse8.io";
-/** Reading the game again before the publish call: how many tries, and the wait before try n (× n). */
-const REREAD_TRIES = 3;
-const REREAD_WAIT_MS = 400;
+/**
+ * Reading the game again before the publish call: how many tries, the wait
+ * before try n (× n), the time one try may take, and the time all of it may
+ * take. Exported so a test can shorten the waits.
+ */
+export const REREAD = { tries: 3, waitMs: 400, tryMs: 5000, totalMs: 12000 };
 const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__9C", "__review_required"]);
 const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
   MSU: ["__MSU", "__review_required"],
@@ -264,6 +267,23 @@ function fail(
   extras: Record<string, unknown> = {},
 ): DeployResult {
   return { ok: false, stage, error, hint: safeHint(hint), ...extras };
+}
+
+/** `p`, or a rejection after `ms`. The request itself is not cancelled; its late answer is ignored. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer within ${Math.round(ms / 100) / 10} s`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 function dropUndefined(obj: Record<string, unknown>): Record<string, unknown> {
@@ -1179,8 +1199,10 @@ export async function runDeploy(
     reread: rereadWith((pr) => runDeploy(input, serverCwd, undefined, pr)),
   });
   if (!isConfirmed(confirmed)) {
-    const { error, hint, ok: _ok, ...extras } = confirmed;
-    return fail("confirm", error, hint, { mode, ...extras });
+    // The refusal happened at the confirmation, whatever step of the second
+    // run inside it failed: that step is kept apart, not as `stage`.
+    const { error, hint, ok: _ok, stage: rereadStage, ...extras } = confirmed;
+    return fail("confirm", error, hint, { mode, ...extras, ...(typeof rereadStage === "string" ? { rereadStage } : {}) });
   }
   const runCondition = {
     runCondition: confirmed.runCondition,
@@ -1338,10 +1360,17 @@ export async function runDeploy(
     // error or a 5xx / 429 answer is tried again a moment later.
     let again: Awaited<ReturnType<typeof getVerse>> | undefined;
     let lastError: unknown;
-    for (let attempt = 0; attempt < REREAD_TRIES; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, REREAD_WAIT_MS * attempt));
+    // The whole read has a deadline: a request that hangs must not hold the
+    // publish back for long, and each try is cut off on its own.
+    const deadline = Date.now() + REREAD.totalMs;
+    let tries = 0;
+    for (let attempt = 0; attempt < REREAD.tries; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, REREAD.waitMs * attempt));
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      tries++;
       try {
-        again = await getVerse(verseId, token);
+        again = await withTimeout(getVerse(verseId, token), Math.min(REREAD.tryMs, left));
         lastError = undefined;
         if (again.ok || !(again.status >= 500 || again.status === 429)) break;
       } catch (e) {
@@ -1350,7 +1379,7 @@ export async function runDeploy(
       }
     }
     if (!again) {
-      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${REREAD_TRIES} tries). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
+      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${tries} ${tries === 1 ? "try" : "tries"} within ${Math.round(REREAD.totalMs / 1000)} s). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
     }
     if (!again.ok) {
       const next = again.status === 401 ? `${rejectedTokenHint(auth)}, then run verse8_deploy again` : "Run verse8_deploy again";

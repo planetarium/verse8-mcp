@@ -156,8 +156,11 @@ export function planId(p: Plan): string {
 export interface PlanApproved {
   approved: true;
   files: Record<string, Buffer<ArrayBuffer>>;
-  /** What planGate decided for this run: whether the user was asked, and the prompt they answered. */
-  decided?: { runCondition: "preview" | "user_confirm"; confirmation?: string };
+  /**
+   * What planGate decided for this run: the prompt the user answered (when
+   * they were asked), and the decision later steps compare against.
+   */
+  decided?: { confirmation?: string; decision: string | null };
 }
 
 export function isApproved(g: unknown): g is PlanApproved {
@@ -259,9 +262,10 @@ export interface ConfirmText {
 }
 
 export interface RunRule {
-  condition: GatedCondition | ((p: Plan) => GatedCondition);
+  /** May read the clock; `clock` says how (see ClockView). */
+  condition: GatedCondition | ((p: Plan, clock?: ClockView) => GatedCondition);
   /** Required for a rule that can answer user_confirm. */
-  confirm?: (p: Plan) => ConfirmText;
+  confirm?: (p: Plan, clock?: ClockView) => ConfirmText;
   /** Where the same thing is done on the web, for hosts that cannot ask. */
   portal?: (p: Plan) => string;
 }
@@ -317,16 +321,26 @@ const CREATE_SHOWN = new Set(["verseId", "productId", "name", "price", "stock", 
 // its tabs are General / Analytics / Server / VX Shop and carry no address
 // of their own, so the tab is named in words).
 const creatorPage = (p: Plan): string => `${getCreateBaseUrl()}/creations/${encodeURIComponent(String(p.target.verseId ?? ""))}`;
-// The tab's row for an item offers Edit, or — for an archived item — only
-// Restore (verse8-vibe PaymentsTabContent). The on/off switch and Restore
-// send just their flag, and the server removes an item's purchase limits
-// when an update carries none, so each hint says what to do about that.
+// What the tab offers (verse8-vibe PaymentsTabContent / VxShopItemDialog):
+// "Add New Item" for a new one; per item an edit dialog, or — for an
+// archived item — only Restore. Three things about it are said in the
+// hints because following them blindly loses something this server keeps:
+//  - the on/off switch and Restore send just their flag, and the server
+//    removes an item's purchase limits when an update carries none;
+//  - after a Restore the item therefore sells WITHOUT limits until they are
+//    set again;
+//  - the edit dialog saves the stock it read when it was opened, so units
+//    sold while it is open come back.
+// Where the limits or the stock must hold, the safe way is a host that can
+// show the confirmation prompt, and the hints say so.
+const PROMPT_HOST = "If the limits or the stock must hold exactly, run it from a host that can show the confirmation prompt instead";
 const vxShopPortal = (p: Plan): string => {
   const tab = `the game's creator page, VX Shop tab: ${creatorPage(p)} (open the "VX Shop" tab`;
-  if (p.op === "verse8_vxshop.archive" || rec(p.state).isArchived === true) {
-    return `${tab}, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there. Restore sends no purchase limits and the server then removes the item's limits: set them again in the item's edit dialog afterwards)`;
+  if (p.op === "verse8_vxshop.upsert.create") return `${tab} and use "Add New Item")`;
+  if (p.op === "verse8_vxshop.archive") {
+    return `${tab}, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there. Restore sends no purchase limits and the server then removes the item's limits: the item sells without limits until you set them again in its edit dialog. ${PROMPT_HOST})`;
   }
-  return `${tab} and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits)`;
+  return `${tab} and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits. The dialog saves the stock it read when it was opened, so units sold while it is open come back: save it promptly. ${PROMPT_HOST})`;
 };
 const visibilityPortal = (p: Plan): string => `the game's creator page, General tab: ${creatorPage(p)} (the "Visibility" select)`;
 
@@ -393,7 +407,8 @@ const SALE_UNDO = "Undo: you can stop the sale or change the price again; purcha
 // check the same, plus stock). One function reads it, and every shop rule
 // asks it about the item before and after the change:
 //
-//   0  not on sale, and will not come on sale by itself
+//   0  not on sale, and will not come on sale by itself (hidden, archived,
+//      ended, or a start date after the end date — a window that never opens)
 //   1  scheduled: on sale once the start date arrives
 //   2  on sale now
 //
@@ -428,16 +443,41 @@ type SaleLevel = 0 | 1 | 2;
  */
 export function dateOf(v: unknown): number | null {
   if (typeof v !== "string" && typeof v !== "number") return null;
-  const s = typeof v === "string" && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(v.trim()) ? `${v.trim().replace(" ", "T")}Z` : v;
-  const t = new Date(s).getTime();
+  const m = typeof v === "string" ? OFFSETLESS_DATE_TIME.exec(v.trim()) : null;
+  const t = new Date(m ? `${m[1]}T${m[2]}Z` : v).getTime();
   return Number.isFinite(t) ? t : null;
 }
-export function vxSaleLevel(v: VxSaleValues, now: number = Date.now()): SaleLevel {
+/** A date and a time separated by `T` or any whitespace (a tab too), with no `Z` and no offset. */
+const OFFSETLESS_DATE_TIME = /^(\d{4}-\d{2}-\d{2})[T\s]+(\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+/**
+ * A purchase date as the prompt shows it: in full, and marked UTC when it
+ * carries no time zone of its own — "20:00" would otherwise be read as the
+ * user's local evening, while it is applied as 20:00 UTC.
+ */
+function dateText(v: unknown): string {
+  const zoneless = typeof v === "string" && dateOf(v) !== null && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(v.trim());
+  return `${full(v)}${zoneless ? " UTC" : ""}`;
+}
+/** How a rule looks at the clock. */
+export interface ClockView {
+  /**
+   * Treat every start date as already reached. Used to compare two
+   * decisions made at different moments: a start date that passes in
+   * between changes what a prompt says ("from <date>" → "from now on") but
+   * not what the user agreed to, so it must not count as a change. An end
+   * date that passes still does.
+   */
+  startArrived?: boolean;
+}
+export function vxSaleLevel(v: VxSaleValues, now: number = Date.now(), clock: ClockView = {}): SaleLevel {
   if (v.isActive !== true || v.isArchived === true) return 0;
   const end = dateOf(v.limits.purchaseEndDate);
   if (end !== null && now > end) return 0;
   const start = dateOf(v.limits.purchaseStartDate);
-  return start !== null && now < start ? 1 : 2;
+  // A start after the end is a window that never opens: the server refuses
+  // every purchase of it (before the start, or after the end).
+  if (start !== null && end !== null && start > end) return 0;
+  return start !== null && now < start && clock.startArrived !== true ? 1 : 2;
 }
 /** The sale values of a shop plan's item before and after it runs. */
 function vxBeforeAfter(p: Plan): { before: VxSaleValues; after: VxSaleValues } {
@@ -466,11 +506,11 @@ function vxBeforeAfter(p: Plan): { before: VxSaleValues; after: VxSaleValues } {
  * on sale or scheduled is filled from stock 0 — and whether it reprices an
  * item that is on sale or scheduled and stays so.
  */
-export function vxSaleKind(p: Plan, now: number = Date.now()): { opens: boolean; reprices: boolean; after: VxSaleValues; level: SaleLevel } {
+export function vxSaleKind(p: Plan, now: number = Date.now(), clock: ClockView = {}): { opens: boolean; reprices: boolean; after: VxSaleValues; level: SaleLevel } {
   const { before, after } = vxBeforeAfter(p);
   const body = rec(p.body);
-  const from = vxSaleLevel(before, now);
-  const level = vxSaleLevel(after, now);
+  const from = vxSaleLevel(before, now, clock);
+  const level = vxSaleLevel(after, now, clock);
   // An edit's body carries `stock` only when the request changes it, and
   // then the plan holds the stock it was read as.
   const refills = p.op === "verse8_vxshop.upsert.edit" && "stock" in body && !(Number(rec(p.state).stock) >= 1) && Number(body.stock) >= 1 && level >= 1;
@@ -482,22 +522,24 @@ export function vxSaleKind(p: Plan, now: number = Date.now()): { opens: boolean;
  * condition, not a number: it may be 0 now and come back by itself.
  */
 function saleWindow(after: VxSaleValues, level: SaleLevel): string {
-  const from = level === 1 ? `from ${full(after.limits.purchaseStartDate)}` : "from now on";
+  const from = level === 1 ? `from ${dateText(after.limits.purchaseStartDate)}` : "from now on";
   const end = after.limits.purchaseEndDate;
-  return `whenever it has stock, buyers can purchase it ${from}${end === undefined || end === null ? "" : ` until ${full(end)}`}`;
+  return `whenever it has stock, buyers can purchase it ${from}${end === undefined || end === null ? "" : ` until ${dateText(end)}`}`;
 }
+/** One purchase limit value: the two dates as dateText (UTC marked), the counts in full. */
+const limitText = (key: string, v: unknown): string => (key === "purchaseStartDate" || key === "purchaseEndDate" ? (v === undefined || v === null ? "none" : dateText(v)) : full(v));
 /** Each purchase limit that differs, `key: current → new`, in full. */
 function limitChanges(now: Record<string, unknown>, to: Record<string, unknown>): string[] {
   const keys = [...new Set([...Object.keys(now), ...Object.keys(to)])].sort();
   return keys
     .filter((k) => canonicalJson(now[k] ?? null) !== canonicalJson(to[k] ?? null))
-    .map((k) => `${k}: ${full(now[k])} → ${full(to[k])}`);
+    .map((k) => `${k}: ${limitText(k, now[k])} → ${limitText(k, to[k])}`);
 }
 
-function vxEditConfirm(p: Plan): ConfirmText {
+function vxEditConfirm(p: Plan, clock?: ClockView): ConfirmText {
   const body = rec(p.body);
   const state = rec(p.state);
-  const { opens, after, level } = vxSaleKind(p);
+  const { opens, after, level } = vxSaleKind(p, Date.now(), clock);
   const priceChanges = "price" in body;
   const price = priceChanges ? `Price: ${state.price} → ${body.price} VX` : `Price: ${state.price} VX`;
   // What decides whether and how it sells is part of `change`, in full:
@@ -524,7 +566,9 @@ function vxEditConfirm(p: Plan): ConfirmText {
       ? priceChanges
         ? "Start selling this VX Shop item at a new price?"
         : "Start selling this VX Shop item?"
-      : "Change the price of a VX Shop item that is on sale?",
+      : level === 1
+        ? "Change the price of a VX Shop item that is scheduled for sale?"
+        : "Change the price of a VX Shop item that is on sale?",
     target: `Item: ${shown(state.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
     change: core.join("; "),
     also,
@@ -553,7 +597,7 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   // A deleted comment cannot be restored, and it is someone else's.
   "verse8_verse.comment_delete": {
     condition: "user_confirm",
-    confirm: (p) => {
+    confirm: (p, clock) => {
       const s = rec(p.state);
       return {
         question: "Delete this comment for good?",
@@ -572,11 +616,11 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   // Created with the on-sale flag it starts a sale, whatever its stock;
   // created hidden or past its end date it is a preview.
   "verse8_vxshop.upsert.create": {
-    condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
-    confirm: (p) => {
+    condition: (p, clock) => (vxSaleKind(p, Date.now(), clock).opens ? "user_confirm" : "preview"),
+    confirm: (p, clock) => {
       const b = rec(p.body);
-      const { after, level } = vxSaleKind(p);
-      const limits = Object.keys(after.limits).sort().map((k) => `${k}: ${full(after.limits[k])}`);
+      const { after, level } = vxSaleKind(p, Date.now(), clock);
+      const limits = Object.keys(after.limits).sort().map((k) => `${k}: ${limitText(k, after.limits[k])}`);
       return {
         question: "Create this VX Shop item and start selling it?",
         target: `Item: ${shown(b.name)} (productId ${shown(b.productId)}) in verse ${p.target.verseId}`,
@@ -592,8 +636,8 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
     portal: vxShopPortal,
   },
   "verse8_vxshop.upsert.edit": {
-    condition: (p) => {
-      const k = vxSaleKind(p);
+    condition: (p, clock) => {
+      const k = vxSaleKind(p, Date.now(), clock);
       return k.opens || k.reprices ? "user_confirm" : "preview";
     },
     confirm: vxEditConfirm,
@@ -602,10 +646,10 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
   // Restoring an item whose on-sale flag is set and whose sale has not
   // ended puts it back on sale.
   "verse8_vxshop.archive": {
-    condition: (p) => (vxSaleKind(p).opens ? "user_confirm" : "preview"),
-    confirm: (p) => {
+    condition: (p, clock) => (vxSaleKind(p, Date.now(), clock).opens ? "user_confirm" : "preview"),
+    confirm: (p, clock) => {
       const s = rec(p.state);
-      const { after, level } = vxSaleKind(p);
+      const { after, level } = vxSaleKind(p, Date.now(), clock);
       return {
         question: "Restore this VX Shop item and put it back on sale?",
         target: `Item: ${shown(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
@@ -618,10 +662,10 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
 };
 
 /** The run condition of a plan, or null when its op has no row in RUN_RULES. */
-export function runConditionOf(p: Plan): GatedCondition | null {
+export function runConditionOf(p: Plan, clock?: ClockView): GatedCondition | null {
   if (!Object.prototype.hasOwnProperty.call(RUN_RULES, p.op)) return null;
   const c = RUN_RULES[p.op].condition;
-  return typeof c === "function" ? c(p) : c;
+  return typeof c === "function" ? c(p, clock) : c;
 }
 
 // ── user confirmation ──
@@ -668,8 +712,8 @@ const MAX_CONFIRM_CHARS = 1200;
  * the undo note; `also` gets what is left, and what does not fit is counted
  * ("N more … not shown here") so the user knows the prompt is not all of it.
  */
-export function confirmMessage(p: Plan): string | null {
-  const text = Object.prototype.hasOwnProperty.call(RUN_RULES, p.op) ? RUN_RULES[p.op].confirm?.(p) : undefined;
+export function confirmMessage(p: Plan, clock?: ClockView): string | null {
+  const text = Object.prototype.hasOwnProperty.call(RUN_RULES, p.op) ? RUN_RULES[p.op].confirm?.(p, clock) : undefined;
   if (!text) return null;
   const head = oneLine(`${text.question} ${text.target} / ${text.change}`);
   const tail = ` / ${oneLine(text.undo)}`;
@@ -784,9 +828,11 @@ export async function confirmGate(
   const out = { confirmed: true as const, runCondition: need.condition, ...(need.message === null ? {} : { confirmation: need.message }) };
   if (need.message === null || !opts.ask) return out;
   if (!opts.reread) return noReread(p);
+  // Taken now, before the prompt: later steps compare against it.
+  const decision = decisionOf(p);
   const refused = await askUser(p, need.message, host);
   if (refused) return refused;
-  const still = await sameAfterRun(p, planId(p), opts.reread, need.message, host);
+  const still = await sameAfterRun(p, planId(p), opts.reread, need.message, host, decision);
   return isApproved(still) ? out : still;
 }
 
@@ -871,7 +917,7 @@ function notSame(when: string, mark: Record<string, unknown>, r: OpFail, rePrevi
  * still `id`, the prompt would still say `shown`, and the host has not
  * cancelled the call meanwhile; otherwise the refusal.
  */
-async function sameAfterRun(p: Plan, id: string, reread: Reread, shown: string, host: ConfirmHost | undefined): Promise<PlanApproved | OpFail> {
+async function sameAfterRun(p: Plan, id: string, reread: Reread, shown: string, host: ConfirmHost | undefined, decision: string | null): Promise<PlanApproved | OpFail> {
   const mark = { afterConfirmation: true };
   const fresh = await readAgain(reread);
   // The re-read takes a moment too: a call the host gave up on meanwhile must not write.
@@ -879,14 +925,41 @@ async function sameAfterRun(p: Plan, id: string, reread: Reread, shown: string, 
   if (!isPlan(fresh)) return notSame(AFTER_PROMPT, mark, fresh, true);
   const again = checkPlan(fresh, id);
   if (!isApproved(again)) return notSame(AFTER_PROMPT, mark, again, false);
-  // Same values, but a rule may read the clock (sale dates): the prompt
-  // the user answered must still be the prompt this plan would get now.
-  const now = runRequirement(fresh);
-  if (!now.ok) return now;
-  if (now.message !== shown) {
-    return opFail("plan_mismatch", `${AFTER_PROMPT} a sale date passed, so what the prompt said is no longer what would happen${now.message === null ? "" : ` (now: ${now.message})`}. ${RE_PREVIEW}`, mark);
-  }
-  return again;
+  return movedByTheClock(fresh, decision, AFTER_PROMPT, mark) ?? again;
+}
+
+/**
+ * What a plan asks of the user, with the clock taken out as far as it does
+ * not matter: the prompt it would get if every start date had arrived, or
+ * null when it would not ask. Two readings of the same plan at different
+ * moments give the same decision unless an END date passed in between —
+ * that is the case that changes what would happen (an edit that extended a
+ * running sale now re-opens an ended one). A start date passing only
+ * changes the wording ("from <date>" → "from now on") and is not a change.
+ */
+function decisionOf(p: Plan): string | null {
+  const clock: ClockView = { startArrived: true };
+  return runConditionOf(p, clock) === "user_confirm" ? confirmMessage(p, clock) : null;
+}
+
+/**
+ * The one comparison for every later step (after the user's answer, after
+ * an upload): the refusal when the plan, unchanged in its values, no
+ * longer asks of the user what was decided at the gate; otherwise null.
+ */
+function movedByTheClock(fresh: Plan, decided: string | null, when: string, mark: Record<string, unknown>): OpFail | null {
+  if (decisionOf(fresh) === decided) return null;
+  const now = runConditionOf(fresh) === "user_confirm" ? confirmMessage(fresh) : null;
+  const what =
+    now === null
+      ? "the action is no longer the one the user confirmed"
+      : decided === null
+        ? "the action now needs the user's own confirmation, which it was not asked for"
+        : "the action is no longer the one the user confirmed";
+  return opFail("plan_mismatch", `${when} a sale date passed, and ${what}${now === null ? "" : ` (now: ${now})`}. ${RE_PREVIEW}`, {
+    ...mark,
+    ...(now === null ? {} : { runCondition: "user_confirm" }),
+  });
 }
 
 /**
@@ -909,16 +982,7 @@ export async function planStillHolds(p: Plan, reread: Reread, gate: PlanApproved
   const serverSide = (x: Plan): Plan => ({ ...x, files: {} });
   const again = checkPlan(serverSide(fresh), planId(serverSide(p)));
   if (!isApproved(again)) return notSame(AFTER_UPLOAD, mark, again, false);
-  const now = runRequirement(fresh);
-  if (!now.ok) return now;
-  if (now.message !== null && now.message !== gate.decided?.confirmation) {
-    return opFail(
-      "plan_mismatch",
-      `${AFTER_UPLOAD} a sale date passed, and the action now needs the user's own confirmation${gate.decided?.confirmation === undefined ? ", which it was not asked for" : " of something else than they confirmed"} (${now.message}). ${RE_PREVIEW}`,
-      { ...mark, runCondition: "user_confirm" },
-    );
-  }
-  return again;
+  return movedByTheClock(fresh, gate.decided?.decision ?? null, AFTER_UPLOAD, mark) ?? again;
 }
 
 /**
@@ -952,13 +1016,15 @@ export async function planGate<T extends { action: string }>(
   }
   const checked = checkPlan(p, given);
   if (!isApproved(checked)) return checked;
-  if (message === null) return { ...checked, decided: { runCondition: condition } };
+  // Taken now, before any prompt or upload: later steps compare against it.
+  const decision = decisionOf(p);
+  if (message === null) return { ...checked, decided: { decision } };
   // Before the prompt, not after it: the user is not asked for an answer that could not be used.
   if (!reread) return noReread(p);
   const refused = await askUser(p, message, host);
   if (refused) return refused;
-  const still = await sameAfterRun(p, given, reread, message, host);
-  return isApproved(still) ? { ...still, decided: { runCondition: condition, confirmation: message } } : still;
+  const still = await sameAfterRun(p, given, reread, message, host, decision);
+  return isApproved(still) ? { ...still, decided: { confirmation: message, decision } } : still;
 }
 
 export interface Change {

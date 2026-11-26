@@ -705,3 +705,64 @@ test("deploy stopped before publishing after a failed push: the result does not 
   assert.doesNotMatch(res.hint, /checkpoint is pushed/);
   assert.deepEqual(posts, []);
 });
+
+/** A full deploy whose GET of the game is answered by `onGet(n)` (n = 1 for the reading at the start). */
+async function deployWithGets(onGet, { tune } = {}) {
+  const dir = freshProject();
+  const { bin } = fakeToolchain(dir);
+  const { REREAD } = await import("../../dist/tools/deploy.js");
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH, reread: { ...REREAD } };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  if (tune) Object.assign(REREAD, tune);
+  let gets = 0;
+  const posts = [];
+  const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true };
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/verse/verseId") return onGet(++gets, () => new Response(JSON.stringify(live), { status: 200 }));
+    if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
+      posts.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ verseId: VERSE, title: "Live" }), { status: 200 });
+    }
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
+    const started = Date.now();
+    const res = await runDeploy(input, dir);
+    return { res, posts, gets, tookMs: Date.now() - started };
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    Object.assign(REREAD, saved.reread);
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+}
+
+test("deploy: the read before publishing throws once (a network error) and is tried again → published", async () => {
+  const { res, posts, gets } = await deployWithGets((n, ok) => {
+    if (n === 2) throw new TypeError("fetch failed");
+    return ok();
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(gets, 3, "start, the failed try, the retry");
+  assert.equal(posts.length, 1);
+});
+
+test("deploy: the read before publishing never answers → it gives up within its deadline and does not publish", async () => {
+  const hang = () => new Promise(() => {});
+  const { res, posts, gets, tookMs } = await deployWithGets((n, ok) => (n === 1 ? ok() : hang()), { tune: { tryMs: 300, totalMs: 700, waitMs: 50 } });
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.equal(res.error, "upstream_unreachable");
+  assert.match(res.hint, /no answer within 0\.[1-3] s/);
+  assert.match(res.hint, /could not be read again before publishing \(\d (try|tries) within/);
+  assert.match(res.hint, /already uploaded/);
+  assert.equal(res.filesLive, true);
+  assert.deepEqual(posts, []);
+  assert.ok(gets >= 2 && gets <= 4, `${gets}`);
+  // The whole deploy (fake build included) ends soon after the 0.7 s deadline, not after tries × a long wait.
+  assert.ok(tookMs < 15000, `${tookMs} ms`);
+});

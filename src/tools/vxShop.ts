@@ -36,8 +36,8 @@ const purchaseConstraintsSchema = z
     maxPurchasePerUser: z.number().int().min(1).optional().describe("Max units one user may buy in total."),
     maxPurchasePerPeriod: z.number().int().min(1).optional().describe("Max units per user within purchasePeriodDays."),
     purchasePeriodDays: z.number().int().min(1).optional().describe("Length of the period for maxPurchasePerPeriod."),
-    purchaseStartDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales open."),
-    purchaseEndDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales close."),
+    purchaseStartDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales open. Without a time zone (Z or an offset such as +09:00) it is UTC."),
+    purchaseEndDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales close. Without a time zone (Z or an offset such as +09:00) it is UTC."),
   })
   .strict();
 
@@ -243,7 +243,8 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     if (input.description !== undefined) body.description = input.description;
     if (input.metadata) body.metadata = JSON.stringify(input.metadata);
     if (input.purchaseConstraints) body.purchaseConstraints = input.purchaseConstraints;
-    if (isActive) warnings.push(`The item goes on sale immediately at ${input.price} VX.`);
+    // No "immediately": purchase dates may put the sale later, and it sells only while it has stock.
+    if (isActive) warnings.push(`The item is created on sale at ${input.price} VX (it sells whenever it has stock and is inside its purchase dates).`);
     else warnings.push("Created hidden (isActive: false). Set isActive: true later to sell it.");
     if (input.stock === 0) warnings.push("stock 0: the item shows as out of stock.");
     // Nothing to read for an item that does not exist yet: the body (and image) is the plan.
@@ -302,9 +303,10 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (keep) body.purchaseConstraints = keep;
 
   const price = changes.find((c) => c.field === "price");
-  if (price) warnings.push(`Price changes from ${price.from} to ${price.to} VX for every buyer from now on.`);
+  // No "from now on": the item may be hidden, archived or scheduled.
+  if (price) warnings.push(`Price changes from ${price.from} to ${price.to} VX for every purchase made after this edit.`);
   const active = changes.find((c) => c.field === "isActive");
-  if (active) warnings.push(active.to ? "The item goes on sale." : "The item stops selling.");
+  if (active) warnings.push(active.to ? "The on-sale flag is turned on: the item sells whenever it has stock, is not archived and is inside its purchase dates." : "The item stops selling.");
   if (input.clearPurchaseConstraints && parsed.purchaseConstraints) warnings.push("All purchase limits are removed.");
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
   // The current value of every field asked about; the limits and the

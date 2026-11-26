@@ -62,6 +62,8 @@ const makeItems = () => [
   item(17, { stock: 0 }),
   // 18: hidden, no stock.
   item(18, { isActive: false, stock: 0 }),
+  // 19: on-sale flag set, both dates ahead but the start after the end: a window that never opens.
+  item(19, { metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: "2999-12-01T00:00:00.000Z", purchaseEndDate: "2999-06-01T00:00:00.000Z" } }) }),
 ];
 
 async function withShop(f) {
@@ -106,9 +108,12 @@ const run = (dir, input, host) =>
     : runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input }), dir, host);
 // Where a refusal sends the user: the per-game creator page on the create host, and the tab.
 const PAGE = `https://create[.]verse8[.]io/creations/${VERSE}`;
-const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits[)]`);
-// An archived item has only Restore on that tab, no edit dialog.
-const ARCHIVED_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there[.] Restore sends no purchase limits and the server then removes the item's limits: set them again in the item's edit dialog afterwards[)]`);
+const PROMPT_HOST = "If the limits or the stock must hold exactly, run it from a host that can show the confirmation prompt instead[)]";
+const SHOP_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use the item's edit dialog — the on/off switch on that tab sends no purchase limits, and the server then removes the item's limits[.] The dialog saves the stock it read when it was opened, so units sold while it is open come back: save it promptly[.] ${PROMPT_HOST}`);
+// An archived item has only Restore on that tab, no edit dialog; restored, it sells without its limits until they are set again.
+const ARCHIVED_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab, switch on "Include Archived" and use Restore on the item — an archived item has no edit dialog there[.] Restore sends no purchase limits and the server then removes the item's limits: the item sells without limits until you set them again in its edit dialog[.] ${PROMPT_HOST}`);
+// A new item has no edit dialog yet: the tab's "Add New Item".
+const CREATE_PORTAL = new RegExp(`VX Shop tab: ${PAGE} [(]open the "VX Shop" tab and use "Add New Item"[)]`);
 const GAME_PORTAL = new RegExp(`General tab: ${PAGE} [(]the "Visibility" select[)]`);
 const COMMENT_PORTAL = new RegExp(`the game's page: https://verse8[.]io/${VERSE} [(]open the comments and press the trash button next to the comment[)]`);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
@@ -134,6 +139,7 @@ const CONFIRMED = [
     input: { action: "upsert", productId: "gem", name: "Gems", price: 120, stock: 5, isActive: true, imagePath: "item.png" },
     shows: [/Gems/, /productId "gem"/, /120 VX/, new RegExp(VERSE)],
     upload: true,
+    portal: CREATE_PORTAL,
   },
   {
     name: "edit: put a hidden item on sale",
@@ -745,9 +751,15 @@ test("create on sale: the start date is in the prompt — two start dates give t
     const b = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: "2999-06-01", purchaseEndDate: "2999-09-01" } });
     assert.equal(a.runCondition, "user_confirm");
     assert.notEqual(a.confirmation, b.confirmation);
-    assert.match(a.confirmation, /buyers can purchase it from "2999-12-01";/);
-    assert.match(a.confirmation, /purchase limits \(purchaseStartDate: "2999-12-01"\)/);
-    assert.match(b.confirmation, /buyers can purchase it from "2999-06-01" until "2999-09-01";/);
+    // A date without a time zone is marked UTC wherever the prompt shows it: that is how it is applied.
+    assert.match(a.confirmation, /buyers can purchase it from "2999-12-01" UTC;/);
+    assert.match(a.confirmation, /purchase limits \(purchaseStartDate: "2999-12-01" UTC\)/);
+    assert.match(b.confirmation, /buyers can purchase it from "2999-06-01" UTC until "2999-09-01" UTC;/);
+    const local = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: "2999-12-01T20:00:00" } });
+    assert.match(local.confirmation, /from "2999-12-01T20:00:00" UTC;/, "20:00 is not the user's local evening");
+    const zoned = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: "2999-12-01T20:00:00+09:00" } });
+    assert.match(zoned.confirmation, /from "2999-12-01T20:00:00\+09:00";/, "a date that names its zone is shown as it is");
+    assert.doesNotMatch(zoned.confirmation, /UTC/);
     for (const m of [a.confirmation, b.confirmation]) assert.doesNotMatch(m, /from now on/);
     const open = await run(dir, { ...base, purchaseConstraints: { purchaseStartDate: PAST, purchaseEndDate: FUTURE } });
     assert.match(open.confirmation, new RegExp(`buyers can purchase it from now on until "${FUTURE}";`));
@@ -1360,7 +1372,7 @@ test("an end date passes while the prompt is open: the prompt no longer says wha
       const r = await run(dir, { ...input, planId: pre.planId }, host);
       assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
       assert.equal(r.afterConfirmation, true);
-      assert.match(r.hint, /a sale date passed, so what the prompt said is no longer what would happen/);
+      assert.match(r.hint, /a sale date passed, and the action is no longer the one the user confirmed/);
       assert.match(r.hint, /now: Start selling this VX Shop item at a new price\?/);
     } finally {
       clock.restore();
@@ -1407,5 +1419,200 @@ test("the web hint for an archived item names Restore and what it does to the li
     const edit = { action: "upsert", itemId: 8, isActive: true };
     const e = await run(dir, { ...edit, planId: (await run(dir, edit)).planId }, mute);
     assert.match(e.hint, SHOP_PORTAL);
+  });
+});
+
+// ═══ third review (ebf0897): the sale test as the server decides it, and the clock ═══
+
+// ── a start date after the end date is a window that never opens ──
+
+test("vxSaleLevel: a start after the end is not on sale and not scheduled — the server refuses every purchase of it", () => {
+  const { vxSaleLevel } = creatorOps;
+  const now = Date.parse("2026-11-26T00:00:00Z");
+  const v = (limits) => ({ isActive: true, isArchived: false, limits });
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2027-12-01", purchaseEndDate: "2027-06-01" }), now), 0, "both ahead, reversed");
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-12-01", purchaseEndDate: "2026-11-27" }), now), 0, "ends before it starts");
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-11-27", purchaseEndDate: "2026-12-01" }), now), 1, "in order: scheduled");
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-11-01", purchaseEndDate: "2026-12-01" }), now), 2);
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2026-12-01", purchaseEndDate: "2026-12-01" }), now), 1, "the same instant is a window (the server allows start ≤ now ≤ end)");
+  // Even with every start date taken as reached (how two decisions are compared), a reversed window stays closed.
+  assert.equal(vxSaleLevel(v({ purchaseStartDate: "2027-12-01", purchaseEndDate: "2027-06-01" }), now, { startArrived: true }), 0);
+});
+
+test("an item whose start is after its end: moving the start before the end schedules a sale → asked; repricing it is a preview", async () => {
+  const dir = project();
+  await withShop(async (calls) => {
+    const fix = { action: "upsert", itemId: 19, purchaseConstraints: { purchaseStartDate: "2999-01-01T00:00:00.000Z", purchaseEndDate: "2999-06-01T00:00:00.000Z" } };
+    const host = hostThat({ action: "decline" });
+    const pre = await run(dir, fix, host);
+    assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
+    assert.match(pre.confirmation, /^Start selling this VX Shop item\?/);
+    assert.match(pre.confirmation, /from "2999-01-01T00:00:00.000Z" until "2999-06-01T00:00:00.000Z"/);
+    assert.equal((await run(dir, { ...fix, planId: pre.planId }, host)).error, "user_cancelled");
+    assert.deepEqual(writes(calls), []);
+    // As it is, it cannot be bought: a new price reaches no buyer.
+    const reprice = await run(dir, { action: "upsert", itemId: 19, price: 90 });
+    assert.equal(reprice.runCondition, "preview");
+    // Turning the flag on for a hidden item with such dates opens nothing either.
+    const reversed = { purchaseStartDate: "2999-12-01T00:00:00.000Z", purchaseEndDate: "2999-06-01T00:00:00.000Z" };
+    assert.equal((await run(dir, { action: "upsert", itemId: 8, isActive: true, purchaseConstraints: reversed })).runCondition, "preview");
+    assert.equal((await run(dir, { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 5, isActive: true, purchaseConstraints: reversed })).runCondition, "preview");
+  });
+});
+
+// ── dates without a time zone, on a machine that is not in UTC ──
+
+test("purchase dates without a time zone are UTC on a machine in Asia/Seoul too (a tab between date and time included)", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const mod = url.pathToFileURL(path.resolve(SRC_TOOLS, "..", "..", "dist", "tools", "creatorOps.js")).href;
+  const script = `
+    const { dateOf, vxSaleLevel } = await import(${JSON.stringify(mod)});
+    const naive = new Date("2026-12-01T20:00:00").getTime();
+    const utc = Date.parse("2026-12-01T20:00:00Z");
+    console.log(JSON.stringify({
+      offsetHours: (utc - naive) / 3600000,
+      t: dateOf("2026-12-01T20:00:00") === utc,
+      space: dateOf("2026-12-01 20:00:00") === utc,
+      tab: dateOf("2026-12-01\\t20:00") === utc,
+      zoned: dateOf("2026-12-01T20:00:00+09:00") === Date.parse("2026-12-01T11:00:00Z"),
+      // 19:59 UTC is 04:59 the next morning in Seoul: read in local time the sale would look open already.
+      before: vxSaleLevel({ isActive: true, isArchived: false, limits: { purchaseStartDate: "2026-12-01T20:00:00" } }, Date.parse("2026-12-01T19:59:00Z")),
+      after: vxSaleLevel({ isActive: true, isArchived: false, limits: { purchaseStartDate: "2026-12-01T20:00:00" } }, Date.parse("2026-12-01T20:01:00Z")),
+    }));`;
+  const out = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TZ: "Asia/Seoul" }, encoding: "utf8" });
+  assert.equal(out.status, 0, out.stderr);
+  const r = JSON.parse(out.stdout.trim().split("\n").pop());
+  assert.equal(r.offsetHours, 9, "the child really runs in Asia/Seoul — otherwise this test proves nothing");
+  assert.deepEqual({ t: r.t, space: r.space, tab: r.tab, zoned: r.zoned, before: r.before, after: r.after }, { t: true, space: true, tab: true, zoned: true, before: 1, after: 2 });
+});
+
+// ── a start date that passes is not a change; an end date that passes is ──
+
+/** Sets item `id` on sale from one minute from now (scheduled), optionally until `end`. */
+const startsSoon = (items, id, extra = {}) => {
+  const soon = new Date(Date.now() + 60_000).toISOString();
+  items.find((i) => i.id === id).metadata = JSON.stringify({ purchaseConstraints: { purchaseStartDate: soon, ...extra } });
+  return soon;
+};
+
+test("the start date passes while the prompt is open: the prompt would now say 'from now on', which is what the user agreed to → Run runs", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const soon = startsSoon(items, 12);
+    const input = { action: "upsert", itemId: 12, price: 350 };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "user_confirm");
+    assert.match(pre.confirmation, /^Change the price of a VX Shop item that is scheduled for sale\?/);
+    assert.ok(pre.confirmation.includes(`buyers can purchase it from "${soon}"`), pre.confirmation);
+    const clock = clockJump();
+    try {
+      const host = hostAfter(() => clock.jump(5 * 60_000));
+      const r = await run(dir, { ...input, planId: pre.planId }, host);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(host.asked.length, 1);
+      // Asked again now, the same plan reads "on sale … from now on": only the clock moved.
+      const now = await run(dir, input);
+      assert.equal(now.planId, pre.planId);
+      assert.match(now.confirmation, /^Change the price of a VX Shop item that is on sale\?.*from now on/);
+    } finally {
+      clock.restore();
+    }
+    assert.equal(writes(calls).length, 1);
+  });
+});
+
+test("the start date passes while an image uploads: a confirmed sale start is still sent, the uploaded file is not left unused", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    startsSoon(items, 13);
+    items.find((i) => i.id === 13).isActive = false;
+    const input = { action: "upsert", itemId: 13, isActive: true, imagePath: "item.png" };
+    const pre = await run(dir, input);
+    assert.equal(pre.runCondition, "user_confirm");
+    const clock = clockJump();
+    try {
+      const r = await withUploadHook(() => clock.jump(5 * 60_000), () => run(dir, { ...input, planId: pre.planId }, hostThat(RUN)));
+      assert.equal(r.ok, true, JSON.stringify(r));
+    } finally {
+      clock.restore();
+    }
+    assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload", "/v1/vx-shop-items/13"]);
+  });
+});
+
+test("after the prompt and after an upload the same comparison decides: an end date passing stops both, with the same words", async () => {
+  const dir = project();
+  await withShop(async (calls, items) => {
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    items.find((i) => i.id === 12).metadata = JSON.stringify({ purchaseConstraints: { purchaseEndDate: soon } });
+    // Asked (a repricing); the end passes during the prompt and during the upload of another run.
+    const input = { action: "upsert", itemId: 12, price: 350, purchaseConstraints: { purchaseEndDate: FUTURE }, imagePath: "item.png" };
+    const pre = await run(dir, input);
+    const hints = [];
+    for (const during of ["prompt", "upload"]) {
+      const clock = clockJump();
+      try {
+        const host = during === "prompt" ? hostAfter(() => clock.jump(5 * 60_000)) : hostThat(RUN);
+        const r = await withUploadHook(() => { if (during === "upload") clock.jump(5 * 60_000); }, () => run(dir, { ...input, planId: pre.planId }, host));
+        assert.equal(r.error, "plan_mismatch", `${during}: ${JSON.stringify(r)}`);
+        assert.equal(r.runCondition, "user_confirm");
+        hints.push(r.hint.replace(/^.*? — /, ""));
+      } finally {
+        clock.restore();
+      }
+    }
+    assert.equal(hints[0], hints[1], "one rule, one wording");
+    assert.match(hints[0], /^a sale date passed, and the action is no longer the one the user confirmed \(now: Start selling this VX Shop item at a new price\?/);
+    assert.ok(!writes(calls).some((c) => c.path === "/v1/vx-shop-items/12"), "the edit was never sent");
+  });
+});
+
+// ── the second read after an upload keeps its own failure too ──
+
+for (const [status, code] of [[401, "unauthorized"], [503, "upstream_error"]]) {
+  test(`the re-read after an image upload answers ${status} → ${code}, not plan_mismatch; the edit is not sent`, async () => {
+    const dir = project();
+    await withShop(async (calls) => {
+      const input = { action: "upsert", itemId: 12, name: "Renamed", imagePath: "item.png" };
+      const pre = await run(dir, input);
+      const inner = globalThis.fetch;
+      let failing = false;
+      globalThis.fetch = async (u, init = {}) => {
+        const p = new URL(u).pathname;
+        if (p === "/api/upload") {
+          const res = await inner(u, init);
+          failing = true;
+          return res;
+        }
+        return failing ? new Response(JSON.stringify({ message: "nope" }), { status }) : inner(u, init);
+      };
+      try {
+        const r = await run(dir, { ...input, planId: pre.planId });
+        assert.equal(r.error, code, JSON.stringify(r));
+        assert.equal(r.status, status);
+        assert.equal(r.afterUpload, true);
+        assert.match(r.hint, /^The record was not changed \(the media file is already uploaded and unused\): the target could not be read again before the write/);
+        assert.doesNotMatch(r.hint, /fresh preview/);
+        if (status === 401) assert.match(r.hint, /token/i, "says where the rejected token came from");
+      } finally {
+        globalThis.fetch = inner;
+      }
+      assert.deepEqual(writes(calls).map((c) => c.path), ["/api/upload"]);
+    });
+  });
+}
+
+// ── wording that no longer claims "on sale" / "from now on" where it is not so ──
+
+test("previews of a price change and of the on-sale flag do not say 'from now on' or 'goes on sale': the item may be hidden, archived or scheduled", async () => {
+  const dir = project();
+  await withShop(async () => {
+    const price = await run(dir, { action: "upsert", itemId: 10, price: 90 });
+    assert.equal(price.runCondition, "preview", "archived and hidden");
+    assert.ok(price.warnings.some((w) => w === "Price changes from 300 to 90 VX for every purchase made after this edit."), JSON.stringify(price.warnings));
+    const flag = await run(dir, { action: "upsert", itemId: 10, isActive: true });
+    assert.ok(flag.warnings.some((w) => /^The on-sale flag is turned on: the item sells whenever it has stock, is not archived and is inside its purchase dates\.$/.test(w)), JSON.stringify(flag.warnings));
+    const created = await run(dir, { action: "upsert", productId: "gem", name: "Gems", price: 5, stock: 1, isActive: true, purchaseConstraints: { purchaseStartDate: FUTURE } });
+    for (const w of [...price.warnings, ...flag.warnings, ...created.warnings]) assert.doesNotMatch(w, /from now on|immediately|goes on sale/);
   });
 });

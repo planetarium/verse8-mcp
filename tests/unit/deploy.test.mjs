@@ -1073,3 +1073,30 @@ test("MCP: verse8_deploy is wired to the host — a widening deploy opens the ho
     await client.close();
   }
 });
+
+test("runDeploy update Private → Public: the read after Run is rejected (401) → stage stays confirm, the failed step is named apart; no commit, no write", async () => {
+  const dir = makeProject();
+  let rejected = false;
+  const { calls, handler } = router({
+    "GET /v1/verse/verseId": () => (rejected ? json(401, { message: "Unauthorized" }) : json(200, { ...LIVE_GAME, visibility: "Private" })),
+  });
+  const host = {
+    canAsk: true,
+    ask: async () => {
+      rejected = true;
+      return { action: "accept", content: { choice: "Run" } };
+    },
+  };
+  const real = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, ...NOTES, visibility: "Public" });
+  const res = await withEnvToken(() => withFetch(handler, () => runDeploy(real, dir, host)));
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "confirm", "the refusal happened at the confirmation");
+  assert.equal(res.rereadStage, "resolve_mode", "the step of the second run that failed");
+  assert.equal(res.error, "unauthorized");
+  assert.equal(res.status, 401);
+  assert.equal(res.afterConfirmation, true);
+  assert.match(res.hint, /^Nothing was changed: the target could not be read again before the write/);
+  assert.doesNotMatch(res.hint, /fresh preview/);
+  assert.deepEqual(calls.filter((c) => !c.key.startsWith("GET")), []);
+  assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, stdio: "pipe" }), "the checkpoint did not commit");
+});
