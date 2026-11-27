@@ -28,6 +28,7 @@ import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
+import { gitTokensInputSchema, runGitTokens } from "./tools/gitTokens.js";
 import type { ConfirmHost } from "./tools/creatorOps.js";
 import {
   runUploadAsset,
@@ -223,6 +224,13 @@ export const VXSHOP_TOOL: Tool = {
   inputSchema: zodToJsonSchema(vxShopInputSchema),
 };
 
+export const GIT_TOKENS_TOOL: Tool = {
+  name: "verse8_git_tokens",
+  description:
+    "The project's Git access tokens — the ones verse8_open_project and verse8_new_project_confirm take (one per call; a project holds only a few at once, each for 30 days), the same list as the web editor's Git Clone menu. `project` = owner/game-slug, the web editor URL or a gitlab.verse8.io URL (default: projectDir's origin). list: each active token's tokenId, name, createdAt, expiresAt, daysLeft — never the token value. revoke: revoke ONE token by tokenId; previews first (nothing changes; returns a planId) — let the user pick the token from the list, never pick it for them, and run with the planId after they approve. revoke_all: revoke EVERY token of the project; previews first, and when called with the planId the host asks the user in its own prompt and it runs only if they choose Run there; use it only when the user asks to revoke all. A revoked token stops every folder cloned with it, on any machine, from pushing and pulling, and cannot be restored. `plan_mismatch`: the tokens changed since the preview — preview again. `user_cancelled` / `confirm_unavailable`: nothing was revoked — relay the hint, do not retry.",
+  inputSchema: zodToJsonSchema(gitTokensInputSchema),
+};
+
 const UPLOAD_THUMBNAIL_TOOL: Tool = {
   name: "verse8_upload_thumbnail",
   description:
@@ -330,6 +338,7 @@ export function createServer(): Server {
       tools.push(DEPLOY_STATUS_TOOL);
       tools.push(VERSE_OPS_TOOL);
       tools.push(VXSHOP_TOOL);
+      tools.push(GIT_TOKENS_TOOL);
       const imageTools = await discoverImageTools(token);
       for (const t of imageTools) {
         tools.push(imageToolToMcpTool(t));
@@ -512,6 +521,13 @@ export function createServer(): Server {
         const parsed = vxShopInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
         const result = await dispatchTool(name, () => runVxShop(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
+        return { content: jsonContent(result), isError: !result.ok };
+      }
+
+      if (name === "verse8_git_tokens") {
+        const parsed = gitTokensInputSchema.parse(args ?? {});
+        const pd = parsed.projectDir ?? cwd;
+        const result = await dispatchTool(name, () => runGitTokens(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

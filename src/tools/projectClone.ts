@@ -56,13 +56,13 @@ export function isCreditInsufficientError(status: number, body: string): boolean
 }
 
 // The backend owns the per-project cap on active tokens (and puts the number
-// in its own message); we only recognise its error code and say where the
-// user can free a slot. There is deliberately no revoke call here: revoking
-// breaks pushes from every other clone made with that token, and calling the
-// backend's DELETE without a tokenId revokes them all.
+// in its own message); we only recognise its error code and point to
+// verse8_git_tokens, where the user picks the token to revoke. There is
+// deliberately no revoke call here: revoking breaks pushes from every other
+// clone made with that token, so the user chooses which one.
 const TOKEN_LIMIT_CODE = "TOKEN_LIMIT_EXCEEDED";
-const TOKEN_LIMIT_HINT =
-  "This project already has the maximum number of active access tokens. To free one: open this game in the Verse8 web editor, open the Git Clone menu, and Revoke a token that is no longer used, then retry. A revoked token stops every other folder cloned with it from pushing, so let the user choose which one to revoke. Do not call the revoke API yourself.";
+const tokenLimitHint = (projectPath: string): string =>
+  `This project already has the maximum number of active access tokens. To free one: call verse8_git_tokens with action "list" and project "${projectPath}", show the tokens (name, created, expires) to the user and let them pick one that is no longer used, then call verse8_git_tokens with action "revoke" and that tokenId (it previews first; run it with the returned planId after the user approves), then retry. A revoked token stops every folder cloned with it, on any machine, from pushing — never pick it for the user, and do not use "revoke_all" unless the user asks to revoke every token.`;
 
 function isTokenLimitExceeded(body: string): boolean {
   const parsed = tolerantJsonParse<{ error?: unknown; code?: unknown }>(body);
@@ -132,7 +132,7 @@ export async function grantCloneAccess(
     return {
       ok: false,
       error: "token_grant_failed",
-      hint: isTokenLimitExceeded(created.body) ? `${base}\n${TOKEN_LIMIT_HINT}` : base,
+      hint: isTokenLimitExceeded(created.body) ? `${base}\n${tokenLimitHint(projectPath)}` : base,
       status: created.status,
     };
   }

@@ -150,10 +150,19 @@ async function postJson<T>(
   body: unknown,
   token: string,
 ): Promise<ApiResult<T>> {
+  return sendJson<T>("POST", url, body, token);
+}
+
+async function sendJson<T>(
+  method: "POST" | "DELETE",
+  url: string,
+  body: unknown,
+  token: string,
+): Promise<ApiResult<T>> {
   let res: Response;
   try {
     res = await fetch(url, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
@@ -268,6 +277,47 @@ export async function createProjectAccessToken(
   token: string,
 ): Promise<ApiResult<CreateAccessTokenBody>> {
   return postJson<CreateAccessTokenBody>(
+    `${getAgent8BackendBaseUrl()}/api/gitlab/project-access-token`,
+    { projectPath },
+    token,
+  );
+}
+
+// INV-17: A user-confirmation action writes nothing without the user's "Run".
+/**
+ * DELETE /api/gitlab/project-access-token {projectPath, tokenId} — revoke
+ * ONE token. The backend revokes every active token of the project when the
+ * body has no truthy `tokenId` (`if (tokenId)`), so an id that is not a
+ * positive integer is refused here before anything is sent: a missing, 0 or
+ * NaN id must never turn "revoke this one" into "revoke all".
+ */
+export async function revokeProjectAccessToken(
+  projectPath: string,
+  tokenId: number,
+  token: string,
+): Promise<ApiResult<Record<string, unknown>>> {
+  if (!Number.isSafeInteger(tokenId) || tokenId < 1) {
+    return { ok: false, status: 0, body: `refused before sending: tokenId must be a positive integer (got ${String(tokenId)})` };
+  }
+  return sendJson<Record<string, unknown>>(
+    "DELETE",
+    `${getAgent8BackendBaseUrl()}/api/gitlab/project-access-token`,
+    { projectPath, tokenId },
+    token,
+  );
+}
+
+/**
+ * DELETE /api/gitlab/project-access-token {projectPath} — revoke EVERY
+ * active token of the project (the web editor's "Revoke all"). Kept a
+ * separate function so no caller reaches it by leaving an id out.
+ */
+export async function revokeAllProjectAccessTokens(
+  projectPath: string,
+  token: string,
+): Promise<ApiResult<Record<string, unknown>>> {
+  return sendJson<Record<string, unknown>>(
+    "DELETE",
     `${getAgent8BackendBaseUrl()}/api/gitlab/project-access-token`,
     { projectPath },
     token,

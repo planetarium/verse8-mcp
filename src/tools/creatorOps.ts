@@ -3,12 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { redactHead, safeErrorHint, safeHint } from "../util/redact.js";
-import { getCreateBaseUrl } from "./preview.js";
+import { buildWebEditorLink, getCreateBaseUrl } from "./preview.js";
 import { getVerse8WebBaseUrl } from "../api/verse8Web.js";
 import { rejectedTokenHint, type TokenWhere } from "../context/token.js";
 
 /**
- * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop):
+ * Shared pieces of the creator-operation tools (verse8_verse, verse8_vxshop,
+ * verse8_git_tokens):
  * error mapping for v8-meme-api answers, the plan gate every changing
  * action goes through, and the table of what each action needs to run
  * (RUN_RULES) with the user confirmation the gate asks for.
@@ -400,6 +401,22 @@ const deployPortal = (p: Plan): string =>
 const commentPortal = (p: Plan): string =>
   `the game's page: ${getVerse8WebBaseUrl()}/${encodeURIComponent(String(p.target.verseId ?? ""))} (open the comments and press the trash button next to the comment)`;
 const SALE_UNDO = "Undo: you can stop the sale or change the price again; purchases already made stay as they are";
+// The web editor's Git Clone menu lists the project's tokens with a Revoke
+// button each and a Revoke-all (agent8 HeaderGitCloneButton).
+const gitTokensPortal = (p: Plan): string =>
+  `the web editor: ${buildWebEditorLink(String(p.target.projectPath ?? "")).url} (open the Git Clone menu and revoke the tokens there)`;
+/** "name (created …, expires …)" of each token a revoke_all plan holds. */
+function gitTokensConfirm(p: Plan): ConfirmText {
+  const tokens = Array.isArray(rec(p.state).tokens) ? (rec(p.state).tokens as unknown[]).map(rec) : [];
+  const day = (v: unknown): string => (typeof v === "string" && v.length > 0 ? v.slice(0, 10) : "unknown");
+  const each = tokens.map((t) => `${shown(t.name)} (created ${day(t.createdAt)}, expires ${day(t.expiresAt)})`);
+  return {
+    question: "Revoke EVERY Git access token of this project?",
+    target: `Project: ${shown(p.target.projectPath)}`,
+    change: `Revokes all ${tokens.length} active token${tokens.length === 1 ? "" : "s"}: ${each.join(", ")}; every folder cloned with them, on this machine or another, can no longer push or pull`,
+    undo: "Undo: none — a revoked token cannot be restored; each folder needs a new token (clone it again with verse8_open_project)",
+  };
+}
 
 // ── when a VX Shop item is on sale ──
 //
@@ -692,6 +709,16 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
       };
     },
     portal: vxShopPortal,
+  },
+  // Project Git access tokens (verse8_git_tokens). Revoking one the user
+  // picked from the list is a preview: it cuts off only the folders cloned
+  // with that token. Revoking all cuts off every clone on every machine at
+  // once and cannot be undone, so it asks.
+  "verse8_git_tokens.revoke": { condition: "preview" },
+  "verse8_git_tokens.revoke_all": {
+    condition: "user_confirm",
+    confirm: gitTokensConfirm,
+    portal: gitTokensPortal,
   },
 };
 

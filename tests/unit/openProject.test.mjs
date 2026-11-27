@@ -265,7 +265,7 @@ test("open: a second call for the same project while one runs → open_in_flight
   });
 });
 
-test("open: token limit reached → hint says where to revoke; no folder", async () => {
+test("open: token limit reached → hint points to verse8_git_tokens for this project; no folder", async () => {
   await withMock(["--token-limit"], async () => {
     const targetDir = mkTmp();
     const r = await runOpenProject({ project: "someone/limit-demo", targetDir });
@@ -273,8 +273,10 @@ test("open: token limit reached → hint says where to revoke; no folder", async
     assert.equal(r.error, "token_grant_failed");
     assert.equal(r.status, 400);
     assert.match(r.hint, /TOKEN_LIMIT_EXCEEDED/);
-    assert.match(r.hint, /web editor, open the Git Clone menu, and Revoke/);
-    assert.match(r.hint, /Do not call the revoke API yourself/);
+    assert.match(r.hint, /call verse8_git_tokens with action "list" and project "someone\/limit-demo"/);
+    assert.match(r.hint, /action "revoke" and that tokenId/);
+    assert.match(r.hint, /never pick it for the user/);
+    assert.doesNotMatch(r.hint, /web editor|Git Clone menu/);
     assert.ok(!fs.existsSync(path.join(targetDir, "limit-demo")));
   });
 });
