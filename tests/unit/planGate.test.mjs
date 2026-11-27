@@ -101,7 +101,10 @@ const TOOLS = {
   verse: { schema: verseOpsInputSchema, run: runVerseOps },
   vxshop: { schema: vxShopInputSchema, run: runVxShop },
 };
-const call = (tool, dir, input) => TOOLS[tool].run(TOOLS[tool].schema.parse({ projectDir: dir, ...input }), dir);
+// `host` answers the user confirmation some actions ask for after the planId
+// matched (userConfirmGate.test.mjs covers that step); here the user says Run.
+const USER_RUNS = { canAsk: true, ask: async () => ({ action: "accept", content: { choice: "Run" } }) };
+const call = (tool, dir, input) => TOOLS[tool].run(TOOLS[tool].schema.parse({ projectDir: dir, ...input }), dir, USER_RUNS);
 const writes = (calls) => calls.filter((c) => c.method !== "GET");
 
 /**

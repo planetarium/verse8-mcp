@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { ensureVerse8GitIgnore } from "../../dist/context/gitIgnore.js";
 
 const REQUIRED = [
+  "/token",
   "preview.log",
   "mcp.log",
   "mcp.log.*",

@@ -84,6 +84,10 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    the playUrl and the release note you published. Confirm first only
    if the user asked to see it before publishing or the dryRun returns
    \`warnings\`.
+   When the dryRun says \`runCondition: user_confirm\` (the deploy makes
+   the game visible to more people), the real run also asks the user in
+   the host's own prompt — you cannot answer it for them; on
+   \`user_cancelled\` / \`confirm_unavailable\` nothing was deployed.
 5. Do NOT run \`@agent8/deploy --prod\`, a build + upload, or any deploy
    command via Bash. \`verse8_checkpoint\` / \`verse8_preview\` only commit
    + push to gitlab.verse8.io; they do not publish.

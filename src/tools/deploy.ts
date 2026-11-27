@@ -13,7 +13,7 @@ import {
 import { detectAttachment } from "../context/attachment.js";
 import { readEnvAccount, readEnvVerse } from "../context/envFile.js";
 import { resolveJamProject, type JamProject } from "../context/msuProject.js";
-import { loadToken } from "../context/token.js";
+import { rejectedTokenHint, resolveToken, type TokenWhere } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { parseV8CommitMessage } from "../format/v8CommitMessage.js";
 import { sanitizeChildEnv } from "../util/childEnv.js";
@@ -31,6 +31,7 @@ import {
   deriveProjectPathFromOrigin,
   detectGameserver,
 } from "./preview.js";
+import { confirmGate, isConfirmed, planId, rereadWith, runConditionOf, type ConfirmHost, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 
 /**
@@ -48,6 +49,12 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  *   5. upload         `@agent8/deploy --prod --verse <id> --account <acct>`
  *   6. publish        POST /v1/verse/create | /v1/verse/update/:verseId
  *
+ * Before step 2 the run condition is checked (creatorOps RUN_RULES): a deploy
+ * that widens who can see the game asks the user in the host's own prompt.
+ * Before step 6 an update reads the game again and publishes from that
+ * reading; if it would then widen the visibility in a way the user did not
+ * confirm, it stops without publishing.
+ *
  * Mirrors agent8 container-agent deploy (message-handler.ts
  * handleDeployOperation + deploy-command.ts) and verse8-vibe's publish
  * handler (creator/editor/page.tsx).
@@ -59,6 +66,24 @@ import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
  */
 
 const GAMES_BASE_URL = "https://agent8-games.verse8.io";
+/**
+ * Reading the game again before the publish call: how many tries, the wait
+ * before try n (× n), and the time one try may take before it is aborted.
+ * Exported so a test can shorten the waits.
+ *
+ * tryMs is not measured — the response times of this API have not been
+ * recorded. It is the limit this server already gives one JSON request to
+ * a Verse8 API (gameserverGateway's REQUEST_TIMEOUT_MS, 20 s; the token
+ * exchange uses 15 s). The read stands between a finished upload and its
+ * publish, so a slow answer that would have come is worth waiting for: 5 s
+ * threw such answers away. Everything together is bounded by
+ * rereadTotalMs() — 61.2 s with these values.
+ */
+export const REREAD = { tries: 3, waitMs: 400, tryMs: 20_000 };
+/** The longest the whole read can take: every try at its limit, plus the waits between them. */
+export function rereadTotalMs(): number {
+  return REREAD.tries * REREAD.tryMs + (REREAD.waitMs * REREAD.tries * (REREAD.tries - 1)) / 2;
+}
 const PUBLISH_ALLOWED_SYSTEM_TAGS = new Set(["__MSU", "__9C", "__review_required"]);
 const JAM_SYSTEM_TAGS: Record<NonNullable<JamProject>, string[]> = {
   MSU: ["__MSU", "__review_required"],
@@ -228,6 +253,10 @@ export type DeployResult =
       playUrl: string;
       publishBody: Record<string, unknown>;
       plannedSteps?: string[];
+      /** dryRun: what the real run needs — `user_confirm` when it widens who can see the game. */
+      runCondition?: "preview" | "user_confirm";
+      /** dryRun: the one-line prompt the user is asked before a user_confirm run. */
+      confirmation?: string;
       commit?: CheckpointResult;
       steps?: DeployStepResult[];
       verse?: VerseInfo;
@@ -250,6 +279,27 @@ function fail(
   extras: Record<string, unknown> = {},
 ): DeployResult {
   return { ok: false, stage, error, hint: safeHint(hint), ...extras };
+}
+
+/**
+ * The game, read with a limit of `ms`. At the limit the request itself is
+ * aborted (not left running with its answer ignored), and the error says
+ * that it was the limit, not the network.
+ */
+async function getVerseWithin(verseId: string, token: string, ms: number): Promise<Awaited<ReturnType<typeof getVerse>>> {
+  // A timer of its own, not AbortSignal.timeout(): that one is unref'd, so
+  // it does not keep the process alive, and the limit must hold even when
+  // nothing else does.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    return await getVerse(verseId, token, ctl.signal);
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error(`no answer within ${Math.round(ms / 100) / 10} s (the request was cancelled)`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function dropUndefined(obj: Record<string, unknown>): Record<string, unknown> {
@@ -967,9 +1017,28 @@ function looksLikeBotCheck(body: string): boolean {
   return /captcha|turnstile|bot|app.?check/i.test(body);
 }
 
+/**
+ * Hint for a verse record that could not be written after the game files
+ * were uploaded. On a 401 it says where the rejected token came from — the
+ * source of the token this deploy resolved at its start. Exported so the
+ * wording can be tested without running a build and an upload.
+ */
+export function publishFailedHint(a: {
+  mode: DeployMode;
+  status: number;
+  body: string;
+  playUrl: string;
+  tokenWhere: TokenWhere;
+}): string {
+  const next = a.status === 401 ? `${rejectedTokenHint(a.tokenWhere)}, then` : "Fix the publish fields and";
+  return `${a.mode === "first" ? "create" : "update"} verse failed: HTTP ${a.status} ${a.body.slice(0, 300)}. The game files are already uploaded and live at ${a.playUrl} (same order as the web editor); only the verse record was not updated. ${next} run verse8_deploy again — the rebuild re-uploads the same sha.`;
+}
+
 export async function runDeploy(
   input: DeployInput,
   serverCwd: string = process.cwd(),
+  host?: ConfirmHost,
+  probe?: PlanProbe,
 ): Promise<DeployResult> {
   const cwd = path.resolve(input.projectDir ?? serverCwd);
   const warnings: string[] = [];
@@ -979,7 +1048,10 @@ export async function runDeploy(
   if (!project.isVerse) {
     return fail("preflight", "not_a_verse_project", `${cwd} is not a verse8 project (missing .verse8/project.json or wrong origin).`);
   }
-  const token = loadToken(cwd);
+  // Resolved once for the whole deploy, which can run for minutes: the source
+  // stays with this call for the 401 hints below.
+  const auth = resolveToken(cwd);
+  const token = auth.token;
   if (!token) {
     return fail("preflight", "not_logged_in", LOGIN_HINT);
   }
@@ -1055,7 +1127,7 @@ export async function runDeploy(
         );
       }
     } else if (got.status === 401) {
-      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. To log in again: ${LOGIN_HINT}.`, { status: got.status });
+      return fail("resolve_mode", "unauthorized", `Verse8 token rejected. ${rejectedTokenHint(auth)}.`, { status: got.status });
     } else {
       return fail("resolve_mode", "upstream_error", `GET /v1/verse/verseId failed: HTTP ${got.status} ${got.body.slice(0, 200)}`, {
         status: got.status,
@@ -1110,6 +1182,49 @@ export async function runDeploy(
   };
   const steps = buildDeploySteps({ installCommand: input.installCommand, gameserver, verseId, account, baseEnv, token });
 
+  // ── 4b. Run condition (creatorOps RUN_RULES) ──────────────────────────
+  // A deploy that widens who can see the game — a first deploy that is not
+  // Private (Public is the default), or an update whose visibility moves
+  // towards Public — needs the user's own confirmation, by the same rule
+  // and prompt as the game page update. Asked before the checkpoint, so a
+  // refusal leaves nothing committed, built, uploaded or published.
+  // The plan of the visibility this deploy will publish, against a given
+  // reading of the game. Built now for the confirmation and again right
+  // before the publish call (step 8), by the same rule.
+  const visibilityPlanFor = (seen: VerseInfo | null, seenTags: string[]): Plan => ({
+    op: "verse8_deploy.publish",
+    target: { verseId },
+    // The visibility the publish body will carry (buildPublishBody).
+    body: { visibility: input.visibility ?? seen?.visibility ?? "Public" },
+    state: {
+      visibility: seen?.visibility ?? null,
+      published: mode === "update",
+      title: input.title ?? seen?.title ?? null,
+      tag: seenTags,
+    },
+  });
+  const visibilityPlan = visibilityPlanFor(existing, tags);
+  if (probe) {
+    probe.plan = visibilityPlan;
+    return fail("confirm", "plan_mismatch", "plan probe");
+  }
+  // After the user's Run the game is read again: a visibility or title
+  // changed on the web while the prompt was open ends the deploy here.
+  const confirmed = await confirmGate(visibilityPlan, host, {
+    ask: !input.dryRun,
+    reread: rereadWith((pr) => runDeploy(input, serverCwd, undefined, pr)),
+  });
+  if (!isConfirmed(confirmed)) {
+    // The refusal happened at the confirmation, whatever step of the second
+    // run inside it failed: that step is kept apart, not as `stage`.
+    const { error, hint, ok: _ok, stage: rereadStage, ...extras } = confirmed;
+    return fail("confirm", error, hint, { mode, ...extras, ...(typeof rereadStage === "string" ? { rereadStage } : {}) });
+  }
+  const runCondition = {
+    runCondition: confirmed.runCondition,
+    ...(confirmed.confirmation === undefined ? {} : { confirmation: confirmed.confirmation }),
+  };
+
   if (input.dryRun) {
     const placeholderFields: PublishFields = {
       ...fields,
@@ -1134,6 +1249,9 @@ export async function runDeploy(
         ...steps.map((s) => s.command),
         mode === "first" ? "POST /v1/verse/create" : `POST /v1/verse/update/${verseId}`,
       ],
+      // user_confirm: the real run asks the user in the host's own prompt
+      // (the `confirmation` text) before anything is committed or built.
+      ...runCondition,
       msu,
       nineChronicles,
       warnings,
@@ -1235,7 +1353,78 @@ export async function runDeploy(
 
   // ── 8. Publish verse record ───────────────────────────────────────────
   const playUrl = buildPlayUrl(verseId, deployedSha, projectPath, Date.now());
-  const publishBody = buildPublishBody({ mode, verseId, playUrl, fields, tags, existing, parentVerseId });
+  // The build and upload took minutes. An update is published from what
+  // the game is NOW, not from the reading taken at the start: a title or
+  // visibility changed on the web meanwhile is kept, not put back. (The
+  // update API has no "leave the visibility alone": a body without it
+  // makes the game Public, so the current value is always sent.)
+  let current = existing;
+  let publishTags = tags;
+  if (mode === "update") {
+    // What has happened by now, said as it is: the push may have failed
+    // (the deploy goes on with the local commit), or there was nothing to
+    // commit.
+    const checkpointCode = commit.ok ? "" : (commit as { error: string }).error;
+    const checkpointDone =
+      checkpointCode === "push_failed"
+        ? "The checkpoint is committed locally (its push failed)"
+        : checkpointCode === "nothing_to_commit"
+          ? "There was nothing to commit"
+          : "The checkpoint is pushed";
+    const uploaded = `${checkpointDone} and the game files are already uploaded at ${playUrl}; only the verse record was not updated.`;
+    // One failed read must not cost a finished build and upload: a network
+    // error or a 5xx / 429 answer is tried again a moment later.
+    let again: Awaited<ReturnType<typeof getVerse>> | undefined;
+    let lastError: unknown;
+    // Each try has its own limit and is aborted at it, so a request that
+    // hangs cannot hold the publish back for longer than rereadTotalMs().
+    let tries = 0;
+    for (let attempt = 0; attempt < REREAD.tries; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, REREAD.waitMs * attempt));
+      tries++;
+      try {
+        again = await getVerseWithin(verseId, token, REREAD.tryMs);
+        lastError = undefined;
+        if (again.ok || !(again.status >= 500 || again.status === 429)) break;
+      } catch (e) {
+        again = undefined;
+        lastError = e;
+      }
+    }
+    if (!again) {
+      return fail("publish", "upstream_unreachable", `${safeErrorHint(lastError)} The game could not be read again before publishing (${tries} ${tries === 1 ? "try" : "tries"} within ${Math.round(rereadTotalMs() / 1000)} s). ${uploaded} Run verse8_deploy again once the API is reachable.`, { steps: completed, playUrl, filesLive: true });
+    }
+    if (!again.ok) {
+      const next = again.status === 401 ? `${rejectedTokenHint(auth)}, then run verse8_deploy again` : "Run verse8_deploy again";
+      return fail(
+        "publish",
+        again.status === 401 ? "unauthorized" : "upstream_error",
+        `The game could not be read again before publishing: HTTP ${again.status} ${again.body.slice(0, 200)}. ${uploaded} ${next}.`,
+        { status: again.status, steps: completed, playUrl, filesLive: true },
+      );
+    }
+    current = again.data;
+    publishTags = buildPublishTags(input.tags, current.tag, jam);
+    // INV-17: the same rule as at the start (creatorOps RUN_RULES), against
+    // the game as it is now. If publishing would widen who can see it and
+    // that is not exactly the change the user confirmed — it was never
+    // asked, or the game has since moved (set to Private on the web, renamed)
+    // — the deploy stops here instead of publishing.
+    const nowPlan = visibilityPlanFor(current, publishTags);
+    if (runConditionOf(nowPlan) !== "preview" && planId(nowPlan) !== planId(visibilityPlan)) {
+      const was = existing?.visibility ?? "not set";
+      const now = current.visibility ?? "not set";
+      const to = String((nowPlan.body as { visibility: unknown }).visibility);
+      const asked = confirmed.runCondition === "user_confirm" ? `the user confirmed ${was} → ${to} for "${existing?.title ?? ""}"` : `the user was not asked (it was ${was} → ${to} then, not a widening)`;
+      return fail(
+        "publish",
+        "plan_mismatch",
+        `Not published: the game changed on the web during the build. It is now ${now} ("${current.title ?? ""}"), so publishing ${to} would make it visible to more people in a way the user did not confirm — ${asked}. ${uploaded} Nothing about who can see the game was changed. Run verse8_deploy again (a dryRun first shows what it will ask the user).`,
+        { steps: completed, playUrl, filesLive: true, visibility: { atStart: existing?.visibility ?? null, now: current.visibility ?? null, requested: input.visibility ?? null } },
+      );
+    }
+  }
+  const publishBody = buildPublishBody({ mode, verseId, playUrl, fields, tags: publishTags, existing: current, parentVerseId });
   let published;
   try {
     published = mode === "first" ? await createVerse(publishBody, token) : await updateVerse(verseId, publishBody, token);
@@ -1258,7 +1447,7 @@ export async function runDeploy(
     return fail(
       "publish",
       code,
-      `${mode === "first" ? "create" : "update"} verse failed: HTTP ${status} ${body.slice(0, 300)}. The game files are already uploaded and live at ${playUrl} (same order as the web editor); only the verse record was not updated. Fix the publish fields and run verse8_deploy again — the rebuild re-uploads the same sha.`,
+      publishFailedHint({ mode, status, body, playUrl, tokenWhere: auth }),
       { status, playUrl, filesLive: true, steps: completed, publishBody },
     );
   }

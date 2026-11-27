@@ -8,7 +8,7 @@
 | `VERSE8_CREATE_URL` | `https://create.verse8.io` | preview 응답 `webEditor.url`의 웹 에디터 base. `verse8_open_project` also accepts editor URLs only on this host (another host → `environment_mismatch`). |
 | `VERSE8_TOKEN_EXCHANGE_URL` | — | Full HTTPS endpoint that receives the Verse8 token for IP asset access. |
 | `VERSE8_A2A_BASE_URL` | — | HTTPS base for IP asset pools. Receives the exchanged bearer token. |
-| `VERSE8_ACCESS_TOKEN` | _(미설정)_ | 설정 시 토큰 파일 대신 사용. |
+| `VERSE8_ACCESS_TOKEN` | _(미설정)_ | 설정 시 토큰 파일 대신 사용. It wins over both token files, so `verse8_login_complete` and `verse8_logout` cannot replace or clear it — remove it from the MCP server's env settings and restart the server. |
 | `VERSE8_WEB_URL` | `https://verse8.io` | `verse8_upload_thumbnail` / `verse8_deploy`가 커버 이미지·영상을 올리는 verse8.io 웹 앱 base (`/api/upload`). Credit links (`/settings`) in `insufficient_credits` hints, `verse8_status` `creditRechargeUrl` and `verse8_credits` use the same base. `.verse8.io`·loopback만 허용. |
 | `VERSE8_GAMESERVER_URL` | `https://gs-gateway.verse8.io` | `verse8_gameserver`가 읽는 게임 서버 게이트웨이 base (`/v1/verses/:verse/*`). 토큰이 가므로 https `*.verse8.io`·loopback만 허용. |
 | `VERSE8_GAMESERVER_BUILD_PIN` | _(미설정)_ | `verse8_preview` preflight와 `verse8_deploy`가 사용하는 `@agent8/gameserver-node` / `@agent8/deploy` 버전 오버라이드 (`pkg=ver,pkg=ver` 포맷). `package.json :: verse8.gameserverPin`보다 우선. |
@@ -23,5 +23,11 @@ Each URL override is checked against its service’s host allowlist. The IP asse
 ## 토큰 우선순위
 
 1. env `VERSE8_ACCESS_TOKEN`
-2. `<cwd>/.verse8/token`
-3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token`
+2. `<cwd>/.verse8/token` — read only when it is a regular file that git does not track. A link (the file or the `.verse8` folder) or a tracked file is skipped, and so is a file that could not be checked — git failing for any reason other than "this folder is not in a repository", git missing, or the file being unreadable ([INV-16](./security.md#invariants)).
+3. `${XDG_CONFIG_HOME:-~/.config}/verse8/token` — written by `verse8_login_complete`.
+
+`verse8_status` reports which one is in use as `tokenSource` (`env` / `project` / `config`, plus the file path), and a skipped project file as `projectTokenRefused` with a `reason` (`symlink`, `not_a_file`, `unreadable`, `git_tracked`, `git_unavailable`, `git_check_failed`). When the server rejects the token (HTTP 401 from the verify call), `verse8_status` answers `token_invalid` and the hint names the source: logging in again only rewrites the third one, so a stale `VERSE8_ACCESS_TOKEN` or project token has to be cleared first. Any other failure of the verify call is `auth_check_unavailable`: the token was not rejected and nothing should be deleted. That covers a 5xx, an unreachable API, and a 403 — the verify endpoint answers 403 for a restricted account, and a proxy in front of it may too; the hint then carries the server's message.
+
+A project token file is kept out of git: `verse8_attach` lists `/token` in `.verse8/.gitignore` (anchored, so only `.verse8/token` itself), `verse8_checkpoint` never commits `.verse8/token`, and the pre-commit hook rejects a commit that adds it.
+
+`verse8_logout` deletes the config-folder token file and the project token file of one project folder — `projectDir`, default the MCP server's working folder (never a skipped project file). It answers `logout_incomplete` while `VERSE8_ACCESS_TOKEN` still supplies a token, when a token file could not be deleted, when a project token file was skipped only because it could not be checked, or when another project folder whose token file this server has used still has it (call it again with that `projectDir`). Verse8 has no token revocation API: a deleted token stays valid on the server until it expires.

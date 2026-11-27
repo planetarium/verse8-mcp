@@ -63,8 +63,8 @@ const checkpointInput = (projectDir) => ({
   message: "[verse8] test checkpoint",
 });
 
-test("NEVER_COMMIT_FILES matches the container list", () => {
-  assert.deepEqual([...NEVER_COMMIT_FILES].sort(), [".deployed", ".secret"]);
+test("NEVER_COMMIT_FILES is the container list plus the project token file", () => {
+  assert.deepEqual([...NEVER_COMMIT_FILES].sort(), [".deployed", ".secret", ".verse8/token"]);
 });
 
 test("unstageNeverCommitFiles: drops only .deployed/.secret from the index, keeps the files on disk", () => {
