@@ -144,14 +144,14 @@ The same holds across the waits inside a run. A deploy builds and uploads for mi
 
 ### `insufficient_credits`
 
-`verse8_new_project_start` / `_confirm`, `verse8_upload_asset` or `verse8_assets` `upload` returns `insufficient_credits` (usually HTTP 402; for `verse8_assets` per file in `failed` when other files uploaded) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
+`verse8_new_project_start` / `_confirm`, `verse8_upload_asset` or `verse8_assets` `upload` returns `insufficient_credits` (usually HTTP 402; for `verse8_assets` in `failed` for the file that hit it when other files uploaded — the batch stops there and lists the rest in `notAttempted`) when the signed-in account has no Verse8 credits left. Sign-in still works, so this is typically the first thing a new account hits.
 
 - **New account** — credits are not granted at sign-up. Verify a phone number (SMS) on Verse8, then claim the one-time welcome credit.
 - **Existing account** — recharge at <https://verse8.io/settings>. `verse8_status` also returns this link as `creditRechargeUrl`.
 
 Then:
 
-- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — retry with only the files listed in `failed` (the others are already uploaded and registered).
+- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — read `src/assets.json`, then retry with only the files listed in `failed` and `notAttempted` (the others are already uploaded and registered).
 - From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow

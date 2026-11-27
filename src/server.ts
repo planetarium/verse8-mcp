@@ -192,7 +192,7 @@ const UPLOAD_ASSET_TOOL: Tool = {
 export const ASSETS_TOOL: Tool = {
   name: "verse8_assets",
   description:
-    "The web editor's asset panel. search: find ready-made assets in the Verse8 asset library by `category` (2d, 2d/sprite_characters, 3d, 3d/characters, 3d/objects, 3d/monsters, 3d/polyhaven, 3d/vehicles, 3d/weapons, 3d/textures) and optional `keyword`, 20 per `page`; returns items {id, url, description, metadata} and pagination. add: put items from a search (`ids`) into src/assets.json under `categoryPath` (e.g. [\"3d\",\"characters\"]). upload: upload local `files` (same allowlist as verse8_upload_asset) to CDN folder assets/<categoryPath>, register each in src/assets.json under `categoryPath`, and record the upload activity. Entries use the web editor's shape (key <name>_<timestamp>_<n>, {url, description, metadata}); existing entries are kept, and a categoryPath that runs into an existing asset is refused. Read src/assets.json first and reuse its categories. Prefer a library asset before generating a new one.",
+    "The web editor's asset panel. search: find ready-made assets in the Verse8 asset library by `category` (2d, 2d/sprite_characters, 3d, 3d/characters, 3d/objects, 3d/monsters, 3d/polyhaven, 3d/vehicles, 3d/weapons, 3d/textures) and optional `keyword`, 20 per `page`; returns items {id, url, description, metadata} and pagination. add: put items from a search (`ids`) into src/assets.json under `categoryPath` (e.g. [\"3d\",\"characters\"]). upload: upload local `files` (same allowlist as verse8_upload_asset) to CDN folder assets/<categoryPath>, register each in src/assets.json under `categoryPath`, and record the upload activity. Entries use the web editor's shape (key <name>_<timestamp>_<n>, {url, description, metadata}); existing entries are kept, and a categoryPath that runs into an existing asset is refused. Read src/assets.json first and reuse its categories. Prefer a library asset before generating a new one. Upload stops sending after a cancelled call or an account refusal (HTTP 401/402/403) and lists the rest in `notAttempted`; before retrying an upload that timed out, failed or was cancelled, read src/assets.json: files sent before that are already registered.",
   inputSchema: zodToJsonSchema(assetsInputSchema),
 };
 
@@ -479,7 +479,7 @@ export function createServer(): Server {
       if (name === "verse8_assets") {
         const parsed = assetsInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runAssets(parsed, cwd), { projectDir: pd });
+        const result = await dispatchTool(name, () => runAssets(parsed, cwd, extra.signal), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 

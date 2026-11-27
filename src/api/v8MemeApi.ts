@@ -241,14 +241,30 @@ export async function updateVerse(
 export async function recordUploadAssetActivity(
   count: number,
   token: string,
+  timeoutMs: number = UPLOAD_ACTIVITY_TIMEOUT_MS,
 ): Promise<{ ok: true } | { ok: false; status: number; body: string }> {
+  // The record comes after the manifest was written: a server that never
+  // answers must not keep the tool result from returning. A plain timer,
+  // not AbortSignal.timeout: that one does not keep the process alive, so a
+  // caller awaiting only this request could exit before it settles.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const r = await v8Request("POST", "/v1/activity/upload-asset", { token, body: { count } });
+    const r = await v8Request("POST", "/v1/activity/upload-asset", { token, body: { count }, signal: ac.signal });
     return r.ok ? { ok: true } : r;
   } catch (e) {
+    if (ac.signal.aborted) return { ok: false, status: 0, body: `no answer within ${timeoutMs} ms` };
     return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
+  } finally {
+    clearTimeout(timer);
   }
 }
+
+/**
+ * How long the upload activity record may take. Reads on staging all
+ * answered within 1.4 s (2026-11-27); this leaves room for a slow day.
+ */
+export const UPLOAD_ACTIVITY_TIMEOUT_MS = 5_000;
 
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 
@@ -260,7 +276,13 @@ export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 export async function v8Request<T>(
   method: V8Method,
   pathname: string,
-  opts: { token?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown } = {},
+  opts: {
+    token?: string;
+    query?: Record<string, string | number | boolean | undefined>;
+    body?: unknown;
+    /** Aborts the request and the read of its body. */
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ ok: true; status: number; data: T | null } | { ok: false; status: number; body: string }> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(opts.query ?? {})) {
@@ -274,6 +296,7 @@ export async function v8Request<T>(
     method,
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    signal: opts.signal,
   });
   const raw = await res.text();
   if (res.status >= 200 && res.status < 300) {

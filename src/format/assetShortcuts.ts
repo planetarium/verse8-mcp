@@ -51,6 +51,15 @@ function sanitizeCdnPath(raw: string): ResolveCdnPathResult {
       hint: "cdnPath must not contain NUL bytes",
     };
   }
+  // MCP-UP-2: the backend joins cdnPath into the asset URL as text, so a
+  // `#` or `?` would cut the URL there and a `%` would be read as an escape.
+  if (/[#?%]/.test(raw)) {
+    return {
+      ok: false,
+      error: "cdn_path_invalid",
+      hint: "cdnPath (for verse8_assets: categoryPath) must not contain '#', '?' or '%': the backend puts it into the asset URL as text, and the URL would break",
+    };
+  }
   const stripped = raw.replace(/\/+$/, "");
   const segments = stripped.split("/");
   if (segments.some((s) => s === ".." || s === "")) {

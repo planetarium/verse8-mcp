@@ -179,12 +179,13 @@ async function postJson<T>(
   return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
-async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
+async function getJson<T>(url: string, token: string, signal?: AbortSignal): Promise<ApiResult<T>> {
   let res: Response;
   try {
     res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
+      signal,
     });
   } catch (e) {
     return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
@@ -408,12 +409,18 @@ export type SearchResourcesResult =
  * answer is `{success, data, pagination}`; a 2xx with `success: false` is
  * a failure too.
  */
+/** How long a library search may take before the tool gives up. */
+export const SEARCH_TIMEOUT_MS = 15_000;
+
 export async function searchResources(params: {
   tags: readonly string[];
   page: number;
   limit: number;
   keyword?: string;
   token: string;
+  /** The tool call's signal: a cancelled call stops waiting. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }): Promise<SearchResourcesResult> {
   const qs = new URLSearchParams({
     tags: params.tags.join(","),
@@ -422,12 +429,36 @@ export async function searchResources(params: {
   });
   const keyword = params.keyword?.trim();
   if (keyword) qs.append("keyword", keyword);
-  const r = await getJson<{
+  // A search that never answers must not hold the tool call: stop at the
+  // time limit or when the call is cancelled. A plain timer (see
+  // recordUploadAssetActivity for why not AbortSignal.timeout).
+  const timeoutMs = params.timeoutMs ?? SEARCH_TIMEOUT_MS;
+  const ac = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ac.abort();
+  }, timeoutMs);
+  const onCancel = () => ac.abort();
+  if (params.signal?.aborted) ac.abort();
+  else params.signal?.addEventListener("abort", onCancel, { once: true });
+  let r: Awaited<ReturnType<typeof getJson<{
     success?: boolean;
     error?: unknown;
     data?: unknown;
     pagination?: ResourcePagination;
-  }>(`${getAgent8BackendBaseUrl()}/api/resources?${qs.toString()}`, params.token);
+  }>>>;
+  try {
+    r = await getJson(`${getAgent8BackendBaseUrl()}/api/resources?${qs.toString()}`, params.token, ac.signal);
+  } catch (e) {
+    r = { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener("abort", onCancel);
+  }
+  if (!r.ok && ac.signal.aborted) {
+    return { ok: false, status: 0, body: timedOut ? `no answer within ${timeoutMs} ms` : "cancelled" };
+  }
   if (!r.ok) return r;
   if (r.data.success !== true || !Array.isArray(r.data.data)) {
     return { ok: false, status: r.status, body: redactHead(JSON.stringify(r.data), 300) };

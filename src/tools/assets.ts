@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
@@ -8,8 +7,8 @@ import {
   type ResourceItem,
   type ResourcePagination,
 } from "../api/agent8Backend.js";
-import { recordUploadAssetActivity } from "../api/v8MemeApi.js";
-import { loadToken } from "../context/token.js";
+import { recordUploadAssetActivity, UPLOAD_ACTIVITY_TIMEOUT_MS } from "../api/v8MemeApi.js";
+import { loadToken, rejectedTokenHint, resolveToken } from "../context/token.js";
 import { detectVerseProject } from "../context/verseProject.js";
 import { resolveCdnPath } from "../format/assetShortcuts.js";
 import {
@@ -26,7 +25,7 @@ import { extractExt } from "../format/attachmentExts.js";
 import { LOGIN_HINT } from "../util/hints.js";
 import { projectWriter, ProjectWriteError } from "../util/projectWrite.js";
 import { safeHint } from "../util/redact.js";
-import { apiFail } from "./creatorOps.js";
+import { apiFail, withRejectedTokenHint } from "./creatorOps.js";
 import { checkUploadFile, checkUploadProject, type CheckedUploadFile } from "./uploadAsset.js";
 import { projectDirField } from "./verseContext.js";
 
@@ -180,6 +179,29 @@ function manifestLinkRefusal(e: ProjectWriteError, phase: ManifestPhase): Fail {
   );
 }
 
+/**
+ * src/assets.json itself is a link that stays inside the project. The write
+ * renames a new file over it, which would replace the link with a regular
+ * file and leave the file it points to unchanged, so it is refused.
+ */
+function manifestInnerLink(file: string, phase: ManifestPhase): Fail | null {
+  let target: string;
+  try {
+    if (!fs.lstatSync(file).isSymbolicLink()) return null;
+    target = fs.readlinkSync(file);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return fail("assets_manifest_write_failed", `cannot check ${MANIFEST_REL}: ${(e as Error).message}`);
+  }
+  const what = `${MANIFEST_REL} is a link (to ${target}); writing it would replace the link with a regular file and leave ${target} unchanged`;
+  return fail(
+    "assets_manifest_write_failed",
+    phase === "before"
+      ? `${what}; nothing was changed. Replace the link with the file itself (or point the code at the real file), then call verse8_assets again.`
+      : `${what}. Replace the link with the file itself`,
+  );
+}
+
 // MCP-UP-4: asset manifest writes never leave the project folder
 function readManifest(cwd: string, phase: ManifestPhase): ManifestRead {
   const file = path.join(cwd, ...MANIFEST_REL.split("/"));
@@ -193,6 +215,8 @@ function readManifest(cwd: string, phase: ManifestPhase): ManifestRead {
     if (e instanceof ProjectWriteError) return manifestLinkRefusal(e, phase);
     return fail("assets_manifest_write_failed", `cannot check ${MANIFEST_REL}: ${(e as Error).message}`);
   }
+  const inner = manifestInnerLink(file, phase);
+  if (inner) return inner;
   let raw: string;
   let mode: number | undefined;
   try {
@@ -222,6 +246,8 @@ function readManifest(cwd: string, phase: ManifestPhase): ManifestRead {
 function writeManifest(cwd: string, manifest: Manifest, mode: number | undefined, phase: ManifestPhase): Ok | Fail {
   const w = writerFor(cwd);
   const file = path.join(cwd, ...MANIFEST_REL.split("/"));
+  const inner = manifestInnerLink(file, phase);
+  if (inner) return inner;
   try {
     w.mkdirp(path.dirname(file));
     w.writeFileAtomic(file, serializeManifest(manifest), mode);
@@ -250,7 +276,7 @@ function checkCategoryPath(segments: readonly string[] | undefined): Fail | null
 
 // ── actions ──
 
-async function runSearch(input: AssetsInput, cwd: string): Promise<AssetsResult> {
+async function runSearch(input: AssetsInput, cwd: string, signal?: AbortSignal): Promise<AssetsResult> {
   if (!input.category) {
     return fail("invalid_input", `search needs \`category\`: one of ${CATEGORY_NAMES.join(", ")}.`);
   }
@@ -263,6 +289,7 @@ async function runSearch(input: AssetsInput, cwd: string): Promise<AssetsResult>
     limit: SEARCH_PAGE_SIZE,
     keyword: input.keyword,
     token,
+    signal,
   });
   if (!r.ok) return r.status === 0 ? fail("upstream_unreachable", r.body) : apiFail("asset library search", r);
   rememberItems(r.items);
@@ -334,9 +361,25 @@ function usageHint(segments: readonly string[]): string {
   return `Use them in code via ${MANIFEST_REL} (import Assets from './assets.json'; Assets${access}[<key>].url).`;
 }
 
+let activityTimeoutMs = UPLOAD_ACTIVITY_TIMEOUT_MS;
+
+/** Tests only: shorten the upload activity time limit (undefined restores it). */
+export function _setActivityTimeoutMsForTests(ms?: number): void {
+  activityTimeoutMs = ms ?? UPLOAD_ACTIVITY_TIMEOUT_MS;
+}
+
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"]);
 
-async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult> {
+/**
+ * Upload answers that are about the account, not the file (rejected login,
+ * no credits, not allowed): every later file would get the same answer, so
+ * the batch stops there.
+ */
+const ACCOUNT_REJECTIONS = new Set([401, 402, 403]);
+
+type NotAttempted = { path: string; reason: "cancelled" | "account_rejected" };
+
+async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal): Promise<AssetsResult> {
   if (!input.files) return fail("invalid_input", "upload needs `files`.");
   const bad = checkCategoryPath(input.categoryPath);
   if (bad) return bad;
@@ -368,12 +411,21 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
 
   const uploaded: Array<{ fileName: string; asset: ManifestAsset; path: string }> = [];
   const failed: Array<{ path: string; error: string; hint: string; status?: number }> = [];
+  const notAttempted: NotAttempted[] = [];
   // A failure past the checks above (a file deleted or unreadable since its
   // stat, a dropped connection) fails that file only: the loop never throws,
   // so files already on the CDN still get registered and counted. Bytes are
   // read one file at a time rather than all up front, so a batch of large
   // files (verse8_upload_asset has no size cap) is never held in memory at once.
-  for (const { file, description } of checked) {
+  for (let i = 0; i < checked.length; i++) {
+    const { file, description } = checked[i];
+    // Checked before each file goes out: once the host cancelled the call
+    // (its own timeout, the user), nothing more is sent. A file already in
+    // flight is let finish, so whether it is on the CDN is never in doubt.
+    if (signal?.aborted) {
+      for (const rest of checked.slice(i)) notAttempted.push({ path: rest.file.absPath, reason: "cancelled" });
+      break;
+    }
     let buf: Buffer<ArrayBuffer>;
     try {
       buf = fs.readFileSync(file.absPath);
@@ -397,6 +449,10 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
     }
     if (!resp.ok) {
       failed.push({ path: file.absPath, error: resp.error, hint: resp.hint, status: resp.status });
+      if (ACCOUNT_REJECTIONS.has(resp.status)) {
+        for (const rest of checked.slice(i + 1)) notAttempted.push({ path: rest.file.absPath, reason: "account_rejected" });
+        break;
+      }
       continue;
     }
     const fileExt = extractExt(file.filename);
@@ -406,20 +462,23 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
     } catch {
       dims = undefined; // an odd header must not drop an upload that succeeded
     }
-    // The web's final upload entry: the placeholder's metadata, then the
-    // image size and extension, then uploadComplete (ResourcePanel.tsx
-    // processFiles + uploadFile).
+    // The entry the web editor ends with once an upload is done: its panel
+    // first writes a placeholder ({type, uploadId, isPlaceholder: true,
+    // originalName}) and then, when the upload succeeded, replaces it with
+    // {url, description, metadata: {originalName, size, type, uploadedAt,
+    // ...image size}} (planetarium/agent8 apps/frontend/src/components/
+    // workbench/ResourcePanel.tsx, the effect that finalizes placeholders;
+    // size and uploadedAt are never set there, so they are absent). The
+    // placeholder fields must not be stored: the panel draws an entry that
+    // has isPlaceholder as an "Upload Complete" card with no preview and no
+    // drag, and an uploadId it did not create is never finalized.
     const asset: ManifestAsset = {
       url: resp.url,
       description: description ?? file.filename,
       metadata: {
-        type: file.contentType,
-        uploadId: `upload_${Date.now()}_${randomBytes(4).toString("hex").slice(0, 7)}`,
-        isPlaceholder: true,
         originalName: file.filename,
+        type: file.contentType,
         ...(dims ?? {}),
-        fileExt,
-        uploadComplete: true,
       },
     };
     uploaded.push({ fileName: file.filename, asset, path: file.absPath });
@@ -447,13 +506,26 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
   let activityRecorded = false;
   let activityHint: string | undefined;
   if (uploaded.length > 0) {
-    const a = await recordUploadAssetActivity(uploaded.length, token);
+    const a = await recordUploadAssetActivity(uploaded.length, token, activityTimeoutMs);
     activityRecorded = a.ok;
-    if (!a.ok) activityHint = safeHint(`upload activity not recorded: HTTP ${a.status} ${a.body}`.slice(0, 300));
+    if (!a.ok) {
+      activityHint = safeHint(`upload activity not recorded: HTTP ${a.status} ${a.body}`.slice(0, 300));
+      if (a.status === 401) {
+        const { token: _unused, ...where } = resolveToken(path.resolve(cwd));
+        activityHint = safeHint(`${activityHint} ${rejectedTokenHint(where)}.`);
+      }
+    }
   }
 
   if (uploaded.length === 0) {
-    return fail(failed[0].error, `no file uploaded: ${failed[0].hint}`, { failed });
+    if (failed.length === 0) {
+      return fail("upload_cancelled", "the call was cancelled before any file was uploaded; nothing was changed.", { notAttempted });
+    }
+    return fail(failed[0].error, `no file uploaded: ${failed[0].hint}`, {
+      ...(failed[0].status !== undefined ? { status: failed[0].status } : {}),
+      failed,
+      ...(notAttempted.length > 0 ? { notAttempted } : {}),
+    });
   }
   if (manifestError) {
     return {
@@ -463,6 +535,7 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
       ),
       uploaded: uploaded.map((u) => ({ path: u.path, url: u.asset.url })),
       failed,
+      ...(notAttempted.length > 0 ? { notAttempted } : {}),
       activityRecorded,
     };
   }
@@ -474,23 +547,43 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
     verse,
     added,
     failed,
+    ...(notAttempted.length > 0
+      ? {
+          notAttempted,
+          notAttemptedHint: `${notAttempted.length} file(s) were not sent (${notAttempted[0].reason === "cancelled" ? "the call was cancelled" : "the account was refused"}). Read ${MANIFEST_REL} before sending them again: the files above are already registered.`,
+        }
+      : {}),
     activityRecorded,
     ...(activityHint ? { activityHint } : {}),
     next: usageHint(segments),
   };
 }
 
+/**
+ * `signal` is the tool call's own (the SDK aborts it when the host cancels
+ * the call): a search stops waiting, an upload sends no further file.
+ */
 export async function runAssets(
   input: AssetsInput,
   serverCwd: string = process.cwd(),
+  signal?: AbortSignal,
 ): Promise<AssetsResult> {
   const cwd = input.projectDir ?? serverCwd;
+  let result: AssetsResult;
   switch (input.action) {
     case "search":
-      return runSearch(input, cwd);
+      result = await runSearch(input, cwd, signal);
+      break;
     case "add":
-      return runAdd(input, cwd);
+      result = await runAdd(input, cwd);
+      break;
     case "upload":
-      return runUpload(input, cwd);
+      result = await runUpload(input, cwd, signal);
+      break;
   }
+  // A rejected login (HTTP 401) gets what to do about it, by where the
+  // token came from: an env or project token is not replaced by logging in.
+  if (result.ok || result.status !== 401) return result;
+  const { token: _unused, ...where } = resolveToken(path.resolve(cwd));
+  return withRejectedTokenHint(result, where);
 }
