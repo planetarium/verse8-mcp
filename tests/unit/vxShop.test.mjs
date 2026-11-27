@@ -172,7 +172,7 @@ test("create: productId taken → the existing item comes back to use, nothing w
     assert.equal(r.error, "product_id_taken");
     assert.equal(r.existingItem.id, 7);
     assert.deepEqual(r.existingItem.purchaseConstraints, { maxPurchasePerUser: 2 });
-    assert.match(r.hint, /It is item 7 \('Vault slot', 300 VX, stock 100, on sale\): show the user its values and use it/);
+    assert.match(r.hint, /It is item 7 \('Vault slot', productId 'vault-slot', 300 VX, stock 100, on sale\): show the user its values and use it/);
     assert.deepEqual(writes(calls), []);
   });
 });
@@ -191,7 +191,9 @@ test("create, run: the result names the productId for the code and says the item
       assert.equal(done.productId, "gem-pack");
       assert.equal(done.item.isActive, false);
       assert.match(done.next[0], /Use productId 'gem-pack' exactly as written in the game's code: useVXShop getItem \/ buyItem and the 'gem-pack' case/);
-      assert.match(done.next[1], /hidden: players cannot buy it yet\. Starting the sale is a separate edit \(itemId 8, isActive: true\) that the user confirms/);
+      assert.match(done.next[1], /hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either.*Starting the sale is a separate edit \(itemId 8, isActive: true\) that the user confirms/);
+      // A purchase before the granting code is live is paid and not granted (#66 review).
+      assert.match(done.next[2], /publish the code that grants the item \(\$onItemPurchased\) with verse8_deploy before the sale starts/);
     },
   );
 });
@@ -302,4 +304,134 @@ test("tools/list: verse8_vxshop listed, description ≤ 2,048, planId gate state
     if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
     else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
   }
+});
+
+// ── #66 review (PR #77) ──
+
+const NO_VERSE = () => json(404, { statusCode: 404, message: `Verse with ID ${VERSE} not found` });
+
+// An unpublished game has no verse record: every verse-level shop read answers 404. The seller
+// status is still known and goes with the failure, and the hint says to publish first without deploying.
+test("unpublished game: list (plain and by productId) keeps the seller status and says to publish first", async () => {
+  const dir = project();
+  for (const seller of [false, true]) {
+    await withApi({ "GET /v1/vx-shop-items": NO_VERSE }, async () => {
+      for (const input of [{ action: "list" }, { action: "list", productId: "gold-pack" }]) {
+        const r = await run(dir, input);
+        assert.equal(r.ok, false, JSON.stringify(r));
+        assert.equal(r.error, "not_found");
+        assert.equal(r.needsPublish, true);
+        assert.match(r.hint, /not found\. This game is not published yet.*do not deploy on your own/);
+        assert.equal(r.seller.isSeller, seller);
+        if (seller) assert.equal(r.seller.applyUrl, undefined);
+        else {
+          assert.equal(r.seller.applyUrl, "https://verse8.io/settings");
+          assert.equal(r.seller.discordUrl, "https://discord.gg/verse8-official");
+          assert.match(r.warning, /Stop the VX Shop work/);
+        }
+      }
+    }, { seller });
+  }
+});
+
+test("unpublished game: create, sales and revenue say to publish first too", async () => {
+  const dir = project();
+  await withApi(
+    { "GET /v1/vx-shop-items/check-product-id": NO_VERSE, "GET /v1/vx-shop-items/sales": NO_VERSE, "GET /v1/vx-shop-items/revenue-stats": NO_VERSE },
+    async (calls) => {
+      for (const input of [
+        { action: "upsert", productId: "gem", name: "Gems", price: 1, stock: 1 },
+        { action: "sales" },
+        { action: "revenue" },
+      ]) {
+        const r = await run(dir, input);
+        assert.equal(r.needsPublish, true, `${input.action}: ${JSON.stringify(r)}`);
+      }
+      assert.deepEqual(writes(calls), []);
+    },
+  );
+  // A 404 that is not about the verse stays a plain not_found.
+  await withApi({ "GET /v1/vx-shop-items/sales": () => json(404, { message: "Cannot GET" }) }, async () => {
+    assert.equal((await run(dir, { action: "sales" })).needsPublish, undefined);
+  });
+});
+
+// The server compares product ids without regard to case: the item stored as 'Gold-Pack' holds 'gold-pack'.
+test("productId lookup: exact first, else case-insensitive with the stored value; existingItem the same", async () => {
+  const dir = project();
+  const stored = { ...ITEM, id: 40, productId: "Gold-Pack" };
+  await withApi(
+    { "GET /v1/vx-shop-items": () => json(200, { items: [stored], total: 1 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
+    async () => {
+      const l = await run(dir, { action: "list", productId: "gold-pack" });
+      assert.equal(l.items[0].id, 40);
+      assert.equal(l.items[0].productId, "Gold-Pack");
+      assert.match(l.notes[0], /Stored as 'Gold-Pack'.*use that exact value in the code/);
+      const t = await run(dir, { action: "upsert", productId: "gold-pack", name: "n", price: 1, stock: 1 });
+      assert.equal(t.existingItem.id, 40);
+      assert.match(t.hint, /use 'Gold-Pack' exactly in the code/);
+    },
+  );
+  const exact = { ...ITEM, id: 41, productId: "gold-pack" };
+  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [stored, exact], total: 2 }) }, async () => {
+    const l = await run(dir, { action: "list", productId: "gold-pack" });
+    assert.equal(l.items[0].id, 41, "an exact match wins over a case match");
+    assert.equal(l.notes, undefined);
+  });
+});
+
+test("archived item found: list and product_id_taken say to restore with archive, archived: false", async () => {
+  const dir = project();
+  const old = { ...ITEM, id: 42, productId: "old-pack", isArchived: true, isActive: false };
+  await withApi(
+    { "GET /v1/vx-shop-items": () => json(200, { items: [old], total: 1 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
+    async () => {
+      const l = await run(dir, { action: "list", productId: "old-pack" });
+      assert.match(l.notes.join(" "), /restore it with action archive, itemId 42, archived: false \(an isActive edit does not restore it\)/);
+      const t = await run(dir, { action: "upsert", productId: "old-pack", name: "n", price: 1, stock: 1 });
+      assert.match(t.hint, /archived\).*restore it with action archive, itemId 42, archived: false/);
+    },
+  );
+});
+
+// "on sale" is judged from the on-sale flag, archive flag and purchase dates, not the flag alone.
+test("sale state: scheduled and closed items are not called on sale (list, product_id_taken, create result)", async () => {
+  const dir = project();
+  const at = (c) => JSON.stringify({ purchaseConstraints: c });
+  const scheduled = { ...ITEM, id: 43, productId: "later", metadata: at({ purchaseStartDate: "2999-01-01T00:00:00Z" }) };
+  const closed = { ...ITEM, id: 44, productId: "over", metadata: at({ purchaseEndDate: "2000-01-01T00:00:00Z" }) };
+  await withApi(
+    {
+      "GET /v1/vx-shop-items": () => json(200, { items: [ITEM, scheduled, closed], total: 3 }),
+      "GET /v1/vx-shop-items/check-product-id": (u) => json(200, { available: u.searchParams.get("productId") === "fresh" }),
+      "POST /v1/vx-shop-items": (_u, body) => json(201, { ...ITEM, id: 45, ...body, metadata: at(body.purchaseConstraints) }),
+    },
+    async () => {
+      const l = await run(dir, { action: "list" });
+      assert.deepEqual(l.items.map((i) => i.saleState), ["on sale", "scheduled", "sale window closed"]);
+      assert.match((await run(dir, { action: "upsert", productId: "later", name: "n", price: 1, stock: 1 })).hint, /stock 100, scheduled\)/);
+      assert.match((await run(dir, { action: "upsert", productId: "over", name: "n", price: 1, stock: 1 })).hint, /stock 100, sale window closed\)/);
+      const input = { action: "upsert", productId: "fresh", name: "n", price: 1, stock: 1, isActive: true, purchaseConstraints: { purchaseStartDate: "2999-01-01T00:00:00Z" } };
+      const pre = await run(dir, input);
+      // The user chooses Run in the host's prompt.
+      const host = { canAsk: true, ask: async () => ({ action: "accept", content: { choice: "Run" } }), isCancelled: () => false };
+      const done = await runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input, planId: pre.planId }), dir, host);
+      assert.equal(done.ok, true, JSON.stringify(done));
+      assert.equal(done.next[1], "The item is scheduled.");
+    },
+  );
+});
+
+test("list by productId: a failed second page is an error, not 'no such item'", async () => {
+  const dir = project();
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ ...ITEM, id: 100 + i, productId: `filler-${i}` }));
+  await withApi(
+    { "GET /v1/vx-shop-items": (u) => (u.searchParams.get("page") === "1" ? json(200, { items: page1, total: 150 }) : json(503, { message: "down" })) },
+    async () => {
+      const r = await run(dir, { action: "list", productId: "gold-pack" });
+      assert.equal(r.ok, false, JSON.stringify(r));
+      assert.equal(r.error, "upstream_error");
+      assert.equal(r.seller.isSeller, true, "the seller status still comes back");
+    },
+  );
 });

@@ -46,6 +46,8 @@ const FUTURE = "2999-12-01T00:00:00.000Z";
 const PAST = "2000-01-01T00:00:00.000Z";
 const RICH_LIMITS = { maxPurchasePerPeriod: 5, maxPurchasePerUser: 10, purchaseEndDate: "2999-12-31T00:00:00.000Z", purchasePeriodDays: 1, purchaseStartDate: "2020-01-01T00:00:00.000Z" };
 const WITH_LIMITS = { metadata: JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 2 } }) };
+const MIXED_LIMITS = { metadata: JSON.stringify({ purchaseConstraints: { maxPurchasePerUser: 2, maxPurchasePerPeriod: 1, purchasePeriodDays: 7 } }) };
+const MIXED_SHOWN = /purchase limits \(maxPurchasePerPeriod: 1, maxPurchasePerUser: 2 → 3, purchasePeriodDays: 7\)/;
 const makeItems = () => [
   item(7),
   item(8, { isActive: false }),
@@ -64,6 +66,10 @@ const makeItems = () => [
   item(18, { isActive: false, stock: 0 }),
   // 19: on-sale flag set, both dates ahead but the start after the end: a window that never opens.
   item(19, { metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: "2999-12-01T00:00:00.000Z", purchaseEndDate: "2999-06-01T00:00:00.000Z" } }) }),
+  // 20: hidden, 21: on sale, 22: archived with the on-sale flag set — each with three count limits (#66 review: mixed changes).
+  item(20, { isActive: false, ...MIXED_LIMITS }),
+  item(21, MIXED_LIMITS),
+  item(22, { isArchived: true, ...MIXED_LIMITS }),
 ];
 
 async function withShop(f) {
@@ -725,7 +731,8 @@ test("limits: a change to purchasePeriodDays beside a price change is visible (t
     const pre = await run(dir, { action: "upsert", itemId: 14, price: 200, purchaseConstraints: { ...RICH_LIMITS, purchasePeriodDays: 30 } });
     assert.equal(pre.runCondition, "user_confirm", JSON.stringify(pre));
     assert.match(pre.confirmation, /Price: 100 → 200 VX/);
-    assert.match(pre.confirmation, /purchase limits \(purchasePeriodDays: 1 → 30\)/, "only the key that changes, with both values");
+    // The key that changes with both values, the kept ones with theirs (#66).
+    assert.match(pre.confirmation, /purchase limits \(maxPurchasePerPeriod: 5, maxPurchasePerUser: 10, purchaseEndDate: "2999-12-31T00:00:00\.000Z", purchasePeriodDays: 1 → 30, purchaseStartDate: "2020-01-01T00:00:00\.000Z"\)/);
     assert.doesNotMatch(pre.confirmation, /…/, "nothing is cut");
   });
 });
@@ -740,7 +747,8 @@ test("limits: every changed key is listed in full; a removed key reads → none"
       "purchasePeriodDays: 1 → 7",
       'purchaseStartDate: "2020-01-01T00:00:00.000Z" → none',
     ]) assert.ok(pre.confirmation.includes(part), `${part} missing in: ${pre.confirmation}`);
-    assert.doesNotMatch(pre.confirmation, /maxPurchasePerUser/, "an unchanged key is not listed");
+    assert.ok(pre.confirmation.includes("maxPurchasePerUser: 10,"), "an unchanged key is listed with its value");
+    assert.doesNotMatch(pre.confirmation, /maxPurchasePerUser: 10 →/, "…not as a change");
   });
 });
 
@@ -807,6 +815,10 @@ const OPENS_PURCHASES = [
   ["start selling a hidden item that has no limits: says so", { action: "upsert", itemId: 8, isActive: true }, "user_confirm", [/Start selling/, /; no purchase limits/]],
   ["reprice an item on sale: its unchanged limits are shown", { action: "upsert", itemId: 12, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX/, /; purchase limits \(maxPurchasePerUser: 2\)/]],
   ["restore an archived item on sale: name, price and its limits", { action: "archive", itemId: 9, archived: false }, "user_confirm", [/Restore this VX Shop item/, /Item: "?Item 9"?/, /Price: 300 VX;/, /; no purchase limits/]],
+  // One limit changes, two stay: the changed one reads current → new, the kept ones their value (#66 review).
+  ["start selling while changing one of three limits: the kept two are shown", { action: "upsert", itemId: 20, isActive: true, purchaseConstraints: { maxPurchasePerUser: 3, maxPurchasePerPeriod: 1, purchasePeriodDays: 7 } }, "user_confirm", [/Start selling/, MIXED_SHOWN]],
+  ["reprice an item on sale while changing one of three limits: the kept two are shown", { action: "upsert", itemId: 21, price: 90, purchaseConstraints: { maxPurchasePerUser: 3, maxPurchasePerPeriod: 1, purchasePeriodDays: 7 } }, "user_confirm", [/Change the price/, /300 → 90 VX/, MIXED_SHOWN]],
+  ["restore an archived item with three limits: all three are shown", { action: "archive", itemId: 22, archived: false }, "user_confirm", [/Restore this VX Shop item/, /purchase limits \(maxPurchasePerPeriod: 1, maxPurchasePerUser: 2, purchasePeriodDays: 7\)/]],
   // Not a sale start: the item does not come on sale.
   ["on-sale flag on an archived, hidden item", { action: "upsert", itemId: 10, isActive: true }, "preview"],
   ["stock 0 → 5 on a hidden item", { action: "upsert", itemId: 18, stock: 5 }, "preview"],

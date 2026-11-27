@@ -567,12 +567,20 @@ function limitsInFull(limits: Record<string, unknown>): string {
   const all = Object.keys(limits).sort().map((k) => `${k}: ${limitText(k, limits[k])}`);
   return all.length === 0 ? "no purchase limits" : `purchase limits (${all.join(", ")})`;
 }
-/** Each purchase limit that differs, `key: current → new`, in full. */
-function limitChanges(now: Record<string, unknown>, to: Record<string, unknown>): string[] {
+/**
+ * Every purchase limit before and after, in full: a key that differs as
+ * `key: current → new`, a key that stays as `key: value` — the kept ones
+ * still bound each buyer, so the user sees them too (#66).
+ */
+function limitLines(now: Record<string, unknown>, to: Record<string, unknown>): { lines: string[]; changed: boolean } {
   const keys = [...new Set([...Object.keys(now), ...Object.keys(to)])].sort();
-  return keys
-    .filter((k) => canonicalJson(now[k] ?? null) !== canonicalJson(to[k] ?? null))
-    .map((k) => `${k}: ${limitText(k, now[k])} → ${limitText(k, to[k])}`);
+  let changed = false;
+  const lines = keys.map((k) => {
+    if (canonicalJson(now[k] ?? null) === canonicalJson(to[k] ?? null)) return `${k}: ${limitText(k, to[k])}`;
+    changed = true;
+    return `${k}: ${limitText(k, now[k])} → ${limitText(k, to[k])}`;
+  });
+  return { lines, changed };
 }
 
 function vxEditConfirm(p: Plan): ConfirmText {
@@ -591,13 +599,9 @@ function vxEditConfirm(p: Plan): ConfirmText {
   if ("stock" in body) core.push(`stock: ${full(state.stock)} → ${full(body.stock)}`);
   const limitsNow = rec(state.purchaseConstraints);
   const limitsTo = rec(body.purchaseConstraints);
-  const limits = limitChanges(limitsNow, limitsTo);
-  if (limits.length > 0) {
-    core.push(`${Object.keys(limitsTo).length === 0 ? "ALL purchase limits REMOVED" : "purchase limits"} (${limits.join(", ")})`);
-  } else {
-    // Unchanged, they are still what bounds each buyer: the user sees them (#66).
-    core.push(limitsInFull(limitsTo));
-  }
+  const limits = limitLines(limitsNow, limitsTo);
+  if (limits.lines.length === 0) core.push("no purchase limits");
+  else core.push(`${limits.changed && Object.keys(limitsTo).length === 0 ? "ALL purchase limits REMOVED" : "purchase limits"} (${limits.lines.join(", ")})`);
   // Everything else the request changes, each with its current and new value.
   const also = Object.keys(body)
     .filter((k) => !["price", "isActive", "stock", "purchaseConstraints"].includes(k))

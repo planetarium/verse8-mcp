@@ -3,7 +3,7 @@ import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { SELLER_APPLY_URL, VERSE8_DISCORD_URL } from "../constants.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
+import { apiFail, vxSaleLevel, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
@@ -127,7 +127,7 @@ export function parseItemMetadata(raw: string | null): { metadata: Record<string
 
 export function presentItem(item: VxShopItem): Record<string, unknown> {
   const { metadata, purchaseConstraints } = parseItemMetadata(item.metadata);
-  return { ...item, metadata, purchaseConstraints };
+  return { ...item, metadata, purchaseConstraints, saleState: saleState(item) };
 }
 
 async function getWallet(token: string): Promise<{ ok: true; isSeller: boolean; balance: number | null } | OpFail> {
@@ -145,20 +145,56 @@ async function listItems(
     token,
     query: { verseId, page: q.page, limit: q.limit, includeArchived: q.includeArchived ? "true" : "false" },
   });
-  if (!r.ok) return apiFail("GET /v1/vx-shop-items", r);
+  if (!r.ok) return shopFail("GET /v1/vx-shop-items", r);
   return { ok: true, items: r.data?.items ?? [], total: Number(r.data?.total ?? 0) };
 }
 
-/** There is no owner GET for one item; page through the list (archived included). */
-async function scanItems(verseId: string, token: string, match: (i: VxShopItem) => boolean): Promise<{ ok: true; item: VxShopItem | null } | OpFail> {
+const NOT_PUBLISHED =
+  "This game is not published yet, so the VX Shop has no record of it: it must be published once (verse8_deploy) before its items can be listed or made. A first deploy is Public unless visibility is set — do not deploy on your own: tell the user, and deploy only when they ask (visibility \"Private\" keeps the game hidden).";
+
+/**
+ * The shop's verse-level reads answer 404 "Verse with ID … not found" for
+ * a game that was never published (no verse record yet). Say so, instead
+ * of a bare not_found the caller cannot act on.
+ */
+function shopFail(what: string, r: { status: number; body: string }): OpFail {
+  const f = apiFail(what, r);
+  if (r.status === 404 && /verse/i.test(r.body)) return { ...f, needsPublish: true, hint: `${f.hint.replace(/[\s.]*$/, ".")} ${NOT_PUBLISHED}` };
+  return f;
+}
+
+/**
+ * Where the item stands for buyers, from what the creator set (the same
+ * test the confirmation rules use): an on-sale flag alone does not make it
+ * on sale — its purchase dates may put the sale ahead or behind.
+ */
+export function saleState(i: Pick<VxShopItem, "isActive" | "isArchived" | "metadata">): "archived" | "hidden" | "on sale" | "scheduled" | "sale window closed" {
+  if (i.isArchived) return "archived";
+  if (!i.isActive) return "hidden";
+  const level = vxSaleLevel({ isActive: true, isArchived: false, limits: parseItemMetadata(i.metadata).purchaseConstraints ?? {} });
+  return level === 2 ? "on sale" : level === 1 ? "scheduled" : "sale window closed";
+}
+
+/**
+ * There is no owner GET for one item; page through the list (archived
+ * included). The first `match` wins; failing that, the first `fallback`.
+ */
+async function scanItems(
+  verseId: string,
+  token: string,
+  match: (i: VxShopItem) => boolean,
+  fallback?: (i: VxShopItem) => boolean,
+): Promise<{ ok: true; item: VxShopItem | null } | OpFail> {
+  let second: VxShopItem | null = null;
   for (let page = 1; page <= 20; page++) {
     const r = await listItems(verseId, token, { page, limit: 100, includeArchived: true });
     if (!r.ok) return r;
     const hit = r.items.find(match);
     if (hit) return { ok: true, item: hit };
+    second ??= (fallback && r.items.find(fallback)) || null;
     if (r.items.length < 100) break;
   }
-  return { ok: true, item: null };
+  return { ok: true, item: second };
 }
 
 export async function findItem(verseId: string, token: string, itemId: number): Promise<{ ok: true; item: VxShopItem } | OpFail> {
@@ -168,8 +204,17 @@ export async function findItem(verseId: string, token: string, itemId: number): 
   return opFail("not_found", `No VX Shop item ${itemId} in ${verseId} (see action list).`);
 }
 
-/** The item the game's code would buy with this productId — productIds are unique per verse, archived items keep theirs. */
-const findByProductId = (verseId: string, token: string, productId: string) => scanItems(verseId, token, (i) => i.productId === productId);
+/**
+ * The item holding this productId — unique per verse, archived items keep
+ * theirs. The server compares product ids without regard to case, so with
+ * no exact match the item that differs only in case is the one that holds
+ * it; its stored productId is what the code must use.
+ */
+const findByProductId = (verseId: string, token: string, productId: string) =>
+  scanItems(verseId, token, (i) => i.productId === productId, (i) => i.productId.toLowerCase() === productId.toLowerCase());
+
+/** How to bring back an archived item: an on-sale flag edit does not restore it. */
+const RESTORE_HINT = (id: number) => `It is archived: to use it, restore it with action archive, itemId ${id}, archived: false (an isActive edit does not restore it), then start the sale as usual.`;
 
 const NOT_SELLER =
   `This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false): the VX Shop sells only for creators a Verse8 admin approved, and the web creator page hides it until then. Stop the VX Shop work and tell the user to request seller access on the web — the Creator Partners Program section of ${SELLER_APPLY_URL} links to the program on the official Verse8 Discord (${VERSE8_DISCORD_URL}). Come back once the account is approved.`;
@@ -189,10 +234,16 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
       if (!wallet.ok) return wallet;
       const seller = { isSeller: wallet.isSeller, balance: wallet.balance, ...(wallet.isSeller ? {} : SELLER_APPLY) };
       const notSeller = wallet.isSeller ? {} : { warning: NOT_SELLER };
+      // The seller status is known even when the items cannot be read (an
+      // unpublished game has no verse record yet): it goes with the failure.
+      const withSeller = (f: OpFail): OpFail => ({ ...f, seller, ...notSeller });
       if (input.productId !== undefined) {
         // One item by the id the game's code uses, from every page, archived included.
         const hit = await findByProductId(ctx.verseId, ctx.token, input.productId);
-        if (!hit.ok) return hit;
+        if (!hit.ok) return withSeller(hit);
+        const notes: string[] = [];
+        if (hit.item && hit.item.productId !== input.productId) notes.push(`Stored as '${hit.item.productId}' (product ids match regardless of case): use that exact value in the code.`);
+        if (hit.item?.isArchived) notes.push(RESTORE_HINT(hit.item.id));
         return {
           ok: true,
           action: "list",
@@ -202,6 +253,7 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
           productId: input.productId,
           total: hit.item ? 1 : 0,
           items: hit.item ? [presentItem(hit.item)] : [],
+          ...(notes.length > 0 ? { notes } : {}),
         };
       }
       const r = await listItems(ctx.verseId, ctx.token, {
@@ -209,7 +261,7 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
         limit: input.limit ?? 20,
         includeArchived: input.includeArchived === true,
       });
-      if (!r.ok) return r;
+      if (!r.ok) return withSeller(r);
       return {
         ok: true,
         action: "list",
@@ -264,14 +316,16 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       token,
       query: { verseId, productId: input.productId },
     });
-    if (!avail.ok) return apiFail("check-product-id", avail);
+    if (!avail.ok) return shopFail("check-product-id", avail);
     if (avail.data?.available === false) {
       // Usually an item the user already made on the web: hand it back so
       // the caller shows its values and uses it instead of a new one.
       const taken = await findByProductId(verseId, token, input.productId!);
       const existing = taken.ok && taken.item ? taken.item : null;
       const use = existing
-        ? ` It is item ${existing.id} ('${existing.name}', ${existing.price} VX, stock ${existing.stock}, ${existing.isArchived ? "archived" : existing.isActive ? "on sale" : "hidden"}): show the user its values and use it — edit it with itemId ${existing.id} if they want other values — or pick another productId.`
+        ? ` It is item ${existing.id} ('${existing.name}', productId '${existing.productId}', ${existing.price} VX, stock ${existing.stock}, ${saleState(existing)}): show the user its values and use it — edit it with itemId ${existing.id} if they want other values — or pick another productId.` +
+          (existing.productId !== input.productId ? ` Product ids match regardless of case: use '${existing.productId}' exactly in the code.` : "") +
+          (existing.isArchived ? ` ${RESTORE_HINT(existing.id)}` : "")
         : "";
       return opFail("product_id_taken", `productId '${input.productId}' is already used in this verse (archived items keep theirs).${use}`, existing ? { existingItem: presentItem(existing) } : {});
     }
@@ -320,11 +374,14 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     const made = r.data ? presentItem(r.data) : null;
     // The productId as the server stored it is what the game's code buys with.
     const productId = typeof made?.productId === "string" ? made.productId : input.productId!;
+    // Where it stands from what was sent, not from the on-sale flag alone (dates may put the sale ahead or behind).
+    const state = saleState(r.data ?? { isActive, isArchived: false, metadata: body.purchaseConstraints ? JSON.stringify({ purchaseConstraints: body.purchaseConstraints }) : null });
     const next = [
       `Use productId '${productId}' exactly as written in the game's code: useVXShop getItem / buyItem and the '${productId}' case of the server's $onItemPurchased.`,
-      isActive
-        ? "The item is on sale."
-        : `The item is hidden: players cannot buy it yet. Starting the sale is a separate edit (itemId ${made?.id ?? "<from list>"}, isActive: true) that the user confirms in the host's prompt.`,
+      state === "hidden"
+        ? `The item is hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either, so the buy button stays unavailable until the sale starts. Starting the sale is a separate edit (itemId ${made?.id ?? "<from list>"}, isActive: true) that the user confirms in the host's prompt.`
+        : `The item is ${state}.`,
+      "If the game is already published, publish the code that grants the item ($onItemPurchased) with verse8_deploy before the sale starts: a purchase made before that is paid but not granted.",
     ];
     return { ok: true, action: "upsert", mode: "create", dryRun: false, verseId, productId, item: made, warnings, next };
   }
@@ -448,7 +505,7 @@ async function runSales(input: VxShopInput, verseId: string, token: string): Pro
       limit: input.limit ?? 20,
     },
   });
-  if (!r.ok) return apiFail("GET /v1/vx-shop-items/sales", r);
+  if (!r.ok) return shopFail("GET /v1/vx-shop-items/sales", r);
   const d = r.data ?? { sales: [], total: 0, page: 1, limit: 20 };
   return { ok: true, action: "sales", verseId, total: Number(d.total), page: Number(d.page), limit: Number(d.limit), sales: (d.sales ?? []).map(presentSale) };
 }
@@ -461,7 +518,7 @@ async function runRevenue(input: VxShopInput, verseId: string, token: string): P
     token,
     query: { verseId, startDate: input.startDate, endDate: input.endDate, stage: input.stage ?? "PROD" },
   });
-  if (!r.ok) return apiFail("GET /v1/vx-shop-items/revenue-stats", r);
+  if (!r.ok) return shopFail("GET /v1/vx-shop-items/revenue-stats", r);
   return { ok: true, action: "revenue", verseId, stage: input.stage ?? "PROD", ...(r.data ?? {}) };
 }
 
@@ -518,7 +575,7 @@ async function findDisputedSale(verseId: string, token: string, saleId: number):
       token,
       query: { verseId, disputeOnly: "true", page, limit: 100 },
     });
-    if (!r.ok) return apiFail("GET /v1/vx-shop-items/sales", r);
+    if (!r.ok) return shopFail("GET /v1/vx-shop-items/sales", r);
     const sales = r.data?.sales ?? [];
     const hit = sales.find((s) => s.id === saleId);
     if (hit) return { ok: true, sale: hit };
