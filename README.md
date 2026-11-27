@@ -52,7 +52,7 @@ Open my Verse8 game owner/my-platformer-1abc
 Open https://create.verse8.io/creator/editor?chat=owner/my-platformer-1abc
 ```
 
-`verse8_open_project` grants a project token, clones the game into `<folder>/<game-slug>`, and attaches it. If that folder already exists it is left untouched and the tool says so. The URL must come from the same Verse8 environment the server is configured for ([docs/environment.md](docs/environment.md)).
+`verse8_open_project` grants a project token, clones the game into `<folder>/<game-slug>`, and attaches it. If that folder already exists it is left untouched and the tool says so. When the project already holds the most tokens it may, the tool says so; `verse8_git_tokens` lists them so you can revoke one you no longer use. The URL must come from the same Verse8 environment the server is configured for ([docs/environment.md](docs/environment.md)).
 
 ### Existing project (cloned from gitlab.verse8.io)
 
@@ -94,6 +94,7 @@ For hosts without a CLI helper (Claude Desktop, Cursor, opencode, Continue) or d
 | `verse8_status` | Token / token source / project / expiry check + routing. | Always |
 | `verse8_new_project_start` → `_confirm` | Create new Verse8 project (2-step: propose → approve → clone + attach). | Always |
 | `verse8_open_project` | Bring an existing Verse8 game that is not cloned here yet (project path or web editor URL) onto this machine: project token → clone → attach. Never overwrites a folder. | Always |
+| `verse8_git_tokens` | The project's Git access tokens, as in the web editor's Git Clone menu. `verse8_open_project` and `verse8_new_project_confirm` take one per call and a project holds only a few at once (30 days each): list them (id, name, created, expires — never the token value), revoke one you pick (preview → `planId`), or revoke all (also asks you in the host's own prompt, [below](#actions-you-confirm-yourself)). | Logged in, project owner |
 | `verse8_attach` | Install hooks + AGENTS.md + skills into an already-cloned `gitlab.verse8.io` project. Idempotent. | Always |
 | `verse8_checkpoint` | `git add -A` → V8-format commit → push. | Logged in |
 | `verse8_preview` | Checkpoint → preflight → `bun run dev` spawn. `serverOnly: true`: gameserver build + `@agent8/deploy --preview` only (server.js always re-uploaded). | Logged in |
@@ -124,8 +125,9 @@ Today the user-confirmation actions are:
 - `verse8_verse` — an `update` that widens who can see the game: Private → Unlisted, Private → Public, Unlisted → Public. The prompt shows the game's title and `Visibility: current → new`. Narrowing the visibility stays at preview.
 - `verse8_verse` — `comment_delete`: a deleted comment cannot be restored and counts against the commenter. The prompt shows the commenter and the comment's text.
 - `verse8_deploy` — a deploy that widens who can see the game, by the same rule as the update above: a first deploy unless you pass `visibility: "Private"` (a first deploy is Public by default), and an update whose `visibility` moves towards Public. It has no `planId`: the `dryRun` says `runCondition: user_confirm` and shows the text, and the real run asks you before it commits, builds or uploads anything. An update that keeps the visibility is not asked.
+- `verse8_git_tokens` — `revoke_all`: revokes every Git access token of the project at once, so every folder cloned with them, on any machine, stops being able to push or pull, and a revoked token cannot be restored. The prompt names the project and each token (name, created, expires).
 
-Left at preview on purpose: answering a buyer's dispute (`verse8_vxshop` `dispute`) sends the buyer a message — it moves no money and changes nothing public — and pinning a comment (`comment_pin`) is undone by unpinning.
+Left at preview on purpose: answering a buyer's dispute (`verse8_vxshop` `dispute`) sends the buyer a message — it moves no money and changes nothing public — pinning a comment (`comment_pin`) is undone by unpinning, and revoking one Git access token (`verse8_git_tokens` `revoke`) cuts off only the folders cloned with the token you picked from the list.
 
 The prompt is an MCP elicitation. It is one line with the target, the price or the values that change, and whether it can be undone; the choices are `Cancel` (first) and `Run`. Your answer goes from the host straight to the MCP server, not through the agent. Only `Run` runs the action — declining, pressing Esc or anything else returns `user_cancelled` and changes nothing.
 
