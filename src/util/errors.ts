@@ -106,6 +106,7 @@ export const ERROR_CODES = [
   "assets_manifest_write_failed",
   "asset_category_conflict",
   "upload_cancelled",
+  "upload_status_unknown",
   // Credits / billing
   "insufficient_credits",
   // Game server / creator operations

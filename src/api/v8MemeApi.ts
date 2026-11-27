@@ -232,11 +232,12 @@ export async function updateVerse(
 }
 
 /**
- * POST /v1/activity/upload-asset `{count}` — the upload activity record the
- * web editor's Resource panel sends after an upload batch with `count` =
- * files that uploaded (planetarium/agent8
- * apps/frontend/src/lib/api/verse8.ts `sendActivityUploadAsset`). Like the
- * web, a failure is reported, never thrown.
+ * POST /v1/activity/upload-asset `{count}` — the upload activity record of
+ * planetarium/agent8 apps/frontend/src/lib/api/verse8.ts
+ * `sendActivityUploadAsset`. The web panel sends it once after a batch with
+ * `count` = files that uploaded; verse8_assets sends `count: 1` as each file
+ * is uploaded, so a call cut off midway has recorded exactly what it
+ * uploaded. Like the web, a failure is reported, never thrown.
  */
 export async function recordUploadAssetActivity(
   count: number,
@@ -298,7 +299,13 @@ export async function v8Request<T>(
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     signal: opts.signal,
   });
-  const raw = await res.text();
+  // Keep the status when the body cannot be read: a 401 must stay a 401.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    return { ok: false, status: res.status, body: safeHint(`HTTP ${res.status}; the answer could not be read (${(e as Error).message})`) };
+  }
   if (res.status >= 200 && res.status < 300) {
     let data: T | null = null;
     if (raw.length > 0) {

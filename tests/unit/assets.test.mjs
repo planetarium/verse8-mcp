@@ -352,10 +352,13 @@ test("upload: several files go to assets/<categoryPath>, are registered the web'
       assert.equal(c.init.body.get("path"), "assets/images");
       assert.equal(c.init.body.get("verse"), "v1");
     }
+    // One record per file, sent as that file is uploaded.
     const activity = calls.filter((c) => c.url.endsWith("/v1/activity/upload-asset"));
-    assert.equal(activity.length, 1);
-    assert.equal(activity[0].init.method, "POST");
-    assert.deepEqual(JSON.parse(activity[0].init.body), { count: 2 });
+    assert.equal(activity.length, 2);
+    for (const a of activity) {
+      assert.equal(a.init.method, "POST");
+      assert.deepEqual(JSON.parse(a.init.body), { count: 1 });
+    }
 
     const m = JSON.parse(fs.readFileSync(manifestPath(dir), "utf8"));
     const entries = Object.entries(m.images);
@@ -576,7 +579,10 @@ test("upload: an upload that throws mid-batch fails alone; earlier uploads are r
           assert.equal(r.added.length, 1);
           assert.equal(r.failed.length, 1);
           assert.equal(r.failed[0].path, path.join(dir, "b.png"));
-          assert.equal(r.failed[0].error, "upload_failed");
+          // HTTP 200 arrived but its answer did not: the file may be on the
+          // CDN, and without its URL it cannot be registered.
+          assert.equal(r.failed[0].error, "upload_status_unknown");
+          assert.equal(r.failed[0].status, 200);
         },
       ),
     );
@@ -634,13 +640,24 @@ test("upload: one file failing the upload checks stops the batch before any netw
 //    URL-breaking category names, an in-project manifest link, env token ──
 
 // A fetch that never answers until its signal aborts, as a stalled server.
+// Without a signal it fails at once, so a request that lost its signal fails
+// this test instead of hanging it (and the tests after it).
 function hangingUntilAborted(init) {
   return new Promise((_, reject) => {
     const s = init?.signal;
-    if (!s) return; // never settles: the code under test must pass a signal
+    if (!s) return reject(new Error("request sent without an abort signal"));
     if (s.aborted) return reject(s.reason ?? new Error("aborted"));
     s.addEventListener("abort", () => reject(s.reason ?? new Error("aborted")), { once: true });
   });
+}
+
+// Every test that drives a stalled request also has an end of its own.
+const STALL_LIMIT = { timeout: 10_000 };
+
+// A response whose status arrives but whose body read fails (connection
+// dropped after the headers).
+function brokenBody(status) {
+  return new Response(new ReadableStream({ start: (c) => c.error(new Error("socket reset")) }), { status });
 }
 
 test("upload: a call cancelled after the first file sends no more; the first is registered and counted", async () => {
@@ -666,7 +683,7 @@ test("upload: a call cancelled after the first file sends no more; the first is 
           assert.equal(r.ok, true, JSON.stringify(r));
           assert.equal(r.added.length, 1);
           assert.deepEqual(r.notAttempted.map((n) => [path.basename(n.path), n.reason]), [["b.png", "cancelled"], ["c.png", "cancelled"]]);
-          assert.match(r.notAttemptedHint, /Read src\/assets\.json before sending them again/);
+          assert.match(r.notAttemptedHint, /Read src\/assets\.json before sending files again/);
         },
       ),
     );
@@ -700,7 +717,7 @@ test("upload: a call cancelled before the first file sends nothing and writes no
   }
 });
 
-test("search: a cancelled call stops waiting; a stalled search ends at its time limit", async () => {
+test("search: a cancelled call stops waiting; a stalled search ends at its time limit", STALL_LIMIT, async () => {
   const dir = makeAttachedProject();
   try {
     const ac = new AbortController();
@@ -722,7 +739,7 @@ test("search: a cancelled call stops waiting; a stalled search ends at its time 
   }
 });
 
-test("upload: an activity record that never answers ends at its time limit; the manifest is already written", async () => {
+test("upload: an activity record that never answers ends at its time limit; the manifest is already written", STALL_LIMIT, async () => {
   const dir = makeAttachedProject();
   _setActivityTimeoutMsForTests(50);
   try {
@@ -804,6 +821,8 @@ test("a rejected login (401) on search or on the first upload says what to do ab
           assert.equal(u.error, "unauthorized");
           assert.equal(u.status, 401);
           assert.match(u.hint, /The rejected token comes from the login token file/);
+          assert.equal(u.hint.split("The rejected token comes from").length - 1, 1, "said once");
+          assert.match(u.failed[0].hint, /The rejected token comes from the login token file/);
           assert.equal(u.notAttempted.length, 1);
         },
       ),
@@ -898,6 +917,127 @@ test("upload: an activity record refused with 401 says what to do about the toke
           assert.equal(r.ok, true);
           assert.equal(r.activityRecorded, false);
           assert.match(r.activityHint, /The rejected token comes from the login token file/);
+        },
+      ),
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Review round 3 (PR #78): a call cut off mid-batch, unreadable refusals,
+// a 401 after an earlier success.
+
+test("upload: cancelled while the 2nd of 3 files is sent — the 1st is already listed, a retry of the unlisted files adds no duplicate", STALL_LIMIT, async () => {
+  const dir = makeAttachedProject();
+  try {
+    for (const n of ["a.png", "b.png", "c.png"]) fs.writeFileSync(path.join(dir, n), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    const ac = new AbortController();
+    let listedWhenBWasSent;
+    await withToken(async () => {
+      await withFetch(
+        async (url, init) => {
+          if (String(url).endsWith("/api/upload-attachment") && init.body.get("file").name === "b.png") {
+            calls.push({ url: String(url), init });
+            listedWhenBWasSent = Object.values(JSON.parse(fs.readFileSync(manifestPath(dir), "utf8")).images).map((a) => a.metadata.originalName);
+            setTimeout(() => ac.abort(), 10); // the host gives up while b is in flight
+            return hangingUntilAborted(init);
+          }
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets(
+            { action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }, { path: "b.png" }, { path: "c.png" }] },
+            dir,
+            ac.signal,
+          );
+          assert.deepEqual(r.added.map((x) => path.basename(x.path)), ["a.png"]);
+          assert.deepEqual(r.failed.map((f) => [path.basename(f.path), f.error]), [["b.png", "upload_status_unknown"]]);
+          assert.deepEqual(r.notAttempted.map((n) => [path.basename(n.path), n.reason]), [["c.png", "cancelled"]]);
+        },
+      );
+      assert.deepEqual(listedWhenBWasSent, ["a.png"], "a was registered before b was sent");
+      // The retry the tool description asks for: read src/assets.json, send the rest.
+      const listed = new Set(Object.values(JSON.parse(fs.readFileSync(manifestPath(dir), "utf8")).images).map((a) => a.metadata.originalName));
+      const rest = ["a.png", "b.png", "c.png"].filter((n) => !listed.has(n)).map((n) => ({ path: n }));
+      await withFetch(uploadFetch(calls), async () => {
+        const r2 = await runAssets({ action: "upload", categoryPath: ["images"], files: rest }, dir);
+        assert.equal(r2.added.length, 2);
+      });
+    });
+    const names = Object.values(JSON.parse(fs.readFileSync(manifestPath(dir), "utf8")).images).map((a) => a.metadata.originalName);
+    assert.deepEqual(names.sort(), ["a.png", "b.png", "c.png"], "3 entries, none twice");
+    const counts = calls.filter((c) => c.url.endsWith("/v1/activity/upload-asset")).map((c) => JSON.parse(c.init.body).count);
+    assert.equal(counts.reduce((x, y) => x + y, 0), 3, "activity counts the 3 uploaded files once each");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a refusal whose body cannot be read keeps its HTTP status (upload stops on 402, search and activity keep 401)", async () => {
+  const dir = makeAttachedProject();
+  try {
+    for (const n of ["a.png", "b.png", "c.png"]) fs.writeFileSync(path.join(dir, n), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(async () => {
+      await withFetch(
+        async (url, init) => {
+          const u = String(url);
+          if (u.endsWith("/api/upload-attachment") && init.body.get("file").name === "b.png") {
+            calls.push({ url: u, init });
+            return brokenBody(402);
+          }
+          if (u.endsWith("/v1/activity/upload-asset")) {
+            calls.push({ url: u, init });
+            return brokenBody(401);
+          }
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }, { path: "b.png" }, { path: "c.png" }] }, dir);
+          assert.equal(r.ok, true, JSON.stringify(r));
+          assert.equal(r.failed[0].status, 402);
+          assert.equal(r.failed[0].error, "insufficient_credits");
+          assert.deepEqual(r.notAttempted.map((n) => [path.basename(n.path), n.reason]), [["c.png", "account_rejected"]]);
+          assert.match(r.activityHint, /HTTP 401/);
+          assert.match(r.activityHint, /The rejected token comes from the login token file/);
+        },
+      );
+      await withFetch(async () => brokenBody(401), async () => {
+        const s = await runAssets({ action: "search", category: "3d" }, dir);
+        assert.equal(s.error, "unauthorized");
+        assert.equal(s.status, 401);
+      });
+    });
+    const sent = calls.filter((c) => c.url.endsWith("/api/upload-attachment")).map((c) => c.init.body.get("file").name);
+    assert.deepEqual(sent, ["a.png", "b.png"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("upload: a 401 after an earlier file uploaded puts the token hint on that file's failed entry", async () => {
+  const dir = makeAttachedProject();
+  try {
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    fs.writeFileSync(path.join(dir, "b.png"), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(() =>
+      withFetch(
+        async (url, init) =>
+          String(url).endsWith("/api/upload-attachment") && init.body.get("file").name === "b.png"
+            ? new Response("Unauthorized", { status: 401 })
+            : inner(url, init),
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }, { path: "b.png" }] }, dir);
+          assert.equal(r.ok, true);
+          assert.equal(r.added.length, 1);
+          assert.equal(r.failed[0].status, 401);
+          assert.match(r.failed[0].hint, /The rejected token comes from the login token file/);
         },
       ),
     );

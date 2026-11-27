@@ -38,9 +38,9 @@ import { projectDirField } from "./verseContext.js";
  *   add     put library items found by `search` into src/assets.json the
  *           way the panel's "add to category" does.
  *   upload  upload several files to `assets/<categoryPath>` with the gates
- *           of verse8_upload_asset, register the uploaded ones in
- *           src/assets.json the way the panel's upload does, and record
- *           POST /v1/activity/upload-asset {count}.
+ *           of verse8_upload_asset; as each one is uploaded, register it in
+ *           src/assets.json with the panel's finished entry and record
+ *           POST /v1/activity/upload-asset {count: 1}.
  *
  * src/assets.json has no API on the web either (the panel edits the file
  * in the container), so it is read, edited and written here. Existing
@@ -377,7 +377,13 @@ const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"]);
  */
 const ACCOUNT_REJECTIONS = new Set([401, 402, 403]);
 
-type NotAttempted = { path: string; reason: "cancelled" | "account_rejected" };
+type NotAttempted = { path: string; reason: "cancelled" | "account_rejected" | "manifest_unwritable" };
+
+const NOT_ATTEMPTED_WHY: Record<NotAttempted["reason"], string> = {
+  cancelled: "the call was cancelled",
+  account_rejected: "the account was refused",
+  manifest_unwritable: `${MANIFEST_REL} could not be written`,
+};
 
 async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal): Promise<AssetsResult> {
   if (!input.files) return fail("invalid_input", "upload needs `files`.");
@@ -409,21 +415,32 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
   const preFound = findOrCreateCategory(pre.manifest, segments);
   if (!preFound.ok) return fail(preFound.error, preFound.hint);
 
-  const uploaded: Array<{ fileName: string; asset: ManifestAsset; path: string }> = [];
+  // Each file is registered in src/assets.json and its upload activity
+  // recorded as soon as it is on the CDN, not at the end of the batch: a
+  // call can be cut off at any point (the host's timeout or cancel; the SDK
+  // then drops this call's answer), and src/assets.json must then list
+  // exactly the files that are uploaded, so a retry that reads it sends only
+  // the rest.
+  const { token: _unused, ...tokenWhere } = resolveToken(path.resolve(cwd));
+  const added: Array<{ key: string; path: string; url: string }> = [];
+  const unregistered: Array<{ path: string; url: string }> = [];
   const failed: Array<{ path: string; error: string; hint: string; status?: number }> = [];
   const notAttempted: NotAttempted[] = [];
+  let manifestError: Fail | undefined;
+  let activityRecorded = true;
+  let activityHint: string | undefined;
+  const skipRest = (from: number, reason: NotAttempted["reason"]) => {
+    for (const rest of checked.slice(from)) notAttempted.push({ path: rest.file.absPath, reason });
+  };
   // A failure past the checks above (a file deleted or unreadable since its
   // stat, a dropped connection) fails that file only: the loop never throws,
-  // so files already on the CDN still get registered and counted. Bytes are
-  // read one file at a time rather than all up front, so a batch of large
-  // files (verse8_upload_asset has no size cap) is never held in memory at once.
+  // so files already on the CDN stay registered and counted. Bytes are read
+  // one file at a time rather than all up front, so a batch of large files
+  // (verse8_upload_asset has no size cap) is never held in memory at once.
   for (let i = 0; i < checked.length; i++) {
     const { file, description } = checked[i];
-    // Checked before each file goes out: once the host cancelled the call
-    // (its own timeout, the user), nothing more is sent. A file already in
-    // flight is let finish, so whether it is on the CDN is never in doubt.
     if (signal?.aborted) {
-      for (const rest of checked.slice(i)) notAttempted.push({ path: rest.file.absPath, reason: "cancelled" });
+      skipRest(i, "cancelled");
       break;
     }
     let buf: Buffer<ArrayBuffer>;
@@ -435,22 +452,35 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     }
     let resp: Awaited<ReturnType<typeof uploadAttachment>>;
     try {
+      // The call's signal also stops the file being sent: waiting for it
+      // would keep this call running beside a retry the host may already
+      // have started.
       resp = await uploadAttachment({
         file: new Blob([buf], { type: file.contentType }),
         filename: file.filename,
         cdnPath: cdn.cdnPath,
         verse,
         token,
+        signal,
       });
     } catch (e) {
-      // Whether the bytes reached the CDN is unknown; it is reported as failed.
-      failed.push({ path: file.absPath, error: "upload_failed", hint: safeHint(`upload interrupted: ${(e as Error).message}`) });
-      continue;
+      resp = { ok: false, error: "upload_failed", status: 0, hint: safeHint(`upload interrupted: ${(e as Error).message}`) };
+    }
+    if (!resp.ok && signal?.aborted) {
+      // Cut off mid-send: the bytes may or may not be on the CDN.
+      failed.push({
+        path: file.absPath,
+        error: "upload_status_unknown",
+        hint: `the call was cancelled while this file was being sent: it may or may not be on the CDN, and it is not in ${MANIFEST_REL}`,
+      });
+      skipRest(i + 1, "cancelled");
+      break;
     }
     if (!resp.ok) {
-      failed.push({ path: file.absPath, error: resp.error, hint: resp.hint, status: resp.status });
+      const hint = resp.status === 401 ? safeHint(`${resp.hint} — ${rejectedTokenHint(tokenWhere)}.`) : resp.hint;
+      failed.push({ path: file.absPath, error: resp.error, hint, status: resp.status });
       if (ACCOUNT_REJECTIONS.has(resp.status)) {
-        for (const rest of checked.slice(i + 1)) notAttempted.push({ path: rest.file.absPath, reason: "account_rejected" });
+        skipRest(i + 1, "account_rejected");
         break;
       }
       continue;
@@ -462,16 +492,18 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     } catch {
       dims = undefined; // an odd header must not drop an upload that succeeded
     }
-    // The entry the web editor ends with once an upload is done: its panel
-    // first writes a placeholder ({type, uploadId, isPlaceholder: true,
-    // originalName}) and then, when the upload succeeded, replaces it with
-    // {url, description, metadata: {originalName, size, type, uploadedAt,
-    // ...image size}} (planetarium/agent8 apps/frontend/src/components/
-    // workbench/ResourcePanel.tsx, the effect that finalizes placeholders;
-    // size and uploadedAt are never set there, so they are absent). The
-    // placeholder fields must not be stored: the panel draws an entry that
-    // has isPlaceholder as an "Upload Complete" card with no preview and no
-    // drag, and an uploadId it did not create is never finalized.
+    // The web panel first writes a placeholder ({type, uploadId,
+    // isPlaceholder: true, originalName}); once the upload succeeded, an
+    // effect replaces it with {url, description, metadata: {originalName,
+    // size, type, uploadedAt, ...metadata.dimensions}} (planetarium/agent8
+    // apps/frontend/src/components/workbench/ResourcePanel.tsx). size,
+    // uploadedAt and metadata.dimensions are never set there (the panel puts
+    // width / height straight into metadata), so the web's finished entry is
+    // {originalName, type} and loses the image size. We store the same
+    // fields and keep width / height, which the panel ignores when drawing.
+    // The placeholder fields must not be stored: an entry with isPlaceholder
+    // is drawn as an "Upload Complete" card with no preview and no drag, and
+    // an uploadId the panel did not create is never finalized.
     const asset: ManifestAsset = {
       url: resp.url,
       description: description ?? file.filename,
@@ -481,43 +513,42 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
         ...(dims ?? {}),
       },
     };
-    uploaded.push({ fileName: file.filename, asset, path: file.absPath });
-  }
 
-  let added: Array<{ key: string; path: string; url: string }> = [];
-  let manifestError: Fail | undefined;
-  if (uploaded.length > 0) {
-    // Re-read: the uploads took time and the file may have changed.
+    // Register this file now (re-read: the file may have changed meanwhile).
     const read = readManifest(cwd, "afterUpload");
-    if (!read.ok) {
-      manifestError = read;
-    } else {
-      const edit = addAssetsToManifest(read.manifest, segments, uploaded, Date.now());
-      if (!edit.ok) {
-        manifestError = fail(edit.error, edit.hint);
-      } else {
+    let registered: Fail | { ok: true; key: string } = read.ok ? { ok: true, key: "" } : read;
+    if (read.ok) {
+      const edit = addAssetsToManifest(read.manifest, segments, [{ fileName: file.filename, asset }], Date.now());
+      if (!edit.ok) registered = fail(edit.error, edit.hint);
+      else {
         const written = writeManifest(cwd, read.manifest, read.mode, "afterUpload");
-        if (!written.ok) manifestError = written;
-        else added = edit.keys.map((key, i) => ({ key, path: uploaded[i].path, url: uploaded[i].asset.url }));
+        registered = written.ok ? { ok: true, key: edit.keys[0] } : written;
       }
     }
-  }
+    if (registered.ok) added.push({ key: registered.key, path: file.absPath, url: resp.url });
+    else unregistered.push({ path: file.absPath, url: resp.url });
 
-  let activityRecorded = false;
-  let activityHint: string | undefined;
-  if (uploaded.length > 0) {
-    const a = await recordUploadAssetActivity(uploaded.length, token, activityTimeoutMs);
-    activityRecorded = a.ok;
+    // The file is uploaded either way, so its activity is recorded.
+    const a = await recordUploadAssetActivity(1, token, activityTimeoutMs);
     if (!a.ok) {
-      activityHint = safeHint(`upload activity not recorded: HTTP ${a.status} ${a.body}`.slice(0, 300));
-      if (a.status === 401) {
-        const { token: _unused, ...where } = resolveToken(path.resolve(cwd));
-        activityHint = safeHint(`${activityHint} ${rejectedTokenHint(where)}.`);
+      activityRecorded = false;
+      if (!activityHint) {
+        activityHint = safeHint(`upload activity not recorded: HTTP ${a.status} ${a.body}`.slice(0, 300));
+        if (a.status === 401) activityHint = safeHint(`${activityHint} ${rejectedTokenHint(tokenWhere)}.`);
       }
+    }
+
+    if (!registered.ok) {
+      // The manifest cannot take entries now; every further upload would be
+      // another file on the CDN that is not listed, so the batch stops.
+      manifestError = registered;
+      skipRest(i + 1, "manifest_unwritable");
+      break;
     }
   }
 
-  if (uploaded.length === 0) {
+  const uploadedCount = added.length + unregistered.length;
+  if (uploadedCount === 0) {
     if (failed.length === 0) {
       return fail("upload_cancelled", "the call was cancelled before any file was uploaded; nothing was changed.", { notAttempted });
     }
@@ -527,16 +558,25 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
       ...(notAttempted.length > 0 ? { notAttempted } : {}),
     });
   }
+  const notAttemptedPart =
+    notAttempted.length > 0
+      ? {
+          notAttempted,
+          notAttemptedHint: `${notAttempted.length} file(s) were not sent (${NOT_ATTEMPTED_WHY[notAttempted[0].reason]}). Read ${MANIFEST_REL} before sending files again: it lists every file this call uploaded.`,
+        }
+      : {};
   if (manifestError) {
     return {
       ...manifestError,
       hint: safeHint(
-        `${manifestError.hint} — the files below were uploaded but are NOT in ${MANIFEST_REL}; add them by hand (do not upload them again).`,
+        `${manifestError.hint} — the file(s) in \`uploaded\` are on the CDN but NOT in ${MANIFEST_REL}; add them by hand (do not upload them again).`,
       ),
-      uploaded: uploaded.map((u) => ({ path: u.path, url: u.asset.url })),
+      uploaded: unregistered,
+      added,
       failed,
-      ...(notAttempted.length > 0 ? { notAttempted } : {}),
+      ...notAttemptedPart,
       activityRecorded,
+      ...(activityHint ? { activityHint } : {}),
     };
   }
   return {
@@ -547,12 +587,7 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     verse,
     added,
     failed,
-    ...(notAttempted.length > 0
-      ? {
-          notAttempted,
-          notAttemptedHint: `${notAttempted.length} file(s) were not sent (${notAttempted[0].reason === "cancelled" ? "the call was cancelled" : "the account was refused"}). Read ${MANIFEST_REL} before sending them again: the files above are already registered.`,
-        }
-      : {}),
+    ...notAttemptedPart,
     activityRecorded,
     ...(activityHint ? { activityHint } : {}),
     next: usageHint(segments),
@@ -583,7 +618,9 @@ export async function runAssets(
   }
   // A rejected login (HTTP 401) gets what to do about it, by where the
   // token came from: an env or project token is not replaced by logging in.
-  if (result.ok || result.status !== 401) return result;
+  // Upload puts it on the refused file itself (and its top-level hint repeats
+  // that file's), so only search is finished here.
+  if (input.action !== "search" || result.ok || result.status !== 401) return result;
   const { token: _unused, ...where } = resolveToken(path.resolve(cwd));
   return withRejectedTokenHint(result, where);
 }

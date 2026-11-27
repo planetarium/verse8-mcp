@@ -151,7 +151,7 @@ The same holds across the waits inside a run. A deploy builds and uploads for mi
 
 Then:
 
-- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — read `src/assets.json`, then retry with only the files listed in `failed` and `notAttempted` (the others are already uploaded and registered).
+- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — read `src/assets.json`, then retry with only the files not listed there (each file is registered as soon as it is uploaded).
 - From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow

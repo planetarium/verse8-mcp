@@ -190,7 +190,13 @@ async function getJson<T>(url: string, token: string, signal?: AbortSignal): Pro
   } catch (e) {
     return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
   }
-  const raw = await res.text();
+  // Keep the status when the body cannot be read: a 401 must stay a 401.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    return { ok: false, status: res.status, body: safeHint(`HTTP ${res.status}; the answer could not be read (${(e as Error).message})`) };
+  }
   if (res.status >= 200 && res.status < 300) {
     const data = tolerantJsonParse<T>(raw);
     if (data !== undefined) {
@@ -281,6 +287,8 @@ export interface UploadAttachmentInput {
   cdnPath: string;
   verse: string;
   token: string;
+  /** Stops the request (and the read of its answer). */
+  signal?: AbortSignal;
 }
 
 export type UploadAttachmentResult =
@@ -293,7 +301,9 @@ export type UploadAttachmentResult =
         | "forbidden"
         | "bad_request"
         | "upload_failed"
-        | "upload_response_malformed";
+        | "upload_response_malformed"
+        /** 2xx whose answer could not be read: the file may be on the CDN, its URL is unknown. */
+        | "upload_status_unknown";
       status: number;
       hint: string;
     };
@@ -328,8 +338,8 @@ function classifyUploadStatus(
  *   - Network / JSON-parse failures are mapped to upload_failed.
  *
  * This function does NOT call meme-api's /v1/activity/upload-asset; the
- * batch upload in `verse8_assets` records it once per batch, as the web
- * editor does (`recordUploadAssetActivity` in v8MemeApi.ts).
+ * batch upload in `verse8_assets` records it for each file as soon as that
+ * file is uploaded (`recordUploadAssetActivity` in v8MemeApi.ts).
  */
 export async function uploadAttachment(
   input: UploadAttachmentInput,
@@ -345,6 +355,7 @@ export async function uploadAttachment(
       method: "POST",
       headers: { Authorization: `Bearer ${input.token}` },
       body: form,
+      signal: input.signal,
     });
   } catch (e) {
     return {
@@ -355,7 +366,19 @@ export async function uploadAttachment(
     };
   }
 
-  const raw = await res.text();
+  // The status is already known; a body that cannot be read (connection
+  // dropped, call cancelled) must not lose it, or a 401/402/403 would look
+  // like a per-file failure and the next file would be sent.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    const why = `HTTP ${res.status}; the answer could not be read (${(e as Error).message})`;
+    if (res.status >= 200 && res.status < 300) {
+      return { ok: false, error: "upload_status_unknown", status: res.status, hint: safeHint(`${why}; the file may be on the CDN`) };
+    }
+    return { ok: false, error: classifyUploadStatus(res.status), status: res.status, hint: safeHint(why) };
+  }
 
   if (res.status >= 200 && res.status < 300) {
     const data = tolerantJsonParse<{ success?: boolean; url?: string; error?: string }>(raw);
@@ -400,6 +423,9 @@ export type SearchResourcesResult =
   | { ok: true; items: ResourceItem[]; pagination: ResourcePagination }
   | { ok: false; status: number; body: string };
 
+/** How long a library search may take before the tool gives up. */
+export const SEARCH_TIMEOUT_MS = 15_000;
+
 /**
  * GET /api/resources — the asset library (public game-asset catalog) the
  * web editor's Resource panel searches. The query is built the way the web
@@ -409,9 +435,6 @@ export type SearchResourcesResult =
  * answer is `{success, data, pagination}`; a 2xx with `success: false` is
  * a failure too.
  */
-/** How long a library search may take before the tool gives up. */
-export const SEARCH_TIMEOUT_MS = 15_000;
-
 export async function searchResources(params: {
   tags: readonly string[];
   page: number;

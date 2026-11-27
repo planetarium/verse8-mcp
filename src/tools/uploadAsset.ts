@@ -48,7 +48,7 @@ export const uploadAssetInputSchema = z
       .string()
       .min(1)
       .describe(
-        "CDN subpath under the verse (e.g. 'assets/images', 'assets/3d/characters'). Required — inspect the project's src/assets.json first to match existing URL patterns. Must be relative (no leading '/'), no '..' segments, no NUL.",
+        "CDN subpath under the verse (e.g. 'assets/images', 'assets/3d/characters'). Required — inspect the project's src/assets.json first to match existing URL patterns. Must be relative (no leading '/'), no '..' segments, no NUL, and no '#', '?' or '%' (the backend puts it into the asset URL as text).",
       ),
     projectDir: z
       .string()
