@@ -4,7 +4,7 @@ import { resolveToken, type TokenResolution } from "../context/token.js";
 import { getVerse, updateVerse, v8Request, verifyToken, type VerseInfo } from "../api/v8MemeApi.js";
 import { safeErrorHint } from "../util/redact.js";
 import { LOGIN_HINT } from "../util/hints.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, withRejectedTokenHint, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { RELEASE_NOTE_TYPES, WEB_PUBLISH_FORM } from "./deploy.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField } from "./verseContext.js";
@@ -15,7 +15,9 @@ import { projectDirField, resolveVerseContext, verseIdField } from "./verseConte
  * tags, cover, preview video, flags), read and edit release notes.
  *
  * Changing actions preview by default and only call the API with the
- * planId their preview returned (creatorOps plan gate). Every listing
+ * planId their preview returned (creatorOps plan gate). An update that
+ * widens the visibility, and deleting a comment, also need the user's own
+ * confirmation in the host's prompt (creatorOps RUN_RULES). Every listing
  * update re-sends the current `visibility`:
  * the backend's update DTO defaults `isPublic` to true, so a body without
  * `visibility` would make a Private / Unlisted game Public
@@ -125,13 +127,13 @@ async function loadOwnedVerse(verseId: string, token: string): Promise<{ ok: tru
   return { ok: true, verse: r.data };
 }
 
-export async function runVerseOps(input: VerseOpsInput, serverCwd: string = process.cwd()): Promise<VerseOpsResult> {
+export async function runVerseOps(input: VerseOpsInput, serverCwd: string = process.cwd(), host?: ConfirmHost): Promise<VerseOpsResult> {
   // One token lookup for the whole call; its source goes into any 401 hint.
   const auth = resolveToken(path.resolve(input.projectDir ?? serverCwd));
-  return withRejectedTokenHint(await runVerseOpsWith(input, serverCwd, auth), auth);
+  return withRejectedTokenHint(await runVerseOpsWith(input, serverCwd, auth, host), auth);
 }
 
-async function runVerseOpsWith(input: VerseOpsInput, serverCwd: string, auth: TokenResolution): Promise<VerseOpsResult> {
+async function runVerseOpsWith(input: VerseOpsInput, serverCwd: string, auth: TokenResolution, host: ConfirmHost | undefined): Promise<VerseOpsResult> {
   const ctx = resolveVerseContext(input, serverCwd, auth);
   if (!ctx.ok && !(input.action === "mine" && ctx.error === "missing_verse_env")) return ctx as OpFail;
   try {
@@ -178,7 +180,7 @@ async function runVerseOpsWith(input: VerseOpsInput, serverCwd: string, auth: To
       }
       case "update":
         if (!ctx.ok) return ctx as OpFail;
-        return await runUpdate(input, ctx.projectDir, ctx.verseId, ctx.token);
+        return await runUpdate(input, ctx.projectDir, ctx.verseId, ctx.token, host);
       case "release_notes": {
         if (!ctx.ok) return ctx as OpFail;
         const r = await v8Request<Record<string, unknown>>("GET", `/v1/verse/${encodeURIComponent(ctx.verseId)}/release-notes`, {
@@ -215,14 +217,14 @@ async function runVerseOpsWith(input: VerseOpsInput, serverCwd: string, auth: To
       case "comment_pin":
       case "comment_delete":
         if (!ctx.ok) return ctx as OpFail;
-        return await runCommentChange(input, ctx.verseId, ctx.token);
+        return await runCommentChange(input, ctx.verseId, ctx.token, host);
     }
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
   }
 }
 
-async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string): Promise<VerseOpsResult> {
+async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VerseOpsResult> {
   if (input.thumbnailPath && input.imageUrl) return opFail("invalid_input", "Pass either thumbnailPath or imageUrl, not both.");
   if ([input.videoPath, input.videoUrl, input.clearVideo ? "x" : undefined].filter(Boolean).length > 1) {
     return opFail("invalid_input", "Pass only one of videoPath, videoUrl, clearVideo.");
@@ -231,7 +233,9 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   if (reserved.length > 0) return opFail("invalid_input", `Tags starting with '__' are reserved: ${reserved.join(", ")}`);
   for (const [field, kind] of [["thumbnailPath", "image"], ["videoPath", "video"]] as const) {
     const p = input[field];
-    if (!p) continue;
+    // Not on the re-read after the uploads: the checked bytes are already
+    // sent, and the file may have been moved or removed since.
+    if (!p || probe?.skipLocalFiles) continue;
     const check = validateLocalMedia(mediaPath(projectDir, p), kind);
     if (!check.ok) return opFail(check.error, `${field}: ${check.hint}`, { field });
   }
@@ -269,8 +273,10 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
   for (const c of changes) body[c.field] = c.to;
 
   // The current value of every field asked about, and of what is always re-sent.
+  // A visibility change also reads the title: the user confirmation of a
+  // widening one shows it (creatorOps RUN_RULES).
   const asked: Array<[string, unknown, unknown]> = [
-    ["title", input.title, cur.title],
+    ["title", input.title ?? input.visibility, cur.title],
     ["shortDescription", input.shortDescription, cur.shortDescription],
     ["description", input.description, cur.description],
     ["tag", input.tags ?? input.visibility, cur.tag ?? []],
@@ -292,25 +298,41 @@ async function runUpdate(input: VerseOpsInput, projectDir: string, verseId: stri
       ...(input.videoPath ? { videoPath: mediaPath(projectDir, input.videoPath) } : {}),
     },
   };
-  const gate = planGate(plan, input.planId, {
+  if (probe) {
+    probe.plan = plan;
+    return PROBED;
+  }
+  const again = rereadWith((pr) => runUpdate(input, projectDir, verseId, token, undefined, pr));
+  const gate = await planGate(plan, input.planId, {
     action: "update" as const,
     verseId,
     changes,
     ...(vis ? {} : { keptVisibility: cur.visibility }),
     warnings,
     publishBody: body,
-  });
+  }, host, again);
   if (!isApproved(gate)) return gate;
 
+  const uploadedUrls: Record<string, string> = {};
   if (input.thumbnailPath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.thumbnailPath), token, "image", undefined, gate.files.thumbnailPath);
     if (!up.ok) return opFail(up.error, `thumbnailPath: ${up.hint}`);
-    body.imageUrl = up.url;
+    uploadedUrls.imageUrl = up.url;
   }
   if (input.videoPath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.videoPath), token, "video", undefined, gate.files.videoPath);
     if (!up.ok) return opFail(up.error, `videoPath: ${up.hint}`);
-    body.videoUrl = up.url;
+    uploadedUrls.videoUrl = up.url;
+  }
+  if (input.thumbnailPath || input.videoPath) {
+    // The uploads took time (a video up to 10 MiB), and the body re-sends
+    // the visibility read before them: read the game once more before the
+    // write, so a game set to Private on the web meanwhile is not put back.
+    // (Before the uploaded URLs go into the body: the plan holds the body
+    // as previewed.)
+    const still = await planStillHolds(plan, again, gate);
+    if (!isApproved(still)) return still;
+    Object.assign(body, uploadedUrls);
   }
   const res = await updateVerse(verseId, body, token);
   if (!res.ok) return apiFail(`POST /v1/verse/update/${verseId}`, res);
@@ -400,7 +422,7 @@ async function runReleaseNoteUpdate(input: VerseOpsInput, projectDir: string, ve
     state,
     files: input.releaseNoteImagePath ? { releaseNoteImagePath: mediaPath(projectDir, input.releaseNoteImagePath) } : {},
   };
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "release_note_update" as const,
     verseId,
     releaseNote: { id: note.id, buildVersion: note.buildVersion },
@@ -542,7 +564,7 @@ async function findComment(
   return { ok: true, comment: null, pinnedId };
 }
 
-async function runCommentChange(input: VerseOpsInput, verseId: string, token: string): Promise<VerseOpsResult> {
+async function runCommentChange(input: VerseOpsInput, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VerseOpsResult> {
   if (input.commentId === undefined) return opFail("invalid_input", `${input.action} needs commentId (see action comments).`);
   const owned = await loadOwnedVerse(verseId, token);
   if (!owned.ok) return owned;
@@ -564,9 +586,15 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
       op: "verse8_verse.comment_delete",
       target: { verseId, commentId: c.id },
       body: null,
-      state: { content: c.content, pinned: isPinned },
+      // author and content are what the user confirmation shows (creatorOps RUN_RULES).
+      state: { content: c.content, pinned: isPinned, author: c.userHandle ?? c.userDisplayName ?? `uid ${c.userUid}` },
     };
-    const gate = planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings });
+    if (probe) {
+      probe.plan = plan;
+      return PROBED;
+    }
+    const again = rereadWith((pr) => runCommentChange(input, verseId, token, undefined, pr));
+    const gate = await planGate(plan, input.planId, { action: "comment_delete" as const, verseId, comment: shown, warnings }, host, again);
     if (!isApproved(gate)) return gate;
     const r = await v8Request("DELETE", `/v1/verse/${encodeURIComponent(verseId)}/comments/${c.id}`, { token });
     if (!r.ok) return apiFail(`DELETE comment ${c.id}`, r);
@@ -595,7 +623,7 @@ async function runCommentChange(input: VerseOpsInput, verseId: string, token: st
         "The commenter is notified that you pinned it.",
       ]
     : [];
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "comment_pin" as const,
     verseId,
     comment: shown,

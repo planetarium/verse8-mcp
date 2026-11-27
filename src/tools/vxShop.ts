@@ -2,7 +2,7 @@ import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, withRejectedTokenHint, type OpFail, type Plan } from "./creatorOps.js";
+import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
@@ -10,6 +10,13 @@ import { projectDirField, resolveVerseContext, verseIdField, type VerseContext }
  * `verse8_vxshop` — the creator page's VX Shop tab: seller status, item
  * list, create / edit items. Changing actions preview by default and run
  * only with the planId their preview returned (creatorOps plan gate).
+ * Starting a sale — a change that puts the item on sale (on-sale flag,
+ * restore, sale dates; or filling an item on sale from stock 0) — and
+ * changing the price of an item on sale or scheduled also need the user's
+ * own confirmation in the host's prompt, and run only if the item read
+ * again after that answer is still as the prompt showed it (creatorOps
+ * RUN_RULES). The stock is the server's to change (purchases, refunds,
+ * reservations): no plan holds it unless the request changes it.
  *
  * Backend traps this tool closes (g2-sync vxShop.service.ts):
  *  - an update without `purchaseConstraints` DELETES the item's purchase
@@ -29,8 +36,8 @@ const purchaseConstraintsSchema = z
     maxPurchasePerUser: z.number().int().min(1).optional().describe("Max units one user may buy in total."),
     maxPurchasePerPeriod: z.number().int().min(1).optional().describe("Max units per user within purchasePeriodDays."),
     purchasePeriodDays: z.number().int().min(1).optional().describe("Length of the period for maxPurchasePerPeriod."),
-    purchaseStartDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales open."),
-    purchaseEndDate: z.string().min(1).max(40).optional().describe("ISO 8601 date (-time) sales close."),
+    purchaseStartDate: z.string().min(1).max(40).optional().describe("Date (-time) sales open: YYYY-MM-DD[THH:MM[:SS]][Z or +09:00]. Without a time zone it is UTC; other forms are refused."),
+    purchaseEndDate: z.string().min(1).max(40).optional().describe("Date (-time) sales close: YYYY-MM-DD[THH:MM[:SS]][Z or +09:00]. Without a time zone it is UTC; other forms are refused."),
   })
   .strict();
 
@@ -151,14 +158,14 @@ export async function findItem(verseId: string, token: string, itemId: number): 
 const NOT_SELLER =
   "This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false). The web creator page hides the VX Shop until a Verse8 admin approves the seller; items would not be sold. Ask Verse8 for seller approval first.";
 
-export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd()): Promise<VxShopResult> {
+export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd(), host?: ConfirmHost): Promise<VxShopResult> {
   const ctx = resolveVerseContext(input, serverCwd);
   if (!ctx.ok) return ctx as OpFail;
   // The source of this call's token goes into any 401 hint.
-  return withRejectedTokenHint(await runVxShopWith(input, ctx), ctx.tokenWhere);
+  return withRejectedTokenHint(await runVxShopWith(input, ctx, host), ctx.tokenWhere);
 }
 
-async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok: true }>): Promise<VxShopResult> {
+async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok: true }>, host: ConfirmHost | undefined): Promise<VxShopResult> {
   try {
     if (input.action === "list") {
       const wallet = await getWallet(ctx.token);
@@ -181,15 +188,15 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
     }
     if (input.action === "sales") return await runSales(input, ctx.verseId, ctx.token);
     if (input.action === "revenue") return await runRevenue(input, ctx.verseId, ctx.token);
-    if (input.action === "archive") return await runArchive(input, ctx.verseId, ctx.token);
+    if (input.action === "archive") return await runArchive(input, ctx.verseId, ctx.token, host);
     if (input.action === "dispute") return await runDispute(input, ctx.verseId, ctx.token);
-    return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token);
+    return await runUpsert(input, ctx.projectDir, ctx.verseId, ctx.token, host);
   } catch (e) {
     return opFail("upstream_unreachable", safeErrorHint(e));
   }
 }
 
-async function runUpsert(input: VxShopInput, projectDir: string, verseId: string, token: string): Promise<VxShopResult> {
+async function runUpsert(input: VxShopInput, projectDir: string, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VxShopResult> {
   if (input.imagePath && input.imageUrl) return opFail("invalid_input", "Pass either imagePath or imageUrl, not both.");
   if (input.purchaseConstraints && input.clearPurchaseConstraints) {
     return opFail("invalid_input", "Pass either purchaseConstraints or clearPurchaseConstraints, not both.");
@@ -197,7 +204,13 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (input.metadata && "purchaseConstraints" in input.metadata) {
     return opFail("invalid_input", "Put purchase limits in purchaseConstraints, not in metadata.");
   }
-  if (input.imagePath) {
+  // Only the dates the request gives: the ones an item already holds are
+  // re-sent as they are (and make its sale state unknown when unreadable).
+  const badDate = purchaseDateProblem(input.purchaseConstraints);
+  if (badDate) return opFail("invalid_input", badDate);
+  // Not on the re-read after the upload: the checked bytes are already
+  // sent, and the file may have been moved or removed since.
+  if (input.imagePath && !probe?.skipLocalFiles) {
     const check = validateLocalMedia(mediaPath(projectDir, input.imagePath), "image");
     if (!check.ok) return opFail(check.error, `imagePath: ${check.hint}`);
   }
@@ -234,7 +247,8 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     if (input.description !== undefined) body.description = input.description;
     if (input.metadata) body.metadata = JSON.stringify(input.metadata);
     if (input.purchaseConstraints) body.purchaseConstraints = input.purchaseConstraints;
-    if (isActive) warnings.push(`The item goes on sale immediately at ${input.price} VX.`);
+    // No "immediately": purchase dates may put the sale later, and it sells only while it has stock.
+    if (isActive) warnings.push(`The item is created on sale at ${input.price} VX (it sells whenever it has stock and is inside its purchase dates).`);
     else warnings.push("Created hidden (isActive: false). Set isActive: true later to sell it.");
     if (input.stock === 0) warnings.push("stock 0: the item shows as out of stock.");
     // Nothing to read for an item that does not exist yet: the body (and image) is the plan.
@@ -244,11 +258,20 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       body,
       files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
     };
-    const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings });
+    if (probe) {
+      probe.plan = plan;
+      return PROBED;
+    }
+    const again = rereadWith((pr) => runUpsert(input, projectDir, verseId, token, undefined, pr));
+    const gate = await planGate(plan, input.planId, { action: "upsert" as const, mode: "create", verseId, body, warnings }, host, again);
     if (!isApproved(gate)) return gate;
     if (input.imagePath) {
       const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
       if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
+      // The upload took time: read once more before the write. (Before the
+      // uploaded URL goes into the body: the plan holds the body as previewed.)
+      const still = await planStillHolds(plan, again, gate);
+      if (!isApproved(still)) return still;
       body.imageUrl = up.url;
     }
     const r = await v8Request<VxShopItem>("POST", "/v1/vx-shop-items", { token, body });
@@ -284,14 +307,23 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (keep) body.purchaseConstraints = keep;
 
   const price = changes.find((c) => c.field === "price");
-  if (price) warnings.push(`Price changes from ${price.from} to ${price.to} VX for every buyer from now on.`);
+  // No "from now on": the item may be hidden, archived or scheduled.
+  if (price) warnings.push(`Price changes from ${price.from} to ${price.to} VX for every purchase made after this edit.`);
   const active = changes.find((c) => c.field === "isActive");
-  if (active) warnings.push(active.to ? "The item goes on sale." : "The item stops selling.");
+  if (active) warnings.push(active.to ? "The on-sale flag is turned on: the item sells whenever it has stock, is not archived and is inside its purchase dates." : "The item stops selling.");
   if (input.clearPurchaseConstraints && parsed.purchaseConstraints) warnings.push("All purchase limits are removed.");
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
   // The current value of every field asked about; the limits and the
-  // archived flag are always read (re-sent / warned about).
-  const state: Record<string, unknown> = { purchaseConstraints: parsed.purchaseConstraints, isArchived: cur.isArchived };
+  // archived flag are always read (re-sent / warned about), and so are the
+  // name, price and on-sale flag: they decide whether the user is asked to
+  // confirm and are what that prompt shows (creatorOps RUN_RULES).
+  const state: Record<string, unknown> = {
+    purchaseConstraints: parsed.purchaseConstraints,
+    isArchived: cur.isArchived,
+    name: cur.name,
+    price: cur.price,
+    isActive: cur.isActive,
+  };
   const asked: Array<[string, unknown, unknown]> = [
     ["name", input.name, cur.name],
     ["price", input.price, cur.price],
@@ -309,11 +341,21 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     state,
     files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
   };
-  const gate = planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings });
+  if (probe) {
+    probe.plan = plan;
+    return PROBED;
+  }
+  const again = rereadWith((pr) => runUpsert(input, projectDir, verseId, token, undefined, pr));
+  const gate = await planGate(plan, input.planId, { action: "upsert" as const, mode: "edit", verseId, itemId: cur.id, changes, body, warnings }, host, again);
   if (!isApproved(gate)) return gate;
   if (input.imagePath) {
     const up = await uploadLocalMedia(mediaPath(projectDir, input.imagePath), token, "image", VX_SHOP_MEDIA_CATEGORY, gate.files.imagePath);
     if (!up.ok) return opFail(up.error, `imagePath: ${up.hint}`);
+    // The upload took time, and the body re-sends the purchase limits read
+    // before it: read the item once more before the write. (Before the
+    // uploaded URL goes into the body: the plan holds the body as previewed.)
+    const still = await planStillHolds(plan, again, gate);
+    if (!isApproved(still)) return still;
     body.imageUrl = up.url;
   }
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
@@ -373,7 +415,7 @@ async function runRevenue(input: VxShopInput, verseId: string, token: string): P
   return { ok: true, action: "revenue", verseId, stage: input.stage ?? "PROD", ...(r.data ?? {}) };
 }
 
-async function runArchive(input: VxShopInput, verseId: string, token: string): Promise<VxShopResult> {
+async function runArchive(input: VxShopInput, verseId: string, token: string, host: ConfirmHost | undefined, probe?: PlanProbe): Promise<VxShopResult> {
   if (input.itemId === undefined) return opFail("invalid_input", "archive needs itemId (see action list).");
   const found = await findItem(verseId, token, input.itemId);
   if (!found.ok) return found;
@@ -387,7 +429,10 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
     op: "verse8_vxshop.archive",
     target: { verseId, itemId: cur.id },
     body,
-    state: { isArchived: cur.isArchived, isActive: cur.isActive },
+    // name, price and the limits are what the confirmation of a
+    // restore-to-sale shows and what decides whether it is one. The stock
+    // is not read: the server changes it on every purchase and refund.
+    state: { isArchived: cur.isArchived, isActive: cur.isActive, name: cur.name, price: cur.price, purchaseConstraints },
   };
   if (cur.isArchived === want) {
     // A preview never hands out a planId for this state, so a given one is stale.
@@ -398,14 +443,19 @@ async function runArchive(input: VxShopInput, verseId: string, token: string): P
   const warnings = want
     ? ["Archived items are not sold and are hidden from buyers; restore brings them back. Its productId stays reserved."]
     : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`];
-  const gate = planGate(plan, input.planId, {
+  if (probe) {
+    probe.plan = plan;
+    return PROBED;
+  }
+  const again = rereadWith((pr) => runArchive(input, verseId, token, undefined, pr));
+  const gate = await planGate(plan, input.planId, {
     action: "archive" as const,
     verseId,
     itemId: cur.id,
     changes: [{ field: "isArchived", from: cur.isArchived, to: want }],
     body,
     warnings,
-  });
+  }, host, again);
   if (!isApproved(gate)) return gate;
   const r = await v8Request<VxShopItem>("PUT", `/v1/vx-shop-items/${cur.id}`, { token, body });
   if (!r.ok) return apiFail(`PUT /v1/vx-shop-items/${cur.id}`, r);
@@ -451,7 +501,7 @@ async function runDispute(input: VxShopInput, verseId: string, token: string): P
       disputeResponseMessage: sale.disputeResponseMessage ?? null,
     },
   };
-  const gate = planGate(plan, input.planId, {
+  const gate = await planGate(plan, input.planId, {
     action: "dispute" as const,
     verseId,
     sale,

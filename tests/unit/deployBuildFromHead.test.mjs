@@ -488,3 +488,303 @@ test("createCleanCheckout prunes a stale checkout first; cleanup() leaves the us
   co.cleanup();
   assert.deepEqual(worktreePaths(dir).slice(1), [path.resolve(userGone, "wt")]);
 });
+
+// ── INV-17: the publish uses the game as it is after the build, not as it was before ──
+// The build and upload take minutes. The deploy reads the game again right
+// before the publish call: what changed on the web meanwhile is kept, and a
+// publish that would widen who can see the game without the user's
+// confirmation of exactly that change does not happen.
+
+/**
+ * A full deploy with the fake toolchain. `readings` is what each successive
+ * GET of the game answers (the last one repeats): the first is the reading
+ * at the start, later ones are after the user's Run and before the publish.
+ */
+async function deployOverTime(dir, { extra = {}, readings, host }) {
+  const { bin } = fakeToolchain(dir);
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  const base = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], isOwner: true };
+  const posts = [];
+  let gets = 0;
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (p === "/v1/verse/verseId") return json({ ...base, ...readings[Math.min(gets++, readings.length - 1)] });
+    if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
+      posts.push(JSON.parse(init.body));
+      return json({ verseId: VERSE, title: "Live" });
+    }
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({
+      projectDir: dir,
+      skipAttachCheck: true,
+      message: "wip",
+      installCommand: "bun install",
+      releaseNoteTitle: "v1.1",
+      releaseNoteTypes: ["BugFixes"],
+      releaseNoteDescription: "Fix.",
+      ...extra,
+    });
+    const res = await runDeploy(input, dir, host);
+    return { res, posts, gets };
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+}
+const userRuns = () => {
+  const asked = [];
+  return { asked, canAsk: true, ask: async (message) => { asked.push(message); return { action: "accept", content: { choice: "Run" } }; } };
+};
+const freshProject = () => {
+  const { dir } = makeDeployableRepo();
+  fs.writeFileSync(path.join(dir, "game.js"), "v2 from this session\n");
+  return dir;
+};
+
+test("deploy without visibility: the game is set to Private on the web during the build → the publish sends Private, not the Public read at the start", async () => {
+  const { res, posts, gets } = await deployOverTime(freshProject(), { readings: [{ visibility: "Public" }, { visibility: "Private" }] });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(gets, 2, "read at the start and again before publishing");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].visibility, "Private");
+  assert.equal(res.publishBody.visibility, "Private");
+});
+
+test("deploy without visibility: a title and tags edited on the web during the build are published as they are now, not put back", async () => {
+  const { res, posts } = await deployOverTime(freshProject(), {
+    readings: [{ visibility: "Public" }, { visibility: "Public", title: "Renamed on the web", tag: ["rpg", "arcade"] }],
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(posts[0].title, "Renamed on the web");
+  assert.deepEqual(posts[0].tag, ["rpg", "arcade"]);
+  assert.equal(posts[0].visibility, "Public");
+});
+
+test("deploy with visibility Public on a Public game (not asked): set to Private on the web during the build → not published; says the files are uploaded and to deploy again", async () => {
+  const host = userRuns();
+  const { res, posts } = await deployOverTime(freshProject(), {
+    extra: { visibility: "Public" },
+    readings: [{ visibility: "Public" }, { visibility: "Private" }],
+    host,
+  });
+  assert.equal(host.asked.length, 0, "Public → Public was not a widening, nobody was asked");
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.equal(res.error, "plan_mismatch");
+  assert.deepEqual(posts, [], "nothing was published");
+  assert.equal(res.filesLive, true);
+  assert.deepEqual(res.visibility, { atStart: "Public", now: "Private", requested: "Public" });
+  assert.match(res.hint, /^Not published: the game changed on the web during the build\. It is now Private/);
+  assert.match(res.hint, /the user was not asked/);
+  assert.match(res.hint, /game files are already uploaded at https:\/\//);
+  assert.match(res.hint, /Run verse8_deploy again/);
+  assert.ok(res.steps.length > 0, "the steps that did run are reported");
+});
+
+test("deploy with visibility Public, confirmed Private → Public: the game is Unlisted by publish time → not published (not the change the user confirmed)", async () => {
+  const host = userRuns();
+  const { res, posts, gets } = await deployOverTime(freshProject(), {
+    extra: { visibility: "Public" },
+    readings: [{ visibility: "Private" }, { visibility: "Private" }, { visibility: "Unlisted" }],
+    host,
+  });
+  assert.equal(host.asked.length, 1);
+  assert.match(host.asked[0], /Visibility: Private → Public/);
+  assert.equal(gets, 3, "start, after Run, before publishing");
+  assert.equal(res.error, "plan_mismatch", JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.match(res.hint, /It is now Unlisted .*the user confirmed Private → Public/);
+  assert.deepEqual(posts, []);
+});
+
+test("deploy with visibility Public, confirmed Private → Public, nothing changed during the build → published as confirmed", async () => {
+  const host = userRuns();
+  const { res, posts } = await deployOverTime(freshProject(), { extra: { visibility: "Public" }, readings: [{ visibility: "Private" }], host });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(host.asked.length, 1);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].visibility, "Public");
+});
+
+test("deploy with visibility Private: whatever the game became during the build, narrowing is published without asking", async () => {
+  const { res, posts } = await deployOverTime(freshProject(), { extra: { visibility: "Private" }, readings: [{ visibility: "Public" }, { visibility: "Unlisted" }] });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(posts[0].visibility, "Private");
+});
+
+test("deploy: the game cannot be read again before publishing → not published, and the result says the files are already uploaded", async () => {
+  const dir = freshProject();
+  const { bin } = fakeToolchain(dir);
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  let gets = 0;
+  const posts = [];
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/verse/verseId") {
+      return gets++ === 0
+        ? new Response(JSON.stringify({ verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true }), { status: 200 })
+        : new Response(JSON.stringify({ message: "boom" }), { status: 503 });
+    }
+    if (init?.method === "POST") posts.push(p);
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
+    const res = await runDeploy(input, dir);
+    assert.equal(res.ok, false, JSON.stringify(res));
+    assert.equal(res.stage, "publish");
+    assert.equal(res.error, "upstream_error");
+    assert.equal(res.filesLive, true);
+    assert.match(res.hint, /could not be read again before publishing: HTTP 503/);
+    assert.match(res.hint, /already uploaded/);
+    assert.deepEqual(posts, []);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+});
+
+test("deploy: one failed read before publishing is tried again — a 503 and then an answer → published", async () => {
+  const dir = freshProject();
+  const { bin } = fakeToolchain(dir);
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  let gets = 0;
+  const posts = [];
+  const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true };
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/verse/verseId") {
+      gets++;
+      // 1: the reading at the start. 2: a transient failure before publishing. 3: the retry.
+      return gets === 2 ? new Response(JSON.stringify({ message: "boom" }), { status: 503 }) : new Response(JSON.stringify(live), { status: 200 });
+    }
+    if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
+      posts.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ verseId: VERSE, title: "Live" }), { status: 200 });
+    }
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
+    const res = await runDeploy(input, dir);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(gets, 3);
+    assert.equal(posts.length, 1);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+});
+
+test("deploy stopped before publishing after a failed push: the result does not say the checkpoint is pushed", async () => {
+  const { repo, dir } = makeRepo();
+  git(repo, "config", "user.email", "me@me");
+  git(repo, "config", "user.name", "me");
+  // The push goes to a place that does not exist: the commit stays local and the deploy goes on.
+  git(repo, "config", "remote.origin.pushurl", path.join(os.tmpdir(), `verse8-no-such-remote-${process.pid}`));
+  fs.writeFileSync(path.join(dir, "game.js"), "v2 from this session\n");
+  const { res, posts } = await deployOverTime(dir, { extra: { visibility: "Public" }, readings: [{ visibility: "Public" }, { visibility: "Private" }] });
+  assert.equal(res.error, "plan_mismatch", JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.match(res.hint, /The checkpoint is committed locally \(its push failed\) and the game files are already uploaded/);
+  assert.doesNotMatch(res.hint, /checkpoint is pushed/);
+  assert.deepEqual(posts, []);
+});
+
+/** A full deploy whose GET of the game is answered by `onGet(n)` (n = 1 for the reading at the start). */
+async function deployWithGets(onGet, { tune } = {}) {
+  const dir = freshProject();
+  const { bin } = fakeToolchain(dir);
+  const { REREAD } = await import("../../dist/tools/deploy.js");
+  const saved = { fetch: globalThis.fetch, tok: process.env.VERSE8_ACCESS_TOKEN, path: process.env.PATH, reread: { ...REREAD } };
+  process.env.VERSE8_ACCESS_TOKEN = "test-token";
+  process.env.PATH = bin + path.delimiter + process.env.PATH;
+  if (tune) Object.assign(REREAD, tune);
+  let gets = 0;
+  const posts = [];
+  const live = { verseId: VERSE, title: "Live", imageUrl: "https://contents.verse8.io/live.png", tag: ["rpg"], visibility: "Public", isOwner: true };
+  globalThis.fetch = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/verse/verseId") return onGet(++gets, () => new Response(JSON.stringify(live), { status: 200 }), init);
+    if (p === `/v1/verse/update/${VERSE}` && init?.method === "POST") {
+      posts.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ verseId: VERSE, title: "Live" }), { status: 200 });
+    }
+    return new Response("{}", { status: 599 });
+  };
+  try {
+    const input = deployInputSchema.parse({ projectDir: dir, skipAttachCheck: true, message: "wip", installCommand: "bun install", releaseNoteTitle: "v1.1", releaseNoteTypes: ["BugFixes"], releaseNoteDescription: "Fix." });
+    const res = await runDeploy(input, dir);
+    return { res, posts, gets };
+  } finally {
+    globalThis.fetch = saved.fetch;
+    process.env.PATH = saved.path;
+    Object.assign(REREAD, saved.reread);
+    if (saved.tok === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved.tok;
+  }
+}
+
+test("deploy: the read before publishing throws once (a network error) and is tried again → published", async () => {
+  const { res, posts, gets } = await deployWithGets((n, ok) => {
+    if (n === 2) throw new TypeError("fetch failed");
+    return ok();
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(gets, 3, "start, the failed try, the retry");
+  assert.equal(posts.length, 1);
+});
+
+// The test has its own timeout: without the limit on the read this deploy
+// never returns, and the run should fail here instead of hanging.
+test("deploy: the read before publishing never answers → every try is aborted at its limit, and it does not publish", { timeout: 60_000 }, async () => {
+  // Like fetch: answers only by rejecting when its signal aborts.
+  const signals = [];
+  const hang = (init) =>
+    new Promise((_, reject) => {
+      signals.push(init?.signal);
+      init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+    });
+  const { res, posts, gets } = await deployWithGets((n, ok, init) => (n === 1 ? ok() : hang(init)), { tune: { tryMs: 300, waitMs: 50 } });
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.equal(res.stage, "publish");
+  assert.equal(res.error, "upstream_unreachable");
+  // The limit that was set, not a time that was measured: it reads the same on a slow machine.
+  assert.match(res.hint, /no answer within 0\.3 s \(the request was cancelled\)/);
+  assert.match(res.hint, /could not be read again before publishing \(3 tries within 1 s\)/);
+  assert.match(res.hint, /already uploaded/);
+  assert.equal(res.filesLive, true);
+  assert.deepEqual(posts, []);
+  assert.equal(gets, 4, "the reading at the start and three tries");
+  assert.equal(signals.length, 3);
+  assert.ok(signals.every((s) => s instanceof AbortSignal && s.aborted), "each timed-out request was really cancelled");
+});
+
+test("deploy: the read before publishing answers slowly, inside its limit → it is waited for and published", { timeout: 60_000 }, async () => {
+  const slow = (ok) => new Promise((resolve) => setTimeout(() => resolve(ok()), 250));
+  const { res, posts, gets } = await deployWithGets((n, ok) => (n === 1 ? ok() : slow(ok)), { tune: { tryMs: 5000, waitMs: 50 } });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(gets, 2, "one try was enough");
+  assert.equal(posts.length, 1);
+});
+
+test("REREAD: the limit of one try is not below what this server gives other single API requests, and the total follows from it", async () => {
+  const { REREAD, rereadTotalMs } = await import("../../dist/tools/deploy.js");
+  assert.ok(REREAD.tryMs >= 15_000, `${REREAD.tryMs}`);
+  assert.equal(rereadTotalMs(), REREAD.tries * REREAD.tryMs + REREAD.waitMs * 3);
+});

@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ElicitResultSchema,
   GetPromptRequestSchema,
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
@@ -27,6 +28,7 @@ import { gameserverInputSchema, runGameserver } from "./tools/gameserver.js";
 import { deployStatusInputSchema, runDeployStatus } from "./tools/deployStatus.js";
 import { runVerseOps, verseOpsInputSchema } from "./tools/verseOps.js";
 import { runVxShop, vxShopInputSchema } from "./tools/vxShop.js";
+import type { ConfirmHost } from "./tools/creatorOps.js";
 import {
   runUploadAsset,
   uploadAssetInputSchema,
@@ -189,7 +191,7 @@ const UPLOAD_ASSET_TOOL: Tool = {
 export const DEPLOY_TOOL: Tool = {
   name: "verse8_deploy",
   description:
-    "Publish the Verse8 project to production — use whenever the user asks to deploy / publish / launch / ship / 배포 / 출시 / 게시. NEVER run a deploy command via Bash. Auto-detects first deploy vs update from the verse record of the project's VITE_AGENT8_VERSE. Sequence: (1) verse8_checkpoint (pass the same V8 commit fields); (2) uploads `thumbnailPath` / `videoPath`; (3) rm -rf dist → `installCommand` (default `bun update`) → `bun run build --base ./` → gameserver build if any; (4) `@agent8/deploy --prod`; (5) POST /v1/verse/create or /v1/verse/update/<verseId>. Required fields match the web publish dialog: first deploy needs `title` (4–50), `tags` (1–5), a cover (`thumbnailPath` or `imageUrl`) and a release note; EVERY deploy needs `releaseNoteTitle` + `releaseNoteTypes` + `releaseNoteDescription`; on update other omitted fields keep their current values. ALWAYS call with `dryRun: true` first. If it returns `invalid_input` with `missing`, do not quiz the user — draft every value from the project (release note from the returned `suggestedReleaseNote`, cover via image_asset_generate) and re-run dryRun. If the dryRun returns `warnings`, show them to the user and confirm before deploying. First deploy: show the user that one result (`mode` + `publishBody`) and deploy only after they approve — publishing is public. Update: with no warnings, deploy right away (live title/cover/tags are kept, only the release note is new) and report playUrl + release note. MSU projects get `__MSU` + `__review_required` tags automatically, Nine Chronicles projects `__9C` + `__review_required` (both → MSU). The verse id is never changed (VX Shop products / gameserver state are keyed by it); `verse_owned_by_other` / `verse_id_unavailable` stop with a hint. `plugin_shim_missing`: the build references `DebugPanel` without the web editor's publish-time shim — the deploy stops before uploading game files (remove the reference, or publish from the web editor). Returns {mode, verseId, playUrl, publishBody, steps, msu, nineChronicles, warnings}.",
+    "Publish the Verse8 project to production — use whenever the user asks to deploy / publish / launch / ship / 배포 / 출시 / 게시. NEVER run a deploy command via Bash. Auto-detects first deploy vs update. Sequence: (1) verse8_checkpoint (same V8 commit fields); (2) uploads `thumbnailPath` / `videoPath`; (3) rm -rf dist → `installCommand` (default `bun update`) → `bun run build --base ./` → gameserver build; (4) `@agent8/deploy --prod`; (5) POST the verse record (create / update). Required as in the web publish dialog: first deploy needs `title` (4–50), `tags` (1–5), a cover (`thumbnailPath` or `imageUrl`) and a release note; EVERY deploy needs `releaseNoteTitle` + `releaseNoteTypes` + `releaseNoteDescription`; on update omitted fields keep their values. ALWAYS call with `dryRun: true` first. If it returns `invalid_input` with `missing`, do not quiz the user — draft every value from the project (release note from `suggestedReleaseNote`, cover via image_asset_generate) and re-run dryRun. If the dryRun returns `warnings`, show them to the user and confirm before deploying. First deploy: show the user that one result (`mode` + `publishBody`) and deploy only after they approve. Update: with no warnings, deploy right away (title/cover/tags stay, only the release note is new) and report playUrl + release note. If dryRun says `runCondition: user_confirm` (visibility widens: first deploy unless Private, update towards Public), the host asks the user and it runs only on their Run; `user_cancelled` / `confirm_unavailable` = nothing deployed, relay the hint. MSU projects get `__MSU` + `__review_required` tags, Nine Chronicles `__9C` + `__review_required`. The verse id never changes (VX Shop products / gameserver state are keyed by it); `verse_owned_by_other` / `verse_id_unavailable` stop with a hint. `plugin_shim_missing`: the build references `DebugPanel` without the web editor's publish shim; game files are not uploaded; the checkpoint push and cover upload are already done (remove the reference, or publish from the web editor).",
   inputSchema: zodToJsonSchema(deployInputSchema),
 };
 
@@ -210,14 +212,14 @@ export const DEPLOY_STATUS_TOOL: Tool = {
 export const VERSE_OPS_TOOL: Tool = {
   name: "verse8_verse",
   description:
-    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history), analytics (DAU / MAU / sessions summary and charts). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags, visibility; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Comments: comments (list), comment_pin (pin / unpin), comment_delete (irreversible). Changing actions PREVIEW by default: they return `changes` and a `planId` and change nothing. Show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. update keeps the current visibility unless `visibility` is given (making a Private game visible can start a review that keeps it hidden) and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
+    "Creator-page operations on a published Verse8 game, without a rebuild. Read: get (listing, visibility, review status, latest release note), mine (your games, with review status), release_notes (history), analytics (DAU / MAU / sessions summary and charts). Change: update (title, short description, description, tags, cover image, preview video, remix / mobile / orientation flags, visibility; local files are uploaded) and release_note_update (title, types, body, image of an existing note — only its author may). Comments: comments (list), comment_pin (pin / unpin), comment_delete (irreversible; asks the user like a widening update, below). Changing actions PREVIEW by default: they return `changes` and a `planId` and change nothing. Show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. An update that widens visibility (Private → Unlisted / Public, Unlisted → Public; preview says `runCondition: user_confirm`) also opens the host's own confirmation prompt when called with the planId and runs only if the user chooses Run there and nothing changed meanwhile; `user_cancelled` / `confirm_unavailable` mean nothing changed — relay the hint, do not retry. update keeps the current visibility unless `visibility` is given (making a Private game visible can start a review that keeps it hidden) and never creates a release note or notifies followers. To ship new game code use verse8_deploy instead.",
   inputSchema: zodToJsonSchema(verseOpsInputSchema),
 };
 
 export const VXSHOP_TOOL: Tool = {
   name: "verse8_vxshop",
   description:
-    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. sales: purchases and disputes. revenue: VX totals / refunds for a period. archive: archive / restore an item. dispute: answer a buyer dispute (the buyer is notified; no refund). upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert, archive and dispute PREVIEW by default (`changes` / `body` and a `planId`) and change nothing — price and on-sale changes affect real purchases, so show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
+    "VX Shop items of this project's verse (the creator page's VX Shop tab). list: seller approval + items with their purchase limits. sales: purchases and disputes. revenue: VX totals / refunds for a period. archive: archive / restore an item. dispute: answer a buyer dispute (the buyer is notified; no refund). upsert: create an item (productId, name, price in VX, stock required; created hidden unless isActive) or edit one by itemId (name, price, stock, image, description, metadata object, purchase limits, on-sale flag). upsert, archive and dispute PREVIEW by default (`changes` / `body` and a `planId`) and change nothing — price and on-sale changes affect real purchases, so show the preview to the user; after they approve, call again with the same arguments plus that planId. It runs only if nothing changed since the preview — otherwise `plan_mismatch` (says what changed): preview again. Starting a sale (an edit that puts the item on sale: on-sale flag, restore, sale dates, or stock from 0 on an item on sale; stock 0 does not take an item off sale) and repricing an item on sale or scheduled (preview says `runCondition: user_confirm`) also open the host's own confirmation prompt when called with the planId, and run only if the user chooses Run there and nothing changed meanwhile; `user_cancelled` / `confirm_unavailable` mean nothing changed — relay the hint, do not retry. Editing keeps the current purchase limits unless you change or clear them. Refused when the account is not an approved VX seller. The game's code sells an item by its productId.",
   inputSchema: zodToJsonSchema(vxShopInputSchema),
 };
 
@@ -244,6 +246,13 @@ function jsonContent(value: unknown): { type: "text"; text: string }[] {
   return [{ type: "text", text: JSON.stringify(value, null, 2) }];
 }
 
+/**
+ * How long a confirmation prompt may stay open. The SDK's default request
+ * timeout (60 s) is shorter than a person reading a price; past this the
+ * request fails and nothing runs.
+ */
+const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function createServer(): Server {
   const server = new Server(SERVER_INFO, {
     capabilities: {
@@ -269,6 +278,33 @@ export function createServer(): Server {
       /* best-effort; client will refresh on next tools/list anyway */
     });
   };
+
+  // The user confirmation of the plan gate (creatorOps RUN_RULES): the
+  // prompt is an MCP elicitation the host shows in its own UI, and the
+  // answer comes back on this connection, not through the agent. A host
+  // that did not declare elicitation at initialize cannot be asked.
+  // `signal` is the tool call's own: the SDK aborts it when the host cancels
+  // the call. The prompt is withdrawn with it, and an answer that still
+  // arrives afterwards is not used.
+  // The form capability is what the prompt needs (a host that declares only
+  // url elicitation cannot show it; the SDK reads an empty declaration as
+  // form). The request is sent as it is, not through the SDK's
+  // elicitInput: that helper throws when an accepted answer does not fit
+  // the form (a third choice, no choice), which would be reported as "the
+  // prompt could not be shown" although the user did answer. The gate reads
+  // the raw answer and runs only on the Run choice.
+  const confirmHostFor = (signal: AbortSignal): ConfirmHost => ({
+    get canAsk() {
+      return server.getClientCapabilities()?.elicitation?.form !== undefined;
+    },
+    ask: (message, requestedSchema) =>
+      server.request(
+        { method: "elicitation/create", params: { mode: "form", message, requestedSchema } },
+        ElicitResultSchema,
+        { timeout: CONFIRM_TIMEOUT_MS, signal },
+      ),
+    isCancelled: () => signal.aborted,
+  });
 
   // tools/list — re-evaluate token every call so project-scoped tools
   // appear as soon as the user logs in (no server restart needed).
@@ -305,7 +341,7 @@ export function createServer(): Server {
 
   // tools/call — re-validate on invocation and record to the V8 call log
   // (consumed by verse8_checkpoint when the LLM omits explicit toolCalls).
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const { name, arguments: args } = req.params;
     const cwd = process.cwd();
     // verse8_checkpoint is the consumer of the log; don't record itself.
@@ -445,7 +481,7 @@ export function createServer(): Server {
       if (name === "verse8_deploy") {
         const parsed = deployInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runDeploy(parsed, cwd), {
+        const result = await dispatchTool(name, () => runDeploy(parsed, cwd, confirmHostFor(extra.signal)), {
           projectDir: pd,
         });
         return { content: jsonContent(result), isError: !result.ok };
@@ -468,14 +504,14 @@ export function createServer(): Server {
       if (name === "verse8_verse") {
         const parsed = verseOpsInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd), { projectDir: pd });
+        const result = await dispatchTool(name, () => runVerseOps(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 
       if (name === "verse8_vxshop") {
         const parsed = vxShopInputSchema.parse(args ?? {});
         const pd = parsed.projectDir ?? cwd;
-        const result = await dispatchTool(name, () => runVxShop(parsed, cwd), { projectDir: pd });
+        const result = await dispatchTool(name, () => runVxShop(parsed, cwd, confirmHostFor(extra.signal)), { projectDir: pd });
         return { content: jsonContent(result), isError: !result.ok };
       }
 
