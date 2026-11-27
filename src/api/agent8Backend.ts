@@ -195,7 +195,7 @@ async function getJson<T>(url: string, token: string, signal?: AbortSignal): Pro
   try {
     raw = await res.text();
   } catch (e) {
-    return { ok: false, status: res.status, body: safeHint(`HTTP ${res.status}; the answer could not be read (${(e as Error).message})`) };
+    return { ok: false, status: res.status, body: safeHint(`the answer could not be read (${(e as Error).message})`) };
   }
   if (res.status >= 200 && res.status < 300) {
     const data = tolerantJsonParse<T>(raw);
@@ -338,8 +338,8 @@ function classifyUploadStatus(
  *   - Network / JSON-parse failures are mapped to upload_failed.
  *
  * This function does NOT call meme-api's /v1/activity/upload-asset; the
- * batch upload in `verse8_assets` records it for each file as soon as that
- * file is uploaded (`recordUploadAssetActivity` in v8MemeApi.ts).
+ * batch upload in `verse8_assets` records it once per call, as the web
+ * editor does once per batch (`recordUploadAssetActivity` in v8MemeApi.ts).
  */
 export async function uploadAttachment(
   input: UploadAttachmentInput,
@@ -479,11 +479,14 @@ export async function searchResources(params: {
     clearTimeout(timer);
     params.signal?.removeEventListener("abort", onCancel);
   }
-  if (!r.ok && ac.signal.aborted) {
+  // Stopped before any status arrived: say why. A status that did arrive
+  // (the body read was cut off) is kept, so a 401 stays a 401.
+  if (!r.ok && r.status === 0 && ac.signal.aborted) {
     return { ok: false, status: 0, body: timedOut ? `no answer within ${timeoutMs} ms` : "cancelled" };
   }
   if (!r.ok) return r;
-  if (r.data.success !== true || !Array.isArray(r.data.data)) {
+  // A 2xx body of `null` or a non-object is a malformed answer, not a crash.
+  if (!r.data || typeof r.data !== "object" || r.data.success !== true || !Array.isArray(r.data.data)) {
     return { ok: false, status: r.status, body: redactHead(JSON.stringify(r.data), 300) };
   }
   const items: ResourceItem[] = [];

@@ -39,8 +39,8 @@ import { projectDirField } from "./verseContext.js";
  *           way the panel's "add to category" does.
  *   upload  upload several files to `assets/<categoryPath>` with the gates
  *           of verse8_upload_asset; as each one is uploaded, register it in
- *           src/assets.json with the panel's finished entry and record
- *           POST /v1/activity/upload-asset {count: 1}.
+ *           src/assets.json with the panel's finished entry; at the end,
+ *           record POST /v1/activity/upload-asset {count: files uploaded}.
  *
  * src/assets.json has no API on the web either (the panel edits the file
  * in the container), so it is read, edited and written here. Existing
@@ -379,11 +379,17 @@ const ACCOUNT_REJECTIONS = new Set([401, 402, 403]);
 
 type NotAttempted = { path: string; reason: "cancelled" | "account_rejected" | "manifest_unwritable" };
 
-const NOT_ATTEMPTED_WHY: Record<NotAttempted["reason"], string> = {
-  cancelled: "the call was cancelled",
-  account_rejected: "the account was refused",
-  manifest_unwritable: `${MANIFEST_REL} could not be written`,
-};
+function notAttemptedHintFor(list: NotAttempted[]): string {
+  const n = `${list.length} file(s) in \`notAttempted\` were not sent`;
+  switch (list[0].reason) {
+    case "manifest_unwritable":
+      return `${n}: ${MANIFEST_REL} could not be written (see \`hint\`). Fix that, add the files in \`uploaded\` to ${MANIFEST_REL} by their URL (do not upload them again), then send these.`;
+    case "account_rejected":
+      return `${n}: the account was refused (see \`failed\`). Fix that, then send them; the files in \`added\` are already in ${MANIFEST_REL}.`;
+    case "cancelled":
+      return `${n}: the call was cancelled. Send them again; the files in \`added\` are already in ${MANIFEST_REL}.`;
+  }
+}
 
 async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal): Promise<AssetsResult> {
   if (!input.files) return fail("invalid_input", "upload needs `files`.");
@@ -415,20 +421,23 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
   const preFound = findOrCreateCategory(pre.manifest, segments);
   if (!preFound.ok) return fail(preFound.error, preFound.hint);
 
-  // Each file is registered in src/assets.json and its upload activity
-  // recorded as soon as it is on the CDN, not at the end of the batch: a
-  // call can be cut off at any point (the host's timeout or cancel; the SDK
-  // then drops this call's answer), and src/assets.json must then list
-  // exactly the files that are uploaded, so a retry that reads it sends only
-  // the rest.
+  // Each file is registered in src/assets.json as soon as it is on the CDN,
+  // not at the end of the batch: a call can be cut off at any point (the
+  // host's timeout or cancel; the SDK then drops this call's answer), and a
+  // file this call uploaded and got a URL for is then already listed. A file
+  // cut off mid-send, or one whose registration failed, can be on the CDN
+  // without being listed. The upload activity is recorded once, after the
+  // loop: a slow activity server must not hold every file, and overlapping
+  // records can lose counts on the server (it reads, adds and writes back).
   const { token: _unused, ...tokenWhere } = resolveToken(path.resolve(cwd));
   const added: Array<{ key: string; path: string; url: string }> = [];
   const unregistered: Array<{ path: string; url: string }> = [];
   const failed: Array<{ path: string; error: string; hint: string; status?: number }> = [];
   const notAttempted: NotAttempted[] = [];
   let manifestError: Fail | undefined;
-  let activityRecorded = true;
-  let activityHint: string | undefined;
+  // The failure that stopped the batch (a cancel mid-send, an account
+  // refusal): when nothing uploaded, it is the result's error.
+  let stoppedBy: (typeof failed)[number] | undefined;
   const skipRest = (from: number, reason: NotAttempted["reason"]) => {
     for (const rest of checked.slice(from)) notAttempted.push({ path: rest.file.absPath, reason });
   };
@@ -466,20 +475,27 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     } catch (e) {
       resp = { ok: false, error: "upload_failed", status: 0, hint: safeHint(`upload interrupted: ${(e as Error).message}`) };
     }
-    if (!resp.ok && signal?.aborted) {
+    // A status that arrived (headers read) says what happened even if the
+    // call was cancelled while its body was read: a 4xx / 5xx is a refusal,
+    // not an unknown.
+    const refused = !resp.ok && resp.status >= 300;
+    if (!resp.ok && !refused && signal?.aborted) {
       // Cut off mid-send: the bytes may or may not be on the CDN.
-      failed.push({
+      stoppedBy = {
         path: file.absPath,
         error: "upload_status_unknown",
         hint: `the call was cancelled while this file was being sent: it may or may not be on the CDN, and it is not in ${MANIFEST_REL}`,
-      });
+      };
+      failed.push(stoppedBy);
       skipRest(i + 1, "cancelled");
       break;
     }
     if (!resp.ok) {
       const hint = resp.status === 401 ? safeHint(`${resp.hint} — ${rejectedTokenHint(tokenWhere)}.`) : resp.hint;
-      failed.push({ path: file.absPath, error: resp.error, hint, status: resp.status });
+      const entry = { path: file.absPath, error: resp.error, hint, status: resp.status };
+      failed.push(entry);
       if (ACCOUNT_REJECTIONS.has(resp.status)) {
+        stoppedBy = entry;
         skipRest(i + 1, "account_rejected");
         break;
       }
@@ -528,16 +544,6 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     if (registered.ok) added.push({ key: registered.key, path: file.absPath, url: resp.url });
     else unregistered.push({ path: file.absPath, url: resp.url });
 
-    // The file is uploaded either way, so its activity is recorded.
-    const a = await recordUploadAssetActivity(1, token, activityTimeoutMs);
-    if (!a.ok) {
-      activityRecorded = false;
-      if (!activityHint) {
-        activityHint = safeHint(`upload activity not recorded: HTTP ${a.status} ${a.body}`.slice(0, 300));
-        if (a.status === 401) activityHint = safeHint(`${activityHint} ${rejectedTokenHint(tokenWhere)}.`);
-      }
-    }
-
     if (!registered.ok) {
       // The manifest cannot take entries now; every further upload would be
       // another file on the CDN that is not listed, so the batch stops.
@@ -547,24 +553,35 @@ async function runUpload(input: AssetsInput, cwd: string, signal?: AbortSignal):
     }
   }
 
+  // One activity record for the files this call uploaded (registered or
+  // not: they are on the CDN either way). It has its own time limit and is
+  // not tied to the call's signal, so a cancelled call still records what it
+  // uploaded, right away (the file in flight was cut off above).
   const uploadedCount = added.length + unregistered.length;
+  let activityRecorded = false;
+  let activityHint: string | undefined;
+  if (uploadedCount > 0) {
+    const a = await recordUploadAssetActivity(uploadedCount, token, activityTimeoutMs);
+    activityRecorded = a.ok;
+    if (!a.ok) {
+      activityHint = safeHint(`upload activity not recorded: ${a.status ? `HTTP ${a.status} ` : ""}${a.body}`.slice(0, 300));
+      if (a.status === 401) activityHint = safeHint(`${activityHint} ${rejectedTokenHint(tokenWhere)}.`);
+    }
+  }
+
   if (uploadedCount === 0) {
     if (failed.length === 0) {
       return fail("upload_cancelled", "the call was cancelled before any file was uploaded; nothing was changed.", { notAttempted });
     }
-    return fail(failed[0].error, `no file uploaded: ${failed[0].hint}`, {
-      ...(failed[0].status !== undefined ? { status: failed[0].status } : {}),
+    const lead = stoppedBy ?? failed[0];
+    return fail(lead.error, `no file uploaded: ${lead.hint}`, {
+      ...(lead.status !== undefined ? { status: lead.status } : {}),
       failed,
-      ...(notAttempted.length > 0 ? { notAttempted } : {}),
+      ...(notAttempted.length > 0 ? { notAttempted, notAttemptedHint: notAttemptedHintFor(notAttempted) } : {}),
     });
   }
   const notAttemptedPart =
-    notAttempted.length > 0
-      ? {
-          notAttempted,
-          notAttemptedHint: `${notAttempted.length} file(s) were not sent (${NOT_ATTEMPTED_WHY[notAttempted[0].reason]}). Read ${MANIFEST_REL} before sending files again: it lists every file this call uploaded.`,
-        }
-      : {};
+    notAttempted.length > 0 ? { notAttempted, notAttemptedHint: notAttemptedHintFor(notAttempted) } : {};
   if (manifestError) {
     return {
       ...manifestError,

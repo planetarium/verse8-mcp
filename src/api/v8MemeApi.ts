@@ -235,9 +235,9 @@ export async function updateVerse(
  * POST /v1/activity/upload-asset `{count}` — the upload activity record of
  * planetarium/agent8 apps/frontend/src/lib/api/verse8.ts
  * `sendActivityUploadAsset`. The web panel sends it once after a batch with
- * `count` = files that uploaded; verse8_assets sends `count: 1` as each file
- * is uploaded, so a call cut off midway has recorded exactly what it
- * uploaded. Like the web, a failure is reported, never thrown.
+ * `count` = files that uploaded, and verse8_assets does the same once per
+ * call (also when the call was cancelled midway). Like the web, a failure is
+ * reported, never thrown.
  */
 export async function recordUploadAssetActivity(
   count: number,
@@ -252,7 +252,8 @@ export async function recordUploadAssetActivity(
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const r = await v8Request("POST", "/v1/activity/upload-asset", { token, body: { count }, signal: ac.signal });
-    return r.ok ? { ok: true } : r;
+    // A 2xx is the record, even if its answer could not be read after it.
+    return r.ok || (r.status >= 200 && r.status < 300) ? { ok: true } : r;
   } catch (e) {
     if (ac.signal.aborted) return { ok: false, status: 0, body: `no answer within ${timeoutMs} ms` };
     return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
@@ -270,8 +271,11 @@ export const UPLOAD_ACTIVITY_TIMEOUT_MS = 5_000;
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 
 /**
- * Generic JSON call to v8-meme-api for the creator tools. Any 2xx is `ok`,
- * including 204 with an empty body (`data: null`) — unlike `toVerseResult`.
+ * Generic JSON call to v8-meme-api for the creator tools. A 2xx whose body
+ * was read is `ok`, including 204 with an empty body (`data: null`) — unlike
+ * `toVerseResult`. A body that cannot be read (connection dropped, request
+ * aborted) is not `ok`, with the status that arrived kept: a caller that
+ * only needs the status (recordUploadAssetActivity) can still use it.
  * `query` values that are undefined / "" are left out.
  */
 export async function v8Request<T>(
@@ -304,7 +308,7 @@ export async function v8Request<T>(
   try {
     raw = await res.text();
   } catch (e) {
-    return { ok: false, status: res.status, body: safeHint(`HTTP ${res.status}; the answer could not be read (${(e as Error).message})`) };
+    return { ok: false, status: res.status, body: safeHint(`the answer could not be read (${(e as Error).message})`) };
   }
   if (res.status >= 200 && res.status < 300) {
     let data: T | null = null;

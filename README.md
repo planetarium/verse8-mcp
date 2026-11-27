@@ -151,7 +151,7 @@ The same holds across the waits inside a run. A deploy builds and uploads for mi
 
 Then:
 
-- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — read `src/assets.json`, then retry with only the files not listed there (each file is registered as soon as it is uploaded).
+- From `verse8_new_project_start` or `verse8_upload_asset` — retry the same tool call. From `verse8_assets` `upload` — retry only the files in `failed` and `notAttempted` (each uploaded file is registered as soon as it is uploaded). Files in `uploaded` are on the CDN but not registered: add them to `src/assets.json` by their URL. A file reported `upload_status_unknown` may already be on the CDN, and sending it again can leave a second copy. If the call returned nothing (timed out), read `src/assets.json` first and look at the entries added by that call (their key `<name>_<ms>_<n>` carries the upload time) — an older entry with the same file name does not mean the new version was uploaded.
 - From `verse8_new_project_confirm` — the GitLab project may already have been created before the error, and the error does not say which one. Any retry (calling `_confirm` again or starting over from `verse8_new_project_start`) creates another project, so an empty project may be left behind.
 
 ### MCP server restarted mid-flow
