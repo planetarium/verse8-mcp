@@ -5,6 +5,12 @@
 
 import { NEW_PROJECT_CONFIRM_STEPS } from "./newProjectSteps.js";
 
+// The VX Shop section is the template's LAST section, after the skills
+// catalog and the plugin rules (#66 review): hosts that read only the first
+// N bytes of AGENTS.md (Codex `project_doc_max_bytes`, 32 KiB by default)
+// cut it first instead of the rules before it, and the same flow is in the
+// verse8_vxshop tool description.
+
 export const AGENTS_MD_TEMPLATE = `# Verse8 Project — Agent Instructions
 
 > Read this file in full at session start. It is installed by verse8-mcp
@@ -348,6 +354,32 @@ A 2D game stays on the 2D stack (Phaser) unless the user asks for Incanto.
 
 Call \`verse8_status\`. If \`project.attached\` is false, call
 \`verse8_attach\` — it is idempotent.
+
+## VX Shop items (only when the game sells something for VX)
+
+Make the item with \`verse8_vxshop\` — do not ask the user to register it
+on the web and paste a Product ID (that is the \`vx-shop-impl\` skill's
+Step 0, for the web editor; this overrides it, the rest of the skill
+applies). Its tool description has the full flow:
+
+1. \`list\` first. \`seller.isSeller\` false → give the user
+   \`seller.applyUrl\` and stop. \`needsPublish\` → the game must be
+   published first: tell the user, never deploy on your own.
+2. An item they already made (\`list\` with \`productId\`) → show its values
+   and use it; an archived one comes back with \`archive\`,
+   \`archived: false\` — with its \`isActive\` still true that restore starts
+   the sale, so do it after the step-5 conditions or set \`isActive: false\`
+   first.
+3. Otherwise propose productId, name, price (100 VX ≈ 1 USD), stock and
+   limits; on their yes, \`upsert\` (preview, then \`planId\`). It is created
+   hidden: nobody can buy it, and \`getItem\` misses it, on PREVIEW too.
+4. Put the returned \`productId\` exactly in the client's \`getItem\` /
+   \`buyItem\`, always; grant it in \`$onItemPurchased\`, or in the external
+   receiver if the game uses external-only delivery.
+5. Starting the sale (\`isActive: true\`) and repricing an item on sale ask
+   the user in a confirmation you cannot answer. If the game is published
+   and the granting code is not live there yet, tell the user a deploy is
+   needed and deploy only when they ask.
 `;
 
 /**
