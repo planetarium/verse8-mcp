@@ -367,15 +367,19 @@ applies). Its tool description has the full flow:
    published first: tell the user, never deploy on your own.
 2. An item they already made (\`list\` with \`productId\`) → show its values
    and use it; an archived one comes back with \`archive\`,
-   \`archived: false\`.
+   \`archived: false\` — with its \`isActive\` still true that restore starts
+   the sale, so do it after the step-5 conditions or set \`isActive: false\`
+   first.
 3. Otherwise propose productId, name, price (100 VX ≈ 1 USD), stock and
    limits; on their yes, \`upsert\` (preview, then \`planId\`). It is created
    hidden: nobody can buy it, and \`getItem\` misses it, on PREVIEW too.
 4. Put the returned \`productId\` exactly in \`getItem\` / \`buyItem\` and
-   \`$onItemPurchased\`.
+   \`$onItemPurchased\` (an external-only delivery receiver instead, if the
+   game uses one).
 5. Starting the sale (\`isActive: true\`) and repricing an item on sale ask
-   the user in a confirmation you cannot answer. On a published game,
-   deploy the granting code first.
+   the user in a confirmation you cannot answer. On a published game the
+   granting code must be live first: tell the user a deploy is needed and
+   deploy only when they ask.
 `;
 
 /**

@@ -44,8 +44,14 @@ test("AGENTS_MD_TEMPLATE: the short VX flow — seller, publish first, reuse/res
   assert.match(s, /an archived one comes back with `archive`,\s+`archived: false`/);
   assert.match(s, /It is created\s+hidden: nobody can buy it, and `getItem` misses it, on PREVIEW too/);
   assert.match(s, /Put the returned `productId` exactly/);
-  assert.match(s, /ask\s+the user in a confirmation you cannot answer\. On a published game,\s+deploy the granting code first/);
-  assert.ok(Buffer.byteLength(s) < 1400, `short: ${Buffer.byteLength(s)} B`);
+  assert.match(s, /ask\s+the user in a confirmation you cannot answer\. On a published game the\s+granting code must be live first: tell the user a deploy is needed and\s+deploy only when they ask\./);
+  // A restore of an item whose on-sale flag is set starts the sale (PR #77 re-review).
+  assert.match(s, /with its `isActive` still true that restore starts\s+the sale, so do it after the step-5 conditions or set `isActive: false`\s+first/);
+  assert.match(s, /an external-only delivery receiver instead, if the\s+game uses one/);
+  // Every deploy mention in the VX guidance waits for the user.
+  for (const m of s.matchAll(/[^.]*\bdeploy\b[^.]*\./gi)) assert.match(m[0], /never deploy|only when they ask|deploy is needed/, m[0]);
+  // Last section, so its size moves no rule; kept short so it is rarely cut either.
+  assert.ok(Buffer.byteLength(s) < 1500, `short: ${Buffer.byteLength(s)} B`);
 });
 
 test("verse8_vxshop description: the flow, matching what list does, within 2,048 characters", () => {
@@ -56,8 +62,10 @@ test("verse8_vxshop description: the flow, matching what list does, within 2,048
   // list does not search by name; a plain list is paged and leaves archived items out.
   assert.doesNotMatch(d, /productId or name/);
   assert.match(d, /list with its productId: all pages, archived too; a plain list is 20 a page, no archived unless includeArchived/);
-  assert.match(d, /archived: restore with archive, archived: false/);
-  assert.match(d, /create it hidden \(preview, then planId\); \(3\) put the returned productId in the code; \(4\) starting the sale is a later edit the user confirms/);
+  assert.match(d, /archived: restore with archive, archived: false — with isActive true that starts the sale/);
+  assert.match(d, /create it hidden \(preview, then planId\); \(3\) put the returned productId in the code \(or an external delivery receiver\); \(4\) starting the sale is a later edit the user confirms — on a published game the granting code must be live first: say a deploy is needed, deploy only if they ask\./);
+  // Every deploy mention in the description waits for the user (verse8_deploy as a name is not an instruction).
+  for (const m of d.replace(/verse8_deploy/g, "").matchAll(/[^.;]*\bdeploy\b[^.;]*/gi)) assert.match(m[0], /never deploy|only if they ask|deploy is needed/, m[0]);
 });
 
 test("the skill step this rule overrides is still in the vendored skill (else drop the override text)", () => {

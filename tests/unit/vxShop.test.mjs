@@ -193,7 +193,9 @@ test("create, run: the result names the productId for the code and says the item
       assert.match(done.next[0], /Use productId 'gem-pack' exactly as written in the game's code: useVXShop getItem \/ buyItem and the 'gem-pack' case/);
       assert.match(done.next[1], /hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either.*Starting the sale is a separate edit \(itemId 8, isActive: true\) that the user confirms/);
       // A purchase before the granting code is live is paid and not granted (#66 review).
-      assert.match(done.next[2], /publish the code that grants the item \(\$onItemPurchased\) with verse8_deploy before the sale starts/);
+      // Only the user asks for a deploy (an update that keeps the visibility asks nobody).
+      assert.match(done.next[2], /the code that grants the item must be published before the sale starts .*: tell the user a deploy is needed, and run verse8_deploy only when they ask for it\./);
+      assert.match(done.next[3], /external receiver \(external-only delivery, which does not call \$onItemPurchased\), add the grant for this productId there first/);
     },
   );
 });
@@ -308,7 +310,9 @@ test("tools/list: verse8_vxshop listed, description ≤ 2,048, planId gate state
 
 // ── #66 review (PR #77) ──
 
-const NO_VERSE = () => json(404, { statusCode: 404, message: `Verse with ID ${VERSE} not found` });
+// As the backend sends it: the body always carries the request path, whose query names the verse.
+const errBody = (message) => ({ statusCode: 404, timestamp: "2026-11-27T00:00:00.000Z", path: `/v1/vx-shop-items?verseId=${VERSE}&page=1`, message });
+const NO_VERSE = () => json(404, errBody(`Verse with ID ${VERSE} not found`));
 
 // An unpublished game has no verse record: every verse-level shop read answers 404. The seller
 // status is still known and goes with the failure, and the hint says to publish first without deploying.
@@ -351,13 +355,18 @@ test("unpublished game: create, sales and revenue say to publish first too", asy
     },
   );
   // A 404 that is not about the verse stays a plain not_found.
-  await withApi({ "GET /v1/vx-shop-items/sales": () => json(404, { message: "Cannot GET" }) }, async () => {
-    assert.equal((await run(dir, { action: "sales" })).needsPublish, undefined);
-  });
+  // Other 404s are not "not published", though their body's path holds `verseId=` (PR #77 re-review).
+  for (const message of ["Cannot GET", "User with UID 123 not found"]) {
+    await withApi({ "GET /v1/vx-shop-items/sales": () => json(404, errBody(message)), "GET /v1/vx-shop-items": () => json(404, errBody(message)) }, async () => {
+      assert.equal((await run(dir, { action: "sales" })).needsPublish, undefined, message);
+      assert.equal((await run(dir, { action: "list" })).needsPublish, undefined, message);
+    });
+  }
 });
 
 // The server compares product ids without regard to case: the item stored as 'Gold-Pack' holds 'gold-pack'.
-test("productId lookup: exact first, else case-insensitive with the stored value; existingItem the same", async () => {
+// The server's unique index ignores case, so at most one item matches 'gold-pack' that way.
+test("productId lookup: case-insensitive, and the stored value comes back (top level too); existingItem the same", async () => {
   const dir = project();
   const stored = { ...ITEM, id: 40, productId: "Gold-Pack" };
   await withApi(
@@ -366,32 +375,81 @@ test("productId lookup: exact first, else case-insensitive with the stored value
       const l = await run(dir, { action: "list", productId: "gold-pack" });
       assert.equal(l.items[0].id, 40);
       assert.equal(l.items[0].productId, "Gold-Pack");
+      assert.equal(l.productId, "Gold-Pack", "the top-level productId is the stored one once found");
       assert.match(l.notes[0], /Stored as 'Gold-Pack'.*use that exact value in the code/);
       const t = await run(dir, { action: "upsert", productId: "gold-pack", name: "n", price: 1, stock: 1 });
       assert.equal(t.existingItem.id, 40);
       assert.match(t.hint, /use 'Gold-Pack' exactly in the code/);
+      const same = await run(dir, { action: "list", productId: "Gold-Pack" });
+      assert.equal(same.notes, undefined, "an exact match needs no note");
+      const none = await run(dir, { action: "list", productId: "silver-pack" });
+      assert.equal(none.productId, "silver-pack", "nothing found: the asked value");
     },
   );
-  const exact = { ...ITEM, id: 41, productId: "gold-pack" };
-  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [stored, exact], total: 2 }) }, async () => {
-    const l = await run(dir, { action: "list", productId: "gold-pack" });
-    assert.equal(l.items[0].id, 41, "an exact match wins over a case match");
-    assert.equal(l.notes, undefined);
+});
+
+// With the on-sale flag still set, restoring is itself a sale start (PR #77 re-review).
+test("archived item found: the restore hint depends on its on-sale flag", async () => {
+  const dir = project();
+  const hidden = { ...ITEM, id: 42, productId: "old-pack", isArchived: true, isActive: false };
+  const flagged = { ...ITEM, id: 46, productId: "flag-pack", isArchived: true, isActive: true };
+  await withApi(
+    { "GET /v1/vx-shop-items": () => json(200, { items: [hidden, flagged], total: 2 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
+    async () => {
+      const l = await run(dir, { action: "list", productId: "old-pack" });
+      assert.match(l.notes.join(" "), /restore it with action archive, itemId 42, archived: false \(an isActive edit does not restore it\); it comes back hidden/);
+      const t = await run(dir, { action: "upsert", productId: "old-pack", name: "n", price: 1, stock: 1 });
+      assert.match(t.hint, /archived\).*restore it with action archive, itemId 42, archived: false/);
+      for (const r of [await run(dir, { action: "list", productId: "flag-pack" }), await run(dir, { action: "upsert", productId: "flag-pack", name: "n", price: 1, stock: 1 })]) {
+        const text = r.notes ? r.notes.join(" ") : r.hint;
+        assert.match(text, /on-sale flag still set, so restoring it starts the sale.*only once the code that grants it is live — or first edit it to isActive: false, then restore it/);
+        assert.doesNotMatch(text, /comes back hidden/);
+      }
+    },
+  );
+});
+
+test("product_id_taken survives a helper read that throws: no existingItem, still product_id_taken", async () => {
+  const dir = project();
+  await withApi(
+    {
+      "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }),
+      "GET /v1/vx-shop-items": () => {
+        throw new TypeError("fetch failed");
+      },
+    },
+    async () => {
+      const r = await run(dir, { action: "upsert", productId: "vault-slot", name: "n", price: 10, stock: 1 });
+      assert.equal(r.error, "product_id_taken", JSON.stringify(r));
+      assert.equal(r.existingItem, undefined);
+    },
+  );
+});
+
+test("saleState: a purchase date the server cannot read is unknown, not on sale", async () => {
+  const dir = project();
+  const odd = { ...ITEM, id: 47, productId: "odd", metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: "2026-12 20:00" } }) };
+  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [odd], total: 1 }) }, async () => {
+    assert.equal((await run(dir, { action: "list" })).items[0].saleState, "unknown");
   });
 });
 
-test("archived item found: list and product_id_taken say to restore with archive, archived: false", async () => {
+// Where a sale can start (the on-sale flag edit, a restore with the flag set), the preview says what must be live first.
+test("sale-start previews carry the before-the-sale steps: deploy only when the user asks; external receiver", async () => {
   const dir = project();
-  const old = { ...ITEM, id: 42, productId: "old-pack", isArchived: true, isActive: false };
-  await withApi(
-    { "GET /v1/vx-shop-items": () => json(200, { items: [old], total: 1 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
-    async () => {
-      const l = await run(dir, { action: "list", productId: "old-pack" });
-      assert.match(l.notes.join(" "), /restore it with action archive, itemId 42, archived: false \(an isActive edit does not restore it\)/);
-      const t = await run(dir, { action: "upsert", productId: "old-pack", name: "n", price: 1, stock: 1 });
-      assert.match(t.hint, /archived\).*restore it with action archive, itemId 42, archived: false/);
-    },
-  );
+  const hiddenItem = { ...ITEM, id: 48, isActive: false };
+  const archivedOnSale = { ...ITEM, id: 49, isArchived: true, isActive: true };
+  const archivedHidden = { ...ITEM, id: 50, isArchived: true, isActive: false };
+  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [hiddenItem, archivedOnSale, archivedHidden], total: 3 }) }, async () => {
+    const before = /tell the user a deploy is needed, and run verse8_deploy only when they ask for it/;
+    const ext = /add the grant for this productId there first/;
+    const start = await run(dir, { action: "upsert", itemId: 48, isActive: true });
+    assert.ok(start.warnings.some((w) => before.test(w)) && start.warnings.some((w) => ext.test(w)), JSON.stringify(start.warnings));
+    const restore = await run(dir, { action: "archive", itemId: 49, archived: false });
+    assert.ok(restore.warnings.some((w) => before.test(w)), JSON.stringify(restore.warnings));
+    const quiet = await run(dir, { action: "archive", itemId: 50, archived: false });
+    assert.ok(!quiet.warnings.some((w) => before.test(w)), "a restore that stays hidden starts no sale");
+  });
 });
 
 // "on sale" is judged from the on-sale flag, archive flag and purchase dates, not the flag alone.

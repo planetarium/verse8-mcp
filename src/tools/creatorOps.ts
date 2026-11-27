@@ -479,7 +479,7 @@ export function dateOf(v: unknown): number | null {
 const hasValue = (v: unknown): boolean => v !== undefined && v !== null;
 /** A purchase date that is there and cannot be read. */
 const unreadable = (v: unknown): boolean => hasValue(v) && readPurchaseDate(v) === null;
-const unreadableWindow = (limits: Record<string, unknown>): boolean => unreadable(limits.purchaseStartDate) || unreadable(limits.purchaseEndDate);
+export const unreadableWindow = (limits: Record<string, unknown>): boolean => unreadable(limits.purchaseStartDate) || unreadable(limits.purchaseEndDate);
 /** For a request: which of its purchase dates is not in the accepted form, as an invalid_input hint; null when both are fine. */
 export function purchaseDateProblem(limits: Record<string, unknown> | undefined): string | null {
   for (const key of ["purchaseStartDate", "purchaseEndDate"]) {
