@@ -68,7 +68,7 @@ export const gitTokensInputSchema = z
         "The project: a path like `owner/game-slug`, the web editor URL, or a gitlab.verse8.io URL. Omitted = the gitlab.verse8.io origin of projectDir.",
       ),
     projectDir: projectDirField,
-    tokenId: z.number().int().min(1).optional().describe("revoke: the token's id (from list)."),
+    tokenId: z.number().int().min(1).optional().describe("revoke only: the token's id (from list). Refused with list and revoke_all."),
     planId: planIdField,
   })
   .strict();
@@ -161,7 +161,31 @@ export async function runGitTokens(input: GitTokensInput, serverCwd: string = pr
   return withRejectedTokenHint(await runWith(input, projectDir, auth, host), auth);
 }
 
+/**
+ * An input the action does not use is refused, not ignored: an agent that
+ * passes tokenId to revoke_all meant one token and must not be shown a
+ * "revoke every token" preview, and a planId given to list means it thought
+ * something would run. Checked before the login and before any request.
+ */
+export function inputMismatch(input: GitTokensInput): OpFail | null {
+  switch (input.action) {
+    case "list": {
+      const extra = (["tokenId", "planId"] as const).filter((k) => input[k] !== undefined);
+      if (extra.length === 0) return null;
+      return opFail("invalid_input", `list takes no ${extra.join(" or ")}: it only reads. To revoke one token use action revoke with its tokenId; to revoke every token, action revoke_all.`);
+    }
+    case "revoke":
+      if (input.tokenId !== undefined) return null;
+      return opFail("invalid_input", "revoke needs tokenId (from action list). Revoking every token is the separate action revoke_all.");
+    case "revoke_all":
+      if (input.tokenId === undefined) return null;
+      return opFail("invalid_input", `revoke_all revokes EVERY token of the project and takes no tokenId. To revoke only token ${input.tokenId}, use action revoke with that tokenId.`);
+  }
+}
+
 async function runWith(input: GitTokensInput, projectDir: string, auth: TokenResolution, host: ConfirmHost | undefined): Promise<GitTokensResult> {
+  const mismatch = inputMismatch(input);
+  if (mismatch) return mismatch;
   const token = auth.token;
   if (!token) return opFail("not_logged_in", LOGIN_HINT);
   const proj = resolveProject(input, projectDir);

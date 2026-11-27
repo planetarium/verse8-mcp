@@ -195,6 +195,33 @@ test("revoke: refused with no DELETE — no tokenId, an id not in the list, a pl
   });
 });
 
+test("an input the action does not use is refused before any request, never ignored", async () => {
+  await withBackend(async (calls) => {
+    const host = hostThat(RUN);
+    // revoke_all with a tokenId: the agent meant one token — no "revoke every token" preview or prompt.
+    const all = await run({ action: "revoke_all", tokenId: 30 }, host);
+    assert.equal(all.error, "invalid_input", JSON.stringify(all));
+    assert.match(all.hint, /takes no tokenId\. To revoke only token 30, use action revoke with that tokenId/);
+    assert.equal(all.confirmation, undefined);
+    const allRun = await run({ action: "revoke_all", tokenId: 30, planId: "v1.x" }, host);
+    assert.equal(allRun.error, "invalid_input");
+    // list reads only.
+    for (const extra of [{ tokenId: 30 }, { planId: "v1.x" }, { tokenId: 30, planId: "v1.x" }]) {
+      const r = await run({ action: "list", ...extra });
+      assert.equal(r.error, "invalid_input", JSON.stringify(extra));
+      assert.match(r.hint, /^list takes no /);
+    }
+    // revoke without a tokenId, with or without a planId.
+    for (const extra of [{}, { planId: "v1.x" }]) {
+      const r = await run({ action: "revoke", ...extra });
+      assert.equal(r.error, "invalid_input");
+      assert.match(r.hint, /revoke needs tokenId/);
+    }
+    assert.deepEqual(calls, [], "not even the list is read");
+    assert.equal(host.asked.length, 0);
+  });
+});
+
 test("revoking one never sends a body without a positive tokenId (the backend would revoke them all)", async () => {
   await withBackend(async (calls) => {
     for (const id of [0, -1, Number.NaN, 1.5, undefined]) {
