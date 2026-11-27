@@ -70,9 +70,17 @@ The server is listed on the official MCP Registry (registry.modelcontextprotocol
 
 On every release:
 
-1. Bump `version` in `package.json` and both `version` fields in `server.json` together (`tests/unit/serverJson.test.mjs` fails otherwise, and `prepublishOnly` runs it).
-2. `npm publish` — the registry checks that the published package carries `mcpName`.
-3. Run the **MCP Registry** workflow (Actions → workflow_dispatch), or push a `v*` tag. It signs in with GitHub OIDC, which grants the `io.github.planetarium/*` namespace, and publishes `server.json`.
+1. Move every version number `prepublishOnly` checks to the new version `x.y.z` together — `tests/unit/pluginManifest.test.mjs` and `tests/unit/serverJson.test.mjs` fail otherwise, and `npm publish` stops:
+   - `package.json` — `version` (`npm version x.y.z --no-git-tag-version` also updates `package-lock.json`)
+   - `plugins/verse8/.claude-plugin/plugin.json` — `version` (what makes installed plugin users pick up the update)
+   - `plugins/verse8/.mcp.json` — the pinned `@verse8/mcp@x.y.z` in `mcpServers.verse8.args`
+   - `server.json` — `version` and `packages[0].version`
+
+   Not checked, but part of every release: `SERVER_INFO.version` in `src/server.ts` and a `CHANGELOG.md` entry. Confirm with `node --test tests/unit/pluginManifest.test.mjs tests/unit/serverJson.test.mjs` before publishing.
+2. `npm publish` — runs `prepublishOnly` (build, `scripts/prepublish-guard.sh`, the two tests above). The registry checks that the published package carries `mcpName`.
+3. Once `npm view @verse8/mcp@x.y.z mcpName` prints `io.github.planetarium/verse8-mcp`, run the **MCP Registry** workflow from the Actions tab (workflow_dispatch, on `main`). It runs only on dispatch: pushing a `v*` tag does not publish to the registry. It signs in with GitHub OIDC, which grants the `io.github.planetarium/*` namespace, and publishes `server.json`.
+
+The workflow downloads a pinned `mcp-publisher` and checks its SHA-256 before running it. To upgrade, change `MCP_PUBLISHER_VERSION` and `MCP_PUBLISHER_SHA256` together, taking the hash of `mcp-publisher_linux_amd64.tar.gz` from that release's `registry_<version>_checksums.txt`.
 
 ## 클린
 
