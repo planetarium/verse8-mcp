@@ -163,7 +163,7 @@ export function writeSkillFiles(
     deactivated: [],
   };
 
-  const writer = projectWriter(projectDir);
+  const writer = projectWriter(projectDir, { tool: "verse8_attach" }); // only verse8_attach calls this
   const skillsRoot = path.join(projectDir, ".claude", "skills");
   writer.mkdirp(skillsRoot);
 

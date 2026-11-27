@@ -250,6 +250,20 @@ test("add: a categoryPath through an existing asset, or a broken manifest, chang
   }
 });
 
+// A link refusal must point at verse8_assets, not at the tool whose wording
+// projectWriter used to carry (verse8_attach), and must say whether calling
+// verse8_assets again is safe: it is not once files are uploaded.
+function assertAssetsLinkHint(hint, { retry }) {
+  assert.match(hint, /src\/assets\.json was not written: a link/);
+  assert.doesNotMatch(hint, /verse8_attach/);
+  if (retry) {
+    assert.match(hint, /call verse8_assets again/);
+  } else {
+    assert.doesNotMatch(hint, /again\./);
+    assert.match(hint, /do not upload them again/);
+  }
+}
+
 // MCP-UP-4: asset manifest writes never leave the project folder
 test("add: src linked outside the project is refused and the outside file is untouched", async () => {
   _resetLibraryCacheForTests();
@@ -264,6 +278,7 @@ test("add: src linked outside the project is refused and the outside file is unt
         const r = await runAssets({ action: "add", ids: ["r1"], categoryPath: ["images"] }, dir);
         assert.equal(r.ok, false);
         assert.equal(r.error, "assets_manifest_write_failed");
+        assertAssetsLinkHint(r.hint, { retry: true });
       }),
     );
     assert.equal(fs.readFileSync(path.join(outside, "assets.json"), "utf8"), "{}");
@@ -380,6 +395,7 @@ test("upload: src linked outside the project is refused before any upload or act
         const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
         assert.equal(r.ok, false);
         assert.equal(r.error, "assets_manifest_write_failed");
+        assertAssetsLinkHint(r.hint, { retry: true });
       }),
     );
     assert.deepEqual(calls.map((c) => c.url), [], "no upload-attachment and no activity request");
@@ -443,6 +459,42 @@ test("upload: a manifest broken while uploading is not overwritten; the uploaded
     assert.equal(fs.readFileSync(manifestPath(dir), "utf8"), "{ broken");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// MCP-UP-4: asset manifest writes never leave the project folder
+test("upload: src turned into an outside link while uploading is refused; the hint says not to upload again", async () => {
+  const dir = makeAttachedProject();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-assets-outside-"));
+  try {
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(manifestPath(dir), "{}");
+    fs.writeFileSync(path.join(outside, "assets.json"), "{}");
+    fs.writeFileSync(path.join(dir, "a.png"), pngBytes(1, 1));
+    const calls = [];
+    const inner = uploadFetch(calls);
+    await withToken(() =>
+      withFetch(
+        async (url, init) => {
+          if (String(url).endsWith("/api/upload-attachment") && !fs.lstatSync(path.join(dir, "src")).isSymbolicLink()) {
+            fs.renameSync(path.join(dir, "src"), path.join(dir, "src-old"));
+            fs.symlinkSync(outside, path.join(dir, "src"), "junction");
+          }
+          return inner(url, init);
+        },
+        async () => {
+          const r = await runAssets({ action: "upload", categoryPath: ["images"], files: [{ path: "a.png" }] }, dir);
+          assert.equal(r.ok, false);
+          assert.equal(r.error, "assets_manifest_write_failed");
+          assert.equal(r.uploaded.length, 1);
+          assertAssetsLinkHint(r.hint, { retry: false });
+        },
+      ),
+    );
+    assert.equal(fs.readFileSync(path.join(outside, "assets.json"), "utf8"), "{}");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   }
 });
 

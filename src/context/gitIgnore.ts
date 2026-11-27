@@ -41,7 +41,7 @@ export interface EnsureGitIgnoreResult {
 
 export function ensureVerse8GitIgnore(projectDir: string): EnsureGitIgnoreResult {
   return ensureManagedGitIgnore({
-    writer: projectWriter(projectDir),
+    writer: projectWriter(projectDir, { tool: "verse8_attach" }), // only verse8_attach calls this
     targetDir: path.join(projectDir, ".verse8"),
     entries: REQUIRED_ENTRIES,
   });
@@ -60,7 +60,7 @@ const CLAUDE_REQUIRED_ENTRIES = ["skills/"];
  */
 export function ensureClaudeGitIgnore(projectDir: string): EnsureGitIgnoreResult {
   return ensureManagedGitIgnore({
-    writer: projectWriter(projectDir),
+    writer: projectWriter(projectDir, { tool: "verse8_attach" }), // only verse8_attach calls this
     targetDir: path.join(projectDir, ".claude"),
     entries: CLAUDE_REQUIRED_ENTRIES,
   });

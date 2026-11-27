@@ -42,6 +42,12 @@ export interface EnsureVerse8EnvOptions {
    * fresh timestamp, regardless of existing values. Use to resolve
    * mismatch cases intentionally. */
   overwrite?: boolean;
+  /**
+   * The tool writing the file, named in the hints it returns and in a link
+   * refusal (verse8_attach, or verse8_checkpoint for its self-heal).
+   * Default verse8_attach.
+   */
+  tool?: string;
 }
 
 /**
@@ -103,8 +109,8 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function writeAtomic(projectDir: string, filePath: string, body: string): void {
-  projectWriter(projectDir).writeFileAtomic(filePath, body);
+function writeAtomic(projectDir: string, filePath: string, body: string, tool: string): void {
+  projectWriter(projectDir, { tool }).writeFileAtomic(filePath, body);
 }
 
 function loadRaw(envPath: string): string {
@@ -128,11 +134,12 @@ export function ensureVerse8EnvFile(
   opts: EnsureVerse8EnvOptions = {},
 ): EnsureVerse8EnvResult {
   const envPath = path.join(projectDir, ".env");
+  const tool = opts.tool ?? "verse8_attach";
 
   if (!walletAddress) {
     return {
       status: "skipped-not-logged-in",
-      hint: `No walletAddress available (token missing or verify failed). To log in: ${LOGIN_HINT}; then re-run verse8_attach.`,
+      hint: `No walletAddress available (token missing or verify failed). To log in: ${LOGIN_HINT}; then re-run ${tool}.`,
     };
   }
 
@@ -149,7 +156,7 @@ export function ensureVerse8EnvFile(
       [ACCOUNT_KEY, account],
       [VERSE_KEY, verse],
     ]);
-    writeAtomic(projectDir, envPath, body);
+    writeAtomic(projectDir, envPath, body, tool);
     return { status: "overwrote", account, verse, path: envPath };
   }
 
@@ -191,7 +198,7 @@ export function ensureVerse8EnvFile(
   if (!existingAccount) updates.push([ACCOUNT_KEY, account]);
   if (!existingVerse) updates.push([VERSE_KEY, verse]);
   const body = upsertEnvLines(raw, updates);
-  writeAtomic(projectDir, envPath, body);
+  writeAtomic(projectDir, envPath, body, tool);
 
   return {
     status: raw.trim().length === 0 ? "created" : "added-missing",

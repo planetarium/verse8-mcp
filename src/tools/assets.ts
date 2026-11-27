@@ -156,18 +156,42 @@ type ManifestRead =
   | { ok: true; manifest: Manifest; mode?: number }
   | Fail;
 
+/**
+ * When the manifest is touched: `before` anything else happened (add, and
+ * upload's check before the network), or `afterUpload`, when files are
+ * already on the CDN and running the tool again would upload them twice.
+ */
+type ManifestPhase = "before" | "afterUpload";
+
+const writerFor = (cwd: string) => projectWriter(cwd, { tool: "verse8_assets" });
+
+/**
+ * A manifest write refused because of a link, worded for this tool: the
+ * projectWriter's own advice is generic, and after an upload "run it again"
+ * would be wrong. The upload result adds what to do with the uploaded files.
+ */
+function manifestLinkRefusal(e: ProjectWriteError, phase: ManifestPhase): Fail {
+  const what = `${MANIFEST_REL} was not written: a link on the way to it leads outside the project folder (${e.detail}). verse8_assets writes only inside the project folder`;
+  return fail(
+    "assets_manifest_write_failed",
+    phase === "before"
+      ? `${what}; nothing was changed. Remove or replace the link, then call verse8_assets again.`
+      : `${what}. Remove or replace the link`,
+  );
+}
+
 // MCP-UP-4: asset manifest writes never leave the project folder
-function readManifest(cwd: string): ManifestRead {
+function readManifest(cwd: string, phase: ManifestPhase): ManifestRead {
   const file = path.join(cwd, ...MANIFEST_REL.split("/"));
   try {
     // Checked before reading: content read through an outside link would
     // be written back into the project.
-    projectWriter(cwd).assertInside(file);
+    writerFor(cwd).assertInside(file);
   } catch (e) {
     // Any failure here is reported, never thrown: this also runs after a
     // batch uploaded, and a throw would leave those uploads unrecorded.
-    const why = e instanceof ProjectWriteError ? e.message : `cannot check ${MANIFEST_REL}: ${(e as Error).message}`;
-    return fail("assets_manifest_write_failed", why);
+    if (e instanceof ProjectWriteError) return manifestLinkRefusal(e, phase);
+    return fail("assets_manifest_write_failed", `cannot check ${MANIFEST_REL}: ${(e as Error).message}`);
   }
   let raw: string;
   let mode: number | undefined;
@@ -195,13 +219,14 @@ function readManifest(cwd: string): ManifestRead {
 }
 
 // MCP-UP-4: asset manifest writes never leave the project folder
-function writeManifest(cwd: string, manifest: Manifest, mode?: number): Ok | Fail {
-  const w = projectWriter(cwd);
+function writeManifest(cwd: string, manifest: Manifest, mode: number | undefined, phase: ManifestPhase): Ok | Fail {
+  const w = writerFor(cwd);
   const file = path.join(cwd, ...MANIFEST_REL.split("/"));
   try {
     w.mkdirp(path.dirname(file));
     w.writeFileAtomic(file, serializeManifest(manifest), mode);
   } catch (e) {
+    if (e instanceof ProjectWriteError) return manifestLinkRefusal(e, phase);
     return fail("assets_manifest_write_failed", (e as Error).message);
   }
   return { ok: true };
@@ -269,7 +294,7 @@ async function runAdd(input: AssetsInput, cwd: string): Promise<AssetsResult> {
     );
   }
 
-  const read = readManifest(cwd);
+  const read = readManifest(cwd, "before");
   if (!read.ok) return read;
   const importedAt = new Date().toISOString();
   const entries = ids.map((id) => {
@@ -290,7 +315,7 @@ async function runAdd(input: AssetsInput, cwd: string): Promise<AssetsResult> {
   });
   const edit = addAssetsToManifest(read.manifest, segments, entries, Date.now());
   if (!edit.ok) return fail(edit.error, edit.hint);
-  const written = writeManifest(cwd, read.manifest, read.mode);
+  const written = writeManifest(cwd, read.manifest, read.mode, "before");
   if (!written.ok) return written;
   return {
     ok: true,
@@ -336,7 +361,7 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
 
   // The manifest must be writable at the target before bytes go out, so a
   // broken file or a conflicting category does not strand uploads.
-  const pre = readManifest(cwd);
+  const pre = readManifest(cwd, "before");
   if (!pre.ok) return pre;
   const preFound = findOrCreateCategory(pre.manifest, segments);
   if (!preFound.ok) return fail(preFound.error, preFound.hint);
@@ -404,7 +429,7 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
   let manifestError: Fail | undefined;
   if (uploaded.length > 0) {
     // Re-read: the uploads took time and the file may have changed.
-    const read = readManifest(cwd);
+    const read = readManifest(cwd, "afterUpload");
     if (!read.ok) {
       manifestError = read;
     } else {
@@ -412,7 +437,7 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
       if (!edit.ok) {
         manifestError = fail(edit.error, edit.hint);
       } else {
-        const written = writeManifest(cwd, read.manifest, read.mode);
+        const written = writeManifest(cwd, read.manifest, read.mode, "afterUpload");
         if (!written.ok) manifestError = written;
         else added = edit.keys.map((key, i) => ({ key, path: uploaded[i].path, url: uploaded[i].asset.url }));
       }
@@ -434,7 +459,7 @@ async function runUpload(input: AssetsInput, cwd: string): Promise<AssetsResult>
     return {
       ...manifestError,
       hint: safeHint(
-        `${manifestError.hint} — the files below were uploaded but are NOT in ${MANIFEST_REL}; add them by hand.`,
+        `${manifestError.hint} — the files below were uploaded but are NOT in ${MANIFEST_REL}; add them by hand (do not upload them again).`,
       ),
       uploaded: uploaded.map((u) => ({ path: u.path, url: u.asset.url })),
       failed,

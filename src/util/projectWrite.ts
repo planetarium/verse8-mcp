@@ -34,9 +34,15 @@ import { atomicWriteFileSync } from "./atomicWrite.js";
  */
 
 export class ProjectWriteError extends Error {
-  constructor(message: string) {
+  /**
+   * What was refused and why, without the advice on what to do next, for a
+   * caller that words that advice itself. Defaults to the message.
+   */
+  readonly detail: string;
+  constructor(message: string, detail?: string) {
     super(message);
     this.name = "ProjectWriteError";
+    this.detail = detail ?? message;
   }
 }
 
@@ -238,18 +244,27 @@ function exists(p: string): boolean {
 
 export function projectWriter(
   rootDir: string,
-  opts: { platform?: PathPlatform } = {},
+  opts: {
+    /**
+     * The tool doing the write, named in the refusal so the advice points
+     * at the tool that was called rather than at another one.
+     */
+    tool: string;
+    platform?: PathPlatform;
+  },
 ): ProjectWriter {
   const platform = opts.platform ?? hostPathPlatform();
+  const tool = opts.tool;
   const root = path.resolve(rootDir);
   const show = (p: string): string => {
     const rel = path.relative(root, p);
     return rel === "" ? "." : rel.split(path.sep).join("/");
   };
   const refuse = (target: string, why: string): never => {
+    const detail = `refusing to write ${show(target)} in ${root}: ${why}`;
     throw new ProjectWriteError(
-      `refusing to write ${show(target)} in ${root}: ${why}. ` +
-        "verse8_attach writes only inside the project folder; remove or replace the link and run verse8_attach again.",
+      `${detail}. ${tool} writes only inside the project folder; remove or replace the link and run ${tool} again.`,
+      detail,
     );
   };
 
