@@ -20,6 +20,8 @@ import { applyAttachmentArtifacts } from "../../dist/tools/attach.js";
 const SKILL = fs.readFileSync(path.join(REPO_ROOT, "skills", "verse8-docs", "SKILL.md"), "utf8");
 const TOC_LINES = SKILL.slice(SKILL.indexOf("## Table of contents")).split(/\r?\n/);
 const TOC_ROWS = TOC_LINES.filter((ln) => ln.startsWith("| ") && !ln.startsWith("| Page"));
+const ROOT_ROW = "| What Agent8 is | *(root: `https://docs.verse8.io/en/docs`)* |";
+const cellsOf = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
 test("verse8-docs: attach installs it for Claude Code and lists it in the AGENTS.md catalog", () => {
   // No package.json: core skills do not depend on the project's packages.
@@ -53,16 +55,18 @@ test("verse8-docs: every skill named in the table of contents is bundled in this
   );
   const named = new Set();
   for (const row of TOC_ROWS) {
-    const cells = row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+    const cells = cellsOf(row);
     if (cells.length < 3) continue; // two-column tables have no skill column
     const cell = cells[2];
     if (cell === "") continue;
-    const names = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1]);
-    assert.ok(names.length > 0, `skill cell names no skill: ${row}`);
-    for (const n of names) {
-      assert.match(n, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, `not a skill name in: ${row}`);
-      named.add(n);
-    }
+    // The whole cell has one form: `skill`, optionally followed by a note that
+    // names one more skill, also in backticks — `a` (note: `b`). Matching the
+    // whole cell catches a name left without backticks even when the same name
+    // is backticked in another row.
+    const m = cell.match(/^`([a-z0-9]+(?:-[a-z0-9]+)*)`(?: \([^()`]+: `([a-z0-9]+(?:-[a-z0-9]+)*)`\))?$/);
+    assert.ok(m, `skill cell is not \`skill\` or \`skill\` (note: \`skill\`): ${row}`);
+    named.add(m[1]);
+    if (m[2]) named.add(m[2]);
   }
   assert.deepEqual([...named].sort(), [
     "ads-impl",
@@ -77,17 +81,34 @@ test("verse8-docs: every skill named in the table of contents is bundled in this
   assert.deepEqual([...named].filter((n) => !bundled.has(n)), []);
 });
 
+test("verse8-docs: the table of contents keeps the root page", () => {
+  // The root is written as a full link, so the path checks below skip it.
+  assert.deepEqual(TOC_ROWS.filter((row) => row.includes("root:")), [ROOT_ROW]);
+});
+
 test("verse8-docs: page paths are relative to /en/docs/ and appear once", () => {
-  const paths = TOC_ROWS.map((row) => row.match(/^\| [^|]+ \| `([^`]+)` \|/)?.[1]).filter(Boolean);
-  // 48 pages plus the root, which is written as a full link.
+  const paths = TOC_ROWS.filter((row) => row !== ROOT_ROW).map((row) => {
+    const p = cellsOf(row)[1]?.match(/^`([^`]+)`$/)?.[1];
+    assert.ok(p, `row has no \`path\` cell: ${row}`);
+    return p;
+  });
   assert.equal(paths.length, 48);
-  for (const p of paths) assert.match(p, /^(guide|verse8|gameserver|vxshop|ads|local-cache)\/[\w./-]+$/, p);
+  for (const p of paths) {
+    assert.match(p, /^(guide|verse8|gameserver|vxshop|ads|local-cache)\/[\w./-]+$/, p);
+    // `server.js` has a dot, but no segment may be empty, `.` or `..`.
+    for (const seg of p.split("/")) assert.ok(seg !== "" && seg !== "." && seg !== "..", `bad segment in ${p}`);
+  }
   assert.equal(new Set(paths).size, paths.length, "duplicate page path");
   // Absolute links use the /en/ prefix: a bare /docs/ link redirects by Accept-Language.
   for (const m of SKILL.matchAll(/https:\/\/docs\.verse8\.io(\/[^\s`)*]*)?/g)) {
     const p = m[1] ?? "";
     assert.ok(p === "" || p.startsWith("/en/docs"), `link without /en/: ${m[0]}`);
   }
+});
+
+test("verse8-docs: agents read the page before implementing or answering", () => {
+  const lead = SKILL.match(/## When to read a page\r?\n\r?\n([^\r\n]+)/)?.[1] ?? "";
+  assert.match(lead, /^Before implementing the feature or answering the question, read the matching page/);
 });
 
 test("verse8-docs: installed skills and AGENTS.md stay ahead of the docs", () => {
