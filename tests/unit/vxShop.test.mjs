@@ -125,6 +125,77 @@ test("upsert as a non-seller → not_seller, no write", async () => {
   }, { seller: false });
 });
 
+// #66: a non-seller is told where to ask for seller access and to stop.
+test("non-seller: list and not_seller carry the seller-access page and say to stop", async () => {
+  const dir = project();
+  await withApi({}, async () => {
+    const l = await run(dir, { action: "list" });
+    assert.equal(l.seller.applyUrl, "https://verse8.io/settings");
+    assert.equal(l.seller.discordUrl, "https://discord.gg/verse8-official");
+    assert.match(l.warning, /Stop the VX Shop work/);
+    assert.match(l.warning, /Creator Partners Program section of https:\/\/verse8\.io\/settings/);
+    const u = await run(dir, { action: "upsert", productId: "p", name: "n", price: 1, stock: 1 });
+    assert.equal(u.applyUrl, "https://verse8.io/settings");
+    assert.match(u.hint, /Stop the VX Shop work/);
+  }, { seller: false });
+  await withApi({}, async () => {
+    assert.equal((await run(dir, { action: "list" })).seller.applyUrl, undefined, "a seller gets no apply link");
+  });
+});
+
+// #66: an item the user already made is found by the id the code uses, on any page, archived included.
+test("list with productId: finds the item across pages (archived included); none → empty", async () => {
+  const dir = project();
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ ...ITEM, id: 100 + i, productId: `filler-${i}` }));
+  const old = { ...ITEM, id: 300, productId: "gold-pack", isArchived: true, isActive: false };
+  await withApi(
+    { "GET /v1/vx-shop-items": (u) => json(200, { items: u.searchParams.get("page") === "1" ? page1 : [old], total: 101 }) },
+    async (calls) => {
+      const r = await run(dir, { action: "list", productId: "gold-pack" });
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(r.total, 1);
+      assert.equal(r.items[0].id, 300);
+      assert.equal(r.items[0].isArchived, true);
+      const qs = calls.filter((c) => c.path === "/v1/vx-shop-items").map((c) => c.query);
+      assert.deepEqual(qs.map((q) => q.get("page")), ["1", "2"]);
+      assert.ok(qs.every((q) => q.get("includeArchived") === "true" && q.get("limit") === "100"));
+      const none = await run(dir, { action: "list", productId: "nope" });
+      assert.deepEqual([none.total, none.items], [0, []]);
+    },
+  );
+});
+
+test("create: productId taken → the existing item comes back to use, nothing written", async () => {
+  const dir = project();
+  await withApi({ "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) }, async (calls) => {
+    const r = await run(dir, { action: "upsert", productId: "vault-slot", name: "n", price: 10, stock: 1 });
+    assert.equal(r.error, "product_id_taken");
+    assert.equal(r.existingItem.id, 7);
+    assert.deepEqual(r.existingItem.purchaseConstraints, { maxPurchasePerUser: 2 });
+    assert.match(r.hint, /It is item 7 \('Vault slot', 300 VX, stock 100, on sale\): show the user its values and use it/);
+    assert.deepEqual(writes(calls), []);
+  });
+});
+
+// #66: the code is wired with the productId the server stored, and the item stays unsold until the user starts the sale.
+test("create, run: the result names the productId for the code and says the item is hidden until a confirmed sale start", async () => {
+  const dir = project();
+  await withApi(
+    {
+      "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: true }),
+      "POST /v1/vx-shop-items": (_u, body) => json(201, { ...ITEM, id: 8, ...body }),
+    },
+    async () => {
+      const done = await runP(dir, { action: "upsert", productId: "gem-pack", name: "Gems", price: 100, stock: 50 });
+      assert.equal(done.ok, true, JSON.stringify(done));
+      assert.equal(done.productId, "gem-pack");
+      assert.equal(done.item.isActive, false);
+      assert.match(done.next[0], /Use productId 'gem-pack' exactly as written in the game's code: useVXShop getItem \/ buyItem and the 'gem-pack' case/);
+      assert.match(done.next[1], /hidden: players cannot buy it yet\. Starting the sale is a separate edit \(itemId 8, isActive: true\) that the user confirms/);
+    },
+  );
+});
+
 test("edit, the web's {isActive} toggle case: the current purchase limits are re-sent", async () => {
   const dir = project();
   await withApi({ "PUT /v1/vx-shop-items/7": (_u, body) => json(200, { ...ITEM, ...body }) }, async (calls) => {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
+import { SELLER_APPLY_URL, VERSE8_DISCORD_URL } from "../constants.js";
 import { safeErrorHint } from "../util/redact.js";
 import { apiFail, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
@@ -27,6 +28,11 @@ import { projectDirField, resolveVerseContext, verseIdField, type VerseContext }
  *  - `stock` defaults to 0 (= out of stock) — required on create;
  *  - the server does not check seller approval; the web hides the shop
  *    until `GET /v1/vx-wallet` says `isSeller` — the tool refuses the same.
+ *
+ * The flow an agent follows to sell a game item (AGENTS.md "VX Shop items",
+ * #66): list (seller status; an item the user already made, by productId)
+ * → propose → create hidden → put the returned productId in the code →
+ * start the sale with an edit the user confirms.
  */
 
 const ACTIONS = ["list", "upsert", "sales", "revenue", "archive", "dispute"] as const;
@@ -53,7 +59,7 @@ export const vxShopInputSchema = z
     page: z.number().int().min(1).optional().describe("list: page (default 1)."),
     limit: z.number().int().min(1).max(100).optional().describe("list: page size (default 20)."),
     itemId: z.number().int().min(1).optional().describe("upsert: the item to edit (from list). Omit to create."),
-    productId: z.string().min(1).max(100).optional().describe("upsert create: product id the game's code buys with (unique per verse, cannot be changed later)."),
+    productId: z.string().min(1).max(100).optional().describe("upsert create: product id the game's code buys with (unique per verse, cannot be changed later). list: find the item with this product id (all pages, archived included)."),
     name: z.string().min(1).max(255).optional().describe("upsert: display name."),
     price: z.number().int().min(0).optional().describe("upsert: price in VX (integer)."),
     stock: z.number().int().min(0).optional().describe("upsert: units available; 0 = out of stock. Required on create."),
@@ -144,19 +150,30 @@ async function listItems(
 }
 
 /** There is no owner GET for one item; page through the list (archived included). */
-export async function findItem(verseId: string, token: string, itemId: number): Promise<{ ok: true; item: VxShopItem } | OpFail> {
+async function scanItems(verseId: string, token: string, match: (i: VxShopItem) => boolean): Promise<{ ok: true; item: VxShopItem | null } | OpFail> {
   for (let page = 1; page <= 20; page++) {
     const r = await listItems(verseId, token, { page, limit: 100, includeArchived: true });
     if (!r.ok) return r;
-    const hit = r.items.find((i) => i.id === itemId);
+    const hit = r.items.find(match);
     if (hit) return { ok: true, item: hit };
     if (r.items.length < 100) break;
   }
+  return { ok: true, item: null };
+}
+
+export async function findItem(verseId: string, token: string, itemId: number): Promise<{ ok: true; item: VxShopItem } | OpFail> {
+  const r = await scanItems(verseId, token, (i) => i.id === itemId);
+  if (!r.ok) return r;
+  if (r.item) return { ok: true, item: r.item };
   return opFail("not_found", `No VX Shop item ${itemId} in ${verseId} (see action list).`);
 }
 
+/** The item the game's code would buy with this productId — productIds are unique per verse, archived items keep theirs. */
+const findByProductId = (verseId: string, token: string, productId: string) => scanItems(verseId, token, (i) => i.productId === productId);
+
 const NOT_SELLER =
-  "This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false). The web creator page hides the VX Shop until a Verse8 admin approves the seller; items would not be sold. Ask Verse8 for seller approval first.";
+  `This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false): the VX Shop sells only for creators a Verse8 admin approved, and the web creator page hides it until then. Stop the VX Shop work and tell the user to request seller access on the web — the Creator Partners Program section of ${SELLER_APPLY_URL} links to the program on the official Verse8 Discord (${VERSE8_DISCORD_URL}). Come back once the account is approved.`;
+const SELLER_APPLY = { applyUrl: SELLER_APPLY_URL, discordUrl: VERSE8_DISCORD_URL };
 
 export async function runVxShop(input: VxShopInput, serverCwd: string = process.cwd(), host?: ConfirmHost): Promise<VxShopResult> {
   const ctx = resolveVerseContext(input, serverCwd);
@@ -170,6 +187,23 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
     if (input.action === "list") {
       const wallet = await getWallet(ctx.token);
       if (!wallet.ok) return wallet;
+      const seller = { isSeller: wallet.isSeller, balance: wallet.balance, ...(wallet.isSeller ? {} : SELLER_APPLY) };
+      const notSeller = wallet.isSeller ? {} : { warning: NOT_SELLER };
+      if (input.productId !== undefined) {
+        // One item by the id the game's code uses, from every page, archived included.
+        const hit = await findByProductId(ctx.verseId, ctx.token, input.productId);
+        if (!hit.ok) return hit;
+        return {
+          ok: true,
+          action: "list",
+          verseId: ctx.verseId,
+          seller,
+          ...notSeller,
+          productId: input.productId,
+          total: hit.item ? 1 : 0,
+          items: hit.item ? [presentItem(hit.item)] : [],
+        };
+      }
       const r = await listItems(ctx.verseId, ctx.token, {
         page: input.page ?? 1,
         limit: input.limit ?? 20,
@@ -180,8 +214,8 @@ async function runVxShopWith(input: VxShopInput, ctx: Extract<VerseContext, { ok
         ok: true,
         action: "list",
         verseId: ctx.verseId,
-        seller: { isSeller: wallet.isSeller, balance: wallet.balance },
-        ...(wallet.isSeller ? {} : { warning: NOT_SELLER }),
+        seller,
+        ...notSeller,
         total: r.total,
         items: r.items.map(presentItem),
       };
@@ -216,7 +250,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   }
   const wallet = await getWallet(token);
   if (!wallet.ok) return wallet;
-  if (!wallet.isSeller) return opFail("not_seller", NOT_SELLER);
+  if (!wallet.isSeller) return opFail("not_seller", NOT_SELLER, SELLER_APPLY);
 
   const imageTo = input.imagePath ? `<upload:${input.imagePath}>` : input.imageUrl;
   const warnings: string[] = [];
@@ -232,7 +266,14 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     });
     if (!avail.ok) return apiFail("check-product-id", avail);
     if (avail.data?.available === false) {
-      return opFail("product_id_taken", `productId '${input.productId}' is already used in this verse (archived items keep theirs).`);
+      // Usually an item the user already made on the web: hand it back so
+      // the caller shows its values and uses it instead of a new one.
+      const taken = await findByProductId(verseId, token, input.productId!);
+      const existing = taken.ok && taken.item ? taken.item : null;
+      const use = existing
+        ? ` It is item ${existing.id} ('${existing.name}', ${existing.price} VX, stock ${existing.stock}, ${existing.isArchived ? "archived" : existing.isActive ? "on sale" : "hidden"}): show the user its values and use it — edit it with itemId ${existing.id} if they want other values — or pick another productId.`
+        : "";
+      return opFail("product_id_taken", `productId '${input.productId}' is already used in this verse (archived items keep theirs).${use}`, existing ? { existingItem: presentItem(existing) } : {});
     }
     const isActive = input.isActive ?? false;
     const body: Record<string, unknown> = {
@@ -276,7 +317,16 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     }
     const r = await v8Request<VxShopItem>("POST", "/v1/vx-shop-items", { token, body });
     if (!r.ok) return apiFail("POST /v1/vx-shop-items", r);
-    return { ok: true, action: "upsert", mode: "create", dryRun: false, verseId, item: r.data ? presentItem(r.data) : null, warnings };
+    const made = r.data ? presentItem(r.data) : null;
+    // The productId as the server stored it is what the game's code buys with.
+    const productId = typeof made?.productId === "string" ? made.productId : input.productId!;
+    const next = [
+      `Use productId '${productId}' exactly as written in the game's code: useVXShop getItem / buyItem and the '${productId}' case of the server's $onItemPurchased.`,
+      isActive
+        ? "The item is on sale."
+        : `The item is hidden: players cannot buy it yet. Starting the sale is a separate edit (itemId ${made?.id ?? "<from list>"}, isActive: true) that the user confirms in the host's prompt.`,
+    ];
+    return { ok: true, action: "upsert", mode: "create", dryRun: false, verseId, productId, item: made, warnings, next };
   }
 
   // ── edit ──

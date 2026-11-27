@@ -102,6 +102,45 @@ When the user asks to deploy / publish / ship / 배포 / 출시 / 게시:
    build + deploy the server for testing, \`verse8_deploy\` to publish.
    This rule overrides any skill text.
 
+## 🚨 VX Shop items — make them with \`verse8_vxshop\`, hidden first
+
+When the game sells something for VX, the item comes from
+\`verse8_vxshop\`. Do NOT stop and ask the user to register it on the web
+and paste a Product ID — that is the \`vx-shop-impl\` skill's Step 0 for
+the Agent8 web editor, which has no such tool. Follow the steps below
+instead; the rest of that skill (UI, \`useVXShop\`, \`$onItemPurchased\`)
+still applies. This rule overrides that step.
+
+1. **Seller status first.** Call \`verse8_vxshop\` with \`action: "list"\`.
+   If \`seller.isSeller\` is false, tell the user the account is not an
+   approved VX seller, give them \`seller.applyUrl\` (and
+   \`seller.discordUrl\`) to request seller access, and stop the VX Shop
+   work — no item, no shop code.
+2. **Reuse what the user already made.** If the user named a product, or
+   the list has an item that fits (by productId or name), show its values
+   — name, price, stock, purchase limits, on sale / hidden / archived — and
+   use that item. \`list\` with \`productId\` finds one across all pages,
+   archived included.
+3. **Otherwise propose the item.** Draft productId (lowercase, e.g.
+   \`gold-pack-1000\`; it can never change), name, price in VX
+   (100 VX ≈ 1 USD), stock and purchase limits from the request, and ask
+   the user to agree or correct them. On their yes, call \`upsert\` without
+   \`isActive\` — it previews; show that preview, then call again with its
+   \`planId\`. The item is created **hidden**: players cannot buy it.
+   \`product_id_taken\` returns \`existingItem\`: go to step 2 with it.
+4. **Wire the code with the returned productId.** Use the \`productId\` the
+   create (or list) result returned, exactly as written, in
+   \`getItem\` / \`buyItem\` and in the server's \`$onItemPurchased\` case.
+   Never ask the user to copy it.
+5. **Starting the sale is the user's call.** Money moves only once the item
+   is on sale. When the user wants to sell it, preview an edit with
+   \`itemId\` and \`isActive: true\`, then call with the \`planId\`: the
+   host shows the user a confirmation (item name, price, purchase limits),
+   and it runs only if they choose Run. Changing the price of an item on
+   sale asks them the same way. You cannot answer that prompt; on
+   \`user_cancelled\` / \`confirm_unavailable\` nothing changed — relay
+   the hint and do not retry.
+
 ## You are operating inside a Verse8 project
 
 Origin: \`gitlab.verse8.io\`. Project marker: \`.verse8/project.json\`.
@@ -118,6 +157,7 @@ MUST use for state-changing operations:
 | **Commit + launch preview for the user** | **\`verse8_preview\`** | Separate \`bun run dev\` via Bash without committing first |
 | Generate game images | \`image_asset_generate\` / \`image_variation_generate\` | External image APIs |
 | **Deploy / publish to production** | **\`verse8_deploy\`** (\`dryRun: true\` first, then confirm) | Any deploy / build+upload command via Bash |
+| Sell an in-game item for VX | **\`verse8_vxshop\`** (created hidden; flow above) | Asking the user to register it on the web and paste the Product ID |
 | Upload a verse cover image / preview video | \`verse8_upload_thumbnail\` (or \`thumbnailPath\` on \`verse8_deploy\`) | \`verse8_upload_asset\` (that is for in-game assets) |
 
 ## Preview policy — the "see it = commit it" rule

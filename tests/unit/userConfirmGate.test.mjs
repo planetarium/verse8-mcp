@@ -374,10 +374,11 @@ const SHOWS_ALL = [
     [/purchase limits [(]maxPurchasePerUser: 2 → 9[)]/],
   ],
   [
-    "reprice a live item, limits kept: the re-sent limits are not a change",
+    // Shown as they stand (#66), never as a change.
+    "reprice a live item, limits kept: the re-sent limits are shown, not as a change",
     { action: "upsert", itemId: 12, price: 350 },
-    [/300 → 350 VX/],
-    [/purchase limits/, /also changes/],
+    [/300 → 350 VX/, /; purchase limits \(maxPurchasePerUser: 2\)/],
+    [/maxPurchasePerUser: 2 →/, /REMOVED/, /also changes/],
   ],
   [
     "start a sale and change every other field",
@@ -801,6 +802,11 @@ const OPENS_PURCHASES = [
   ["on-sale flag on for an item that has no stock", { action: "upsert", itemId: 18, isActive: true }, "user_confirm", [/Start selling/]],
   ["reprice an item on sale with no stock", { action: "upsert", itemId: 17, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX; whenever it has stock, buyers can purchase it from now on/]],
   ["reprice a scheduled item: the new price applies from its start date, not from now on", { action: "upsert", itemId: 15, price: 80 }, "user_confirm", [new RegExp(`300 → 80 VX; whenever it has stock, buyers can purchase it from "${FUTURE}"`)]],
+  // The prompt names the item, its price and its purchase limits even when the edit leaves the limits as they are (#66).
+  ["start selling a hidden item: name, price and its unchanged limits", { action: "upsert", itemId: 13, isActive: true }, "user_confirm", [/Start selling/, /Item: "?Item 13"?/, /Price: 300 VX;/, /; purchase limits \(maxPurchasePerUser: 2\)/]],
+  ["start selling a hidden item that has no limits: says so", { action: "upsert", itemId: 8, isActive: true }, "user_confirm", [/Start selling/, /; no purchase limits/]],
+  ["reprice an item on sale: its unchanged limits are shown", { action: "upsert", itemId: 12, price: 90 }, "user_confirm", [/Change the price/, /300 → 90 VX/, /; purchase limits \(maxPurchasePerUser: 2\)/]],
+  ["restore an archived item on sale: name, price and its limits", { action: "archive", itemId: 9, archived: false }, "user_confirm", [/Restore this VX Shop item/, /Item: "?Item 9"?/, /Price: 300 VX;/, /; no purchase limits/]],
   // Not a sale start: the item does not come on sale.
   ["on-sale flag on an archived, hidden item", { action: "upsert", itemId: 10, isActive: true }, "preview"],
   ["stock 0 → 5 on a hidden item", { action: "upsert", itemId: 18, stock: 5 }, "preview"],

@@ -562,6 +562,11 @@ function saleWindow(after: VxSaleValues, level: SaleLevel): string {
 }
 /** One purchase limit value: the two dates as dateText (UTC marked), the counts in full. */
 const limitText = (key: string, v: unknown): string => (key === "purchaseStartDate" || key === "purchaseEndDate" ? (v === undefined || v === null ? "none" : dateText(v)) : full(v));
+/** The item's purchase limits as one phrase, every key in full — or that it has none. */
+function limitsInFull(limits: Record<string, unknown>): string {
+  const all = Object.keys(limits).sort().map((k) => `${k}: ${limitText(k, limits[k])}`);
+  return all.length === 0 ? "no purchase limits" : `purchase limits (${all.join(", ")})`;
+}
 /** Each purchase limit that differs, `key: current → new`, in full. */
 function limitChanges(now: Record<string, unknown>, to: Record<string, unknown>): string[] {
   const keys = [...new Set([...Object.keys(now), ...Object.keys(to)])].sort();
@@ -589,6 +594,9 @@ function vxEditConfirm(p: Plan): ConfirmText {
   const limits = limitChanges(limitsNow, limitsTo);
   if (limits.length > 0) {
     core.push(`${Object.keys(limitsTo).length === 0 ? "ALL purchase limits REMOVED" : "purchase limits"} (${limits.join(", ")})`);
+  } else {
+    // Unchanged, they are still what bounds each buyer: the user sees them (#66).
+    core.push(limitsInFull(limitsTo));
   }
   // Everything else the request changes, each with its current and new value.
   const also = Object.keys(body)
@@ -654,13 +662,10 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
     confirm: (p) => {
       const b = rec(p.body);
       const { after, level } = vxSaleKind(p);
-      const limits = Object.keys(after.limits).sort().map((k) => `${k}: ${limitText(k, after.limits[k])}`);
       return {
         question: "Create this VX Shop item and start selling it?",
         target: `Item: ${shown(b.name)} (productId ${shown(b.productId)}) in verse ${p.target.verseId}`,
-        change:
-          `Price: ${b.price} VX, stock ${b.stock}; ${saleWindow(after, level)}` +
-          (limits.length === 0 ? "; no purchase limits" : `; purchase limits (${limits.join(", ")})`),
+        change: `Price: ${b.price} VX, stock ${b.stock}; ${saleWindow(after, level)}; ${limitsInFull(after.limits)}`,
         // Every other value the request sets.
         also: Object.keys(b).filter((k) => !CREATE_SHOWN.has(k)).sort().map((k) => `${k}: ${shown(b[k])}`),
         alsoLabel: "with",
@@ -687,7 +692,8 @@ export const RUN_RULES: Readonly<Record<string, RunRule>> = {
       return {
         question: "Restore this VX Shop item and put it back on sale?",
         target: `Item: ${shown(s.name)} (item ${p.target.itemId}) in verse ${p.target.verseId}`,
-        change: `Price: ${s.price} VX; ${saleWindow(after, level)}`,
+        // This tool re-sends the limits on a restore, so they stay as shown.
+        change: `Price: ${s.price} VX; ${saleWindow(after, level)}; ${limitsInFull(after.limits)}`,
         undo: "Undo: you can archive it again; purchases already made stay as they are",
       };
     },
