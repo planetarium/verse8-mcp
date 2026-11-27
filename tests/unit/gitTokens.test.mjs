@@ -129,12 +129,76 @@ test("list: the owner check of the backend comes back as forbidden with its mess
   }, { listStatus: 403 });
 });
 
-test("presentTokens: entries without a usable id are dropped and counted; no list → null", () => {
-  assert.deepEqual(presentTokens({ data: { tokens: [{ name: "x" }, { id: 0 }, { id: 2, name: "b" }] } }), {
-    tokens: [{ tokenId: 2, name: "b", createdAt: null, expiresAt: null, daysLeft: null }],
-    dropped: 2,
+test("presentTokens: entries without a usable id are kept as unidentified, a missing name stays null; no list → null", () => {
+  assert.deepEqual(presentTokens({ data: { tokens: [{ name: "x" }, { id: 0 }, { id: 2, name: "b" }, { id: 3 }] } }), {
+    tokens: [
+      { tokenId: 2, name: "b", createdAt: null, expiresAt: null, daysLeft: null },
+      { tokenId: 3, name: null, createdAt: null, expiresAt: null, daysLeft: null },
+    ],
+    unidentified: [
+      { name: "x", createdAt: null, expiresAt: null, daysLeft: null },
+      { name: null, createdAt: null, expiresAt: null, daysLeft: null },
+    ],
   });
   assert.equal(presentTokens({ data: { hasToken: false } }), null);
+});
+
+// ── what is shown is what is affected: tokens the server lists without an id or a name ──
+
+const NO_ID = { name: "tokend-noid99", expires_at: "2026-12-21", created_at: "2026-11-21T01:00:00.000Z", daysLeft: 24 };
+
+test("list: a token without an id is counted and shown as unidentified, not dropped; one without a name has name null", async () => {
+  await withBackend(async (_calls, tokens) => {
+    tokens.push({ ...NO_ID }, { id: 29, expires_at: "2026-12-19", created_at: "2026-10-30T01:00:00.000Z", daysLeft: 22 });
+    const r = await run({ action: "list" });
+    assert.equal(r.activeCount, 4, JSON.stringify(r));
+    assert.deepEqual(r.tokens.map((t) => [t.tokenId, t.name]), [[31, "tokend-a1b2c3"], [30, "tokend-z9y8x7"], [29, null]]);
+    assert.deepEqual(r.unidentified, [{ name: "tokend-noid99", createdAt: "2026-11-21T01:00:00.000Z", expiresAt: "2026-12-21", daysLeft: 24 }]);
+    assert.match(r.warnings[0], /^1 active token\(s\) came from the server without an id/);
+  });
+});
+
+test("revoke_all: the plan, the prompt and the result count every active token, an unidentified one too", async () => {
+  await withBackend(async (calls, tokens) => {
+    tokens.push({ ...NO_ID }, { id: 29, created_at: "2026-10-30T01:00:00.000Z", expires_at: "2026-12-19" });
+    const pre = await run({ action: "revoke_all" });
+    assert.equal(pre.activeCount, 4, JSON.stringify(pre));
+    assert.match(pre.confirmation, /Revokes all 4 active tokens: /);
+    assert.match(pre.confirmation, /1 token that cannot be told apart \(id 29, no name; created 2026-10-30, expires 2026-12-19\)/);
+    assert.match(pre.confirmation, /1 token that cannot be told apart \(no id from the server; "tokend-noid99", created 2026-11-21, expires 2026-12-21\)/);
+    assert.equal(pre.alsoRevokesUnidentified.length, 1);
+    const r = await run({ action: "revoke_all", planId: pre.planId }, hostThat(RUN));
+    assert.equal(r.revokedCount, 4, JSON.stringify(r));
+    assert.equal(r.revokedUnidentified.length, 1);
+    assert.equal(deletes(calls).length, 1);
+    assert.equal(tokens.length, 0);
+  });
+});
+
+test("revoke_all: tokens without an id still ask (not 'nothing to revoke'), and one appearing while the prompt is open stops the run", async () => {
+  await withBackend(async (calls, tokens) => {
+    tokens.splice(0, tokens.length, { ...NO_ID });
+    const pre = await run({ action: "revoke_all" });
+    assert.equal(pre.unchanged, undefined, JSON.stringify(pre));
+    assert.equal(pre.runCondition, "user_confirm");
+    assert.match(pre.confirmation, /Revokes all 1 active token: 1 token that cannot be told apart/);
+    assert.deepEqual(deletes(calls), []);
+  });
+  await withBackend(async (calls, tokens) => {
+    const pre = await run({ action: "revoke_all" });
+    const host = hostThat(() => (tokens.push({ ...NO_ID }), RUN));
+    const r = await run({ action: "revoke_all", planId: pre.planId }, host);
+    assert.equal(r.error, "plan_mismatch", JSON.stringify(r));
+    assert.deepEqual(deletes(calls), []);
+  });
+});
+
+test("revoke: activeAfter counts the tokens without an id too", async () => {
+  await withBackend(async (_calls, tokens) => {
+    tokens.push({ ...NO_ID });
+    const pre = await run({ action: "revoke", tokenId: 30 });
+    assert.equal(pre.activeAfter, 2, JSON.stringify(pre));
+  });
 });
 
 test("list through the MCP server: neither the tool result nor the call log carries a token value", async () => {

@@ -76,14 +76,32 @@ export const gitTokensInputSchema = z
 export type GitTokensInput = z.infer<typeof gitTokensInputSchema>;
 export type GitTokensResult = { ok: true; action: GitTokensInput["action"]; [k: string]: unknown } | OpFail;
 
-/** One active token as this tool shows it. No other field of the backend's entry is passed on. */
+/**
+ * One active token as this tool shows it. No other field of the backend's
+ * entry is passed on. `name` is null when the backend sent none — never a
+ * made-up one, which would read as the token's real name.
+ */
 export interface GitTokenInfo {
   tokenId: number;
-  name: string;
+  name: string | null;
   createdAt: string | null;
   expiresAt: string | null;
   daysLeft: number | null;
 }
+/** An active token the backend listed without a usable id: it cannot be revoked alone, but revoke_all revokes it. */
+export type UnidentifiedToken = Omit<GitTokenInfo, "tokenId">;
+
+/**
+ * Every active token the backend listed — the set its revoke-all acts on
+ * (agent8 revokeAllProjectAccessTokens filters with the same test as the
+ * list). Whatever this tool shows or counts is taken from both arrays, so
+ * what the user sees is what a revoke-all revokes.
+ */
+export interface TokenSet {
+  tokens: GitTokenInfo[];
+  unidentified: UnidentifiedToken[];
+}
+export const activeCount = (s: TokenSet): number => s.tokens.length + s.unidentified.length;
 
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const text = (v: unknown, max: number): string | null => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
@@ -91,31 +109,36 @@ const text = (v: unknown, max: number): string | null => (typeof v === "string" 
 /**
  * The token list of a GET answer (`{success, data: {tokens}}`, or `tokens`
  * at the top), each entry rebuilt from id / name / created_at / expires_at /
- * daysLeft only. Null when the answer holds no list. Entries without a
- * usable id are dropped and counted: they could not be revoked by id.
+ * daysLeft only. Null when the answer holds no list. An entry without a
+ * usable id goes to `unidentified`, not away: it is still active, and
+ * revoke_all revokes it.
  */
-export function presentTokens(body: unknown): { tokens: GitTokenInfo[]; dropped: number } | null {
+export function presentTokens(body: unknown): TokenSet | null {
   const top = rec(body);
   const list = Array.isArray(top.tokens) ? top.tokens : Array.isArray(rec(top.data).tokens) ? (rec(top.data).tokens as unknown[]) : null;
   if (list === null) return null;
-  const tokens: GitTokenInfo[] = [];
-  let dropped = 0;
+  const out: TokenSet = { tokens: [], unidentified: [] };
   for (const raw of list) {
     const e = rec(raw);
-    const id = e.id;
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) {
-      dropped++;
-      continue;
-    }
-    tokens.push({
-      tokenId: id,
-      name: text(e.name, 100) ?? `token ${id}`,
+    const shown: UnidentifiedToken = {
+      name: text(e.name, 100),
       createdAt: text(e.created_at ?? e.createdAt, 40),
       expiresAt: text(e.expires_at ?? e.expiresAt, 40),
       daysLeft: typeof e.daysLeft === "number" && Number.isFinite(e.daysLeft) ? e.daysLeft : null,
-    });
+    };
+    const id = e.id;
+    if (typeof id === "number" && Number.isSafeInteger(id) && id >= 1) out.tokens.push({ tokenId: id, ...shown });
+    else out.unidentified.push(shown);
   }
-  return { tokens, dropped };
+  return out;
+}
+
+/** The plan state of a token set: what the user is shown, without daysLeft (it changes at midnight). */
+export function tokenSetState(s: TokenSet): { tokens: unknown[]; unidentified: unknown[] } {
+  return {
+    tokens: s.tokens.map(({ tokenId, name, createdAt, expiresAt }) => ({ tokenId, name, createdAt, expiresAt })),
+    unidentified: s.unidentified.map(({ name, createdAt, expiresAt }) => ({ name, createdAt, expiresAt })),
+  };
 }
 
 /** A failed backend answer as an error envelope; a network failure (status 0) is upstream_unreachable. */
@@ -126,7 +149,7 @@ function backendFail(what: string, r: Extract<ApiResult<unknown>, { ok: false }>
 
 const LIST_ROUTE = "GET /api/gitlab/project-access-token";
 
-async function readTokens(projectPath: string, token: string): Promise<{ ok: true; tokens: GitTokenInfo[]; dropped: number } | OpFail> {
+async function readTokens(projectPath: string, token: string): Promise<({ ok: true } & TokenSet) | OpFail> {
   const r = await getProjectAccessToken(projectPath, token);
   if (!r.ok) return backendFail(LIST_ROUTE, r);
   const p = presentTokens(r.data);
@@ -200,8 +223,16 @@ async function runWith(input: GitTokensInput, projectDir: string, auth: TokenRes
           ok: true,
           action: "list",
           projectPath,
+          activeCount: activeCount(listed),
           tokens: listed.tokens,
-          ...(listed.dropped > 0 ? { warnings: [`${listed.dropped} token(s) came without an id and are not shown; see the web editor's Git Clone menu.`] } : {}),
+          ...(listed.unidentified.length > 0
+            ? {
+                unidentified: listed.unidentified,
+                warnings: [
+                  `${listed.unidentified.length} active token(s) came from the server without an id (\`unidentified\`): they count against the limit and revoke_all revokes them, but they cannot be revoked one by one here — see the web editor's Git Clone menu.`,
+                ],
+              }
+            : {}),
           webEditor: buildWebEditorLink(projectPath),
           note:
             "Active tokens only, newest first; each lasts 30 days and the backend caps how many a project may hold at once (verse8_open_project / verse8_new_project_confirm take one per call). To free a slot, let the user pick a token they no longer use and call action revoke with its tokenId. " +
@@ -239,7 +270,7 @@ async function runRevoke(input: GitTokensInput, projectPath: string, token: stri
     action: "revoke" as const,
     projectPath,
     revokes: t,
-    activeAfter: listed.tokens.length - 1,
+    activeAfter: activeCount(listed) - 1,
     warnings: [CUTS_OFF],
   });
   if (!isApproved(gate)) return gate;
@@ -255,14 +286,16 @@ async function runRevokeAll(input: GitTokensInput, projectPath: string, token: s
     op: "verse8_git_tokens.revoke_all",
     target: { projectPath },
     body: { projectPath },
-    // Every token the prompt names; one granted or revoked meanwhile changes the plan.
-    state: { tokens: listed.tokens.map(({ tokenId, name, createdAt, expiresAt }) => ({ tokenId, name, createdAt, expiresAt })) },
+    // Every active token the backend listed — with an id or without, the
+    // set its revoke-all acts on — as the prompt names them; one granted or
+    // revoked meanwhile changes the plan.
+    state: tokenSetState(listed),
   };
   if (probe) {
     probe.plan = plan;
     return PROBED;
   }
-  if (listed.tokens.length === 0) {
+  if (activeCount(listed) === 0) {
     // A preview never hands out a planId for an empty list, so a given one is stale.
     const stale = input.planId === undefined ? null : checkPlan(plan, input.planId);
     if (stale && !isApproved(stale)) return stale;
@@ -272,12 +305,27 @@ async function runRevokeAll(input: GitTokensInput, projectPath: string, token: s
   const gate = await planGate(
     plan,
     input.planId,
-    { action: "revoke_all" as const, projectPath, revokes: listed.tokens, warnings: [CUTS_OFF] },
+    {
+      action: "revoke_all" as const,
+      projectPath,
+      activeCount: activeCount(listed),
+      revokes: listed.tokens,
+      ...(listed.unidentified.length > 0 ? { alsoRevokesUnidentified: listed.unidentified } : {}),
+      warnings: [CUTS_OFF],
+    },
     host,
     again,
   );
   if (!isApproved(gate)) return gate;
   const r = await revokeAllProjectAccessTokens(projectPath, token);
   if (!r.ok) return backendFail("DELETE /api/gitlab/project-access-token (all tokens)", r);
-  return { ok: true, action: "revoke_all", dryRun: false, projectPath, revoked: listed.tokens };
+  return {
+    ok: true,
+    action: "revoke_all",
+    dryRun: false,
+    projectPath,
+    revokedCount: activeCount(listed),
+    revoked: listed.tokens,
+    ...(listed.unidentified.length > 0 ? { revokedUnidentified: listed.unidentified } : {}),
+  };
 }

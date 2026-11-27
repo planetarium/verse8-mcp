@@ -405,15 +405,30 @@ const SALE_UNDO = "Undo: you can stop the sale or change the price again; purcha
 // button each and a Revoke-all (agent8 HeaderGitCloneButton).
 const gitTokensPortal = (p: Plan): string =>
   `the web editor: ${buildWebEditorLink(String(p.target.projectPath ?? "")).url} (open the Git Clone menu and revoke the tokens there)`;
-/** "name (created …, expires …)" of each token a revoke_all plan holds. */
+/**
+ * "name (created …, expires …)" of each token a revoke_all plan holds. The
+ * count is every active token the backend listed — the ones without an id
+ * (`unidentified`) too, since the backend's revoke-all revokes them — and a
+ * token with no id or no name is said to be one that cannot be told apart,
+ * never left out of the prompt.
+ */
 function gitTokensConfirm(p: Plan): ConfirmText {
-  const tokens = Array.isArray(rec(p.state).tokens) ? (rec(p.state).tokens as unknown[]).map(rec) : [];
+  const list = (k: string): Array<Record<string, unknown>> => (Array.isArray(rec(p.state)[k]) ? (rec(p.state)[k] as unknown[]).map(rec) : []);
+  const tokens = list("tokens");
+  const unidentified = list("unidentified");
+  const total = tokens.length + unidentified.length;
   const day = (v: unknown): string => (typeof v === "string" && v.length > 0 ? v.slice(0, 10) : "unknown");
-  const each = tokens.map((t) => `${shown(t.name)} (created ${day(t.createdAt)}, expires ${day(t.expiresAt)})`);
+  const dates = (t: Record<string, unknown>): string => `created ${day(t.createdAt)}, expires ${day(t.expiresAt)}`;
+  const named = (t: Record<string, unknown>): boolean => typeof t.name === "string" && t.name.length > 0;
+  const each = tokens.map((t) => (named(t) ? `${shown(t.name)} (${dates(t)})` : `1 token that cannot be told apart (id ${t.tokenId}, no name; ${dates(t)})`));
+  if (unidentified.length > 0) {
+    const n = unidentified.length;
+    each.push(`${n} token${n === 1 ? "" : "s"} that cannot be told apart (no id from the server; ${unidentified.map((t) => (named(t) ? `${shown(t.name)}, ` : "") + dates(t)).join(" / ")})`);
+  }
   return {
     question: "Revoke EVERY Git access token of this project?",
     target: `Project: ${shown(p.target.projectPath)}`,
-    change: `Revokes all ${tokens.length} active token${tokens.length === 1 ? "" : "s"}: ${each.join(", ")}; every folder cloned with them, on this machine or another, can no longer push or pull`,
+    change: `Revokes all ${total} active token${total === 1 ? "" : "s"}: ${each.join(", ")}; every folder cloned with them, on this machine or another, can no longer push or pull`,
     undo: "Undo: none — a revoked token cannot be restored; each folder needs a new token (clone it again with verse8_open_project)",
   };
 }
