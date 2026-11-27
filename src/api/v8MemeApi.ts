@@ -101,10 +101,10 @@ async function postJson<T>(url: string, body: unknown, token?: string): Promise<
   return { status: res.status, data, raw };
 }
 
-async function getJson<T>(url: string, token?: string): Promise<{ status: number; data: T | null; raw: string }> {
+async function getJson<T>(url: string, token?: string, signal?: AbortSignal): Promise<{ status: number; data: T | null; raw: string }> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(url, { method: "GET", headers });
+  const res = await fetch(url, { method: "GET", headers, ...(signal ? { signal } : {}) });
   const raw = await res.text();
   let data: T | null = null;
   if (raw.length > 0) {
@@ -197,9 +197,9 @@ function toVerseResult<T>(r: { status: number; data: T | null; raw: string }): V
  * published (first deploy); 200 means update. Sends the token so the
  * response carries `isOwner`.
  */
-export async function getVerse(verseId: string, token: string): Promise<VerseApiResult<VerseInfo>> {
+export async function getVerse(verseId: string, token: string, signal?: AbortSignal): Promise<VerseApiResult<VerseInfo>> {
   const qs = new URLSearchParams({ verseId });
-  return toVerseResult(await getJson<VerseInfo>(`${getBaseUrl()}/v1/verse/verseId?${qs.toString()}`, token));
+  return toVerseResult(await getJson<VerseInfo>(`${getBaseUrl()}/v1/verse/verseId?${qs.toString()}`, token, signal));
 }
 
 /** GET /v1/verse/id-available — `reason` is deleted | invalid | blocked when unavailable. */

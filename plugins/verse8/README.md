@@ -17,6 +17,7 @@ Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Cl
 | --- | --- |
 | `verse8_bootstrap`, `verse8_status` | Detect whether the working directory is a Verse8 project and what to do next |
 | `verse8_login_start`, `verse8_login_complete` | Sign in with a one-time browser code (OAuth device flow) |
+| `verse8_logout` | Sign out on this machine, or switch accounts |
 | `verse8_new_project_start`, `verse8_new_project_confirm` | Create a Verse8 project from a template and clone it |
 | `verse8_open_project` | Clone an existing Verse8 game (project path or web editor URL) and set it up |
 | `verse8_attach` | Set up an existing clone (git hooks, `AGENTS.md`, skills) |
