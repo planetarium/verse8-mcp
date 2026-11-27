@@ -458,7 +458,7 @@ test("projectWriter: win32 refuses when either reading of a dangling link is out
         t.skip("file symlinks need privilege on this Windows host");
         return;
       }
-      const w = projectWriter(project, { platform });
+      const w = projectWriter(project, { tool: "verse8_attach", platform });
       if (platform === "win32") {
         assert.throws(() => w.writeFile(path.join(project, "AGENTS.md"), "x"), /AGENTS\.md is a link to .*outside the project folder/);
         assert.equal(fs.existsSync(path.join(base, "x")), false);

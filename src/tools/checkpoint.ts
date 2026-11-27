@@ -530,7 +530,7 @@ export async function runCheckpoint(
         }
       }
     }
-    const envResult = ensureVerse8EnvFile(cwd, walletAddress);
+    const envResult = ensureVerse8EnvFile(cwd, walletAddress, { tool: "verse8_checkpoint" });
     if (envResult.status === "mismatch-preserved") {
       // hint has already been echoed to stderr from inside ensureVerse8EnvFile
     }

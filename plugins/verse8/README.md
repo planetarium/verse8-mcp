@@ -24,6 +24,7 @@ Then ask Claude to make a game, for example "Make a 3D platformer on Verse8". Cl
 | `verse8_checkpoint` | Commit and push in Verse8's commit-message format |
 | `verse8_preview` | Commit, install dependencies and start the local dev server |
 | `verse8_upload_asset`, `verse8_upload_thumbnail` | Upload game assets and store-listing images |
+| `verse8_assets` | Search the Verse8 asset library, add assets to `src/assets.json`, upload and register several files |
 | `verse8_deploy` | Build the game and publish it (first release or update) |
 | `image_*`, `music_generate`, `sfx_generate`, and other generators | Asset generation through Verse8's hosted services |
 

@@ -231,17 +231,63 @@ export async function updateVerse(
   );
 }
 
+/**
+ * POST /v1/activity/upload-asset `{count}` — the upload activity record of
+ * planetarium/agent8 apps/frontend/src/lib/api/verse8.ts
+ * `sendActivityUploadAsset`. The web panel sends it once after a batch with
+ * `count` = files that uploaded, and verse8_assets does the same once per
+ * call (also when the call was cancelled midway). Like the web, a failure is
+ * reported, never thrown.
+ */
+export async function recordUploadAssetActivity(
+  count: number,
+  token: string,
+  timeoutMs: number = UPLOAD_ACTIVITY_TIMEOUT_MS,
+): Promise<{ ok: true } | { ok: false; status: number; body: string }> {
+  // The record comes after the manifest was written: a server that never
+  // answers must not keep the tool result from returning. A plain timer,
+  // not AbortSignal.timeout: that one does not keep the process alive, so a
+  // caller awaiting only this request could exit before it settles.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await v8Request("POST", "/v1/activity/upload-asset", { token, body: { count }, signal: ac.signal });
+    // A 2xx is the record, even if its answer could not be read after it.
+    return r.ok || (r.status >= 200 && r.status < 300) ? { ok: true } : r;
+  } catch (e) {
+    if (ac.signal.aborted) return { ok: false, status: 0, body: `no answer within ${timeoutMs} ms` };
+    return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * How long the upload activity record may take. Reads on staging all
+ * answered within 1.4 s (2026-11-27); this leaves room for a slow day.
+ */
+export const UPLOAD_ACTIVITY_TIMEOUT_MS = 5_000;
+
 export type V8Method = "GET" | "POST" | "PUT" | "DELETE";
 
 /**
- * Generic JSON call to v8-meme-api for the creator tools. Any 2xx is `ok`,
- * including 204 with an empty body (`data: null`) — unlike `toVerseResult`.
+ * Generic JSON call to v8-meme-api for the creator tools. A 2xx whose body
+ * was read is `ok`, including 204 with an empty body (`data: null`) — unlike
+ * `toVerseResult`. A body that cannot be read (connection dropped, request
+ * aborted) is not `ok`, with the status that arrived kept: a caller that
+ * only needs the status (recordUploadAssetActivity) can still use it.
  * `query` values that are undefined / "" are left out.
  */
 export async function v8Request<T>(
   method: V8Method,
   pathname: string,
-  opts: { token?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown } = {},
+  opts: {
+    token?: string;
+    query?: Record<string, string | number | boolean | undefined>;
+    body?: unknown;
+    /** Aborts the request and the read of its body. */
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ ok: true; status: number; data: T | null } | { ok: false; status: number; body: string }> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(opts.query ?? {})) {
@@ -255,8 +301,15 @@ export async function v8Request<T>(
     method,
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    signal: opts.signal,
   });
-  const raw = await res.text();
+  // Keep the status when the body cannot be read: a 401 must stay a 401.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    return { ok: false, status: res.status, body: safeHint(`the answer could not be read (${(e as Error).message})`) };
+  }
   if (res.status >= 200 && res.status < 300) {
     let data: T | null = null;
     if (raw.length > 0) {

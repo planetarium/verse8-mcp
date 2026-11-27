@@ -278,3 +278,42 @@ test("readEnvVerse: returns null when .env absent", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// INV-14: a refused write names the tool that was called. verse8_checkpoint
+// self-heals .env through this same helper, and its log used to tell the
+// user to run verse8_attach again.
+test("ensureVerse8EnvFile: a .env linked outside is refused, naming the calling tool", () => {
+  const dir = tmpProject();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-env-outside-"));
+  try {
+    fs.writeFileSync(path.join(outside, "env"), "");
+    fs.symlinkSync(path.join(outside, "env"), path.join(dir, ".env"));
+    for (const tool of ["verse8_checkpoint", "verse8_attach"]) {
+      assert.throws(
+        () => ensureVerse8EnvFile(dir, WALLET_A, { tool }),
+        (e) => {
+          assert.equal(e.name, "ProjectWriteError");
+          assert.match(e.message, new RegExp(`${tool} writes only inside the project folder; remove or replace the link and run ${tool} again`));
+          const other = tool === "verse8_attach" ? "verse8_checkpoint" : "verse8_attach";
+          assert.doesNotMatch(e.message, new RegExp(other));
+          assert.doesNotMatch(e.detail, /again/);
+          return true;
+        },
+      );
+    }
+    assert.equal(fs.readFileSync(path.join(outside, "env"), "utf8"), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("ensureVerse8EnvFile: the not-logged-in hint names the calling tool", () => {
+  const dir = tmpProject();
+  try {
+    assert.match(ensureVerse8EnvFile(dir, null, { tool: "verse8_checkpoint" }).hint, /then re-run verse8_checkpoint\./);
+    assert.match(ensureVerse8EnvFile(dir, null).hint, /then re-run verse8_attach\./);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

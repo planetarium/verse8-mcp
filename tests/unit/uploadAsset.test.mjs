@@ -62,19 +62,28 @@ function makeAttachedProject(envVerse) {
 // Token fixtures live in a private XDG_CONFIG_HOME, never in the real
 // ~/.config/verse8/token: other test files run in parallel and read that
 // path, and a developer's own login lives there.
+// VERSE8_ACCESS_TOKEN wins over every token file, so a developer's own
+// value would replace the fixture (or turn "no token" into a token, and show
+// up in a failed assertion): it is taken out and put back after.
 function withConfigHome(value, fn) {
   const saved = process.env.XDG_CONFIG_HOME;
+  const savedEnvToken = process.env.VERSE8_ACCESS_TOKEN;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verse8-upload-xdg-"));
   if (value !== null) {
     fs.mkdirSync(path.join(dir, "verse8"), { recursive: true });
     fs.writeFileSync(path.join(dir, "verse8", "token"), value, { mode: 0o600 });
   }
   process.env.XDG_CONFIG_HOME = dir;
-  return Promise.resolve(fn()).finally(() => {
-    if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = saved;
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  delete process.env.VERSE8_ACCESS_TOKEN;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = saved;
+      if (savedEnvToken === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+      else process.env.VERSE8_ACCESS_TOKEN = savedEnvToken;
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
 }
 
 function withToken(value, fn) {
@@ -143,6 +152,23 @@ test("runUploadAsset: not_logged_in when no token", async () => {
       assert.equal(r.error, "not_logged_in");
     });
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runUploadAsset: a developer's VERSE8_ACCESS_TOKEN does not leak into the no-token test", async () => {
+  const dir = makeAttachedProject("v1");
+  const saved = process.env.VERSE8_ACCESS_TOKEN;
+  process.env.VERSE8_ACCESS_TOKEN = "dev-env-token";
+  try {
+    await withoutToken(async () => {
+      const r = await runUploadAsset({ filePath: "a.png", cdnPath: "assets/images", projectDir: dir }, dir);
+      assert.equal(r.error, "not_logged_in");
+    });
+    assert.equal(process.env.VERSE8_ACCESS_TOKEN, "dev-env-token", "restored after the helper");
+  } finally {
+    if (saved === undefined) delete process.env.VERSE8_ACCESS_TOKEN;
+    else process.env.VERSE8_ACCESS_TOKEN = saved;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

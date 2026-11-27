@@ -23,8 +23,11 @@ import { LOGIN_HINT } from "../util/hints.js";
  *   verse-project → token → attachment → env → file stat → extension →
  *   cdnPath resolution → multipart POST.
  *
- * Meme-api's `/v1/activity/upload-asset` counter endpoint is NOT called
- * — that bookkeeping is out of scope for the MCP tool.
+ * This is the raw single-file upload: it does not touch `src/assets.json`
+ * and does not record meme-api's `/v1/activity/upload-asset`. The web
+ * editor's upload (several files, registered in `src/assets.json`, activity
+ * recorded) is `verse8_assets` action `upload` (tools/assets.ts), which
+ * reuses the gates below.
  *
  * The V8 asset convention uses `src/assets.json` as the single source of
  * truth for asset URLs; CDN subpaths vary per-template. This tool does NOT
@@ -45,7 +48,7 @@ export const uploadAssetInputSchema = z
       .string()
       .min(1)
       .describe(
-        "CDN subpath under the verse (e.g. 'assets/images', 'assets/3d/characters'). Required — inspect the project's src/assets.json first to match existing URL patterns. Must be relative (no leading '/'), no '..' segments, no NUL.",
+        "CDN subpath under the verse (e.g. 'assets/images', 'assets/3d/characters'). Required — inspect the project's src/assets.json first to match existing URL patterns. Must be relative (no leading '/'), no '..' segments, no NUL, and no '#', '?' or '%' (the backend puts it into the asset URL as text).",
       ),
     projectDir: z
       .string()
@@ -104,19 +107,22 @@ function isSafeFilename(name: string): boolean {
   return true;
 }
 
-export async function runUploadAsset(
-  input: UploadAssetInput,
-  serverCwd: string = process.cwd(),
-): Promise<UploadAssetResult> {
-  const cwd = input.projectDir ?? serverCwd;
+export type UploadFail = Extract<UploadAssetResult, { ok: false }>;
 
+/**
+ * Steps 1–4: the project gates every CDN upload passes (verse project →
+ * token → attachment → verse env). Shared with `verse8_assets` upload.
+ */
+export function checkUploadProject(
+  cwd: string,
+): { ok: true; token: string; verse: string } | UploadFail {
   // 1. Verse project gate
   const project = detectVerseProject(cwd);
   if (!project.isVerse) {
     return fail(
       "not_a_verse_project",
       `${cwd} is not a verse8 project (missing .verse8/project.json or wrong origin).`,
-    );
+    ) as UploadFail;
   }
 
   // 2. Token gate
@@ -125,7 +131,7 @@ export async function runUploadAsset(
     return fail(
       "not_logged_in",
       LOGIN_HINT,
-    );
+    ) as UploadFail;
   }
 
   // 3. Attachment gate
@@ -135,7 +141,7 @@ export async function runUploadAsset(
       "project_needs_attach",
       `project is not fully attached (${attachment.missing.join(", ")} missing). Call verse8_attach first.`,
       { missing: attachment.missing },
-    );
+    ) as UploadFail;
   }
 
   // 4. Verse env
@@ -144,37 +150,78 @@ export async function runUploadAsset(
     return fail(
       "missing_verse_env",
       "VITE_AGENT8_VERSE is absent from <projectDir>/.env. Call verse8_attach to materialize it.",
-    );
+    ) as UploadFail;
   }
+  return { ok: true, token, verse };
+}
 
+export interface CheckedUploadFile {
+  ok: true;
+  absPath: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
+/**
+ * Steps 5–6: the local file checks every CDN upload passes (exists, regular
+ * file, safe filename, extension on the ATTACHMENT_EXTS allowlist). Shared
+ * with `verse8_assets` upload.
+ */
+export function checkUploadFile(
+  filePath: string,
+  cwd: string,
+  filenameOverride?: string,
+): CheckedUploadFile | UploadFail {
   // 5. Resolve + stat input file
-  const absPath = resolveInputPath(input.filePath, cwd);
+  const absPath = resolveInputPath(filePath, cwd);
   let stat: fs.Stats;
   try {
     stat = fs.statSync(absPath);
   } catch {
-    return fail("file_not_found", `cannot stat ${absPath}`);
+    return fail("file_not_found", `cannot stat ${absPath}`) as UploadFail;
   }
   if (!stat.isFile()) {
-    return fail("file_not_regular", `${absPath} is not a regular file`);
+    return fail("file_not_regular", `${absPath} is not a regular file`) as UploadFail;
   }
 
   // 6. Filename + extension
   const defaultName = path.basename(absPath);
-  const filename = input.filename ?? defaultName;
+  const filename = filenameOverride ?? defaultName;
   if (!isSafeFilename(filename)) {
     return fail(
       "cdn_path_invalid",
       "filename must not contain path separators or NUL",
-    );
+    ) as UploadFail;
   }
   if (!isAllowedAttachmentExt(filename)) {
     return fail(
       "invalid_extension",
       `extension not in ATTACHMENT_EXTS allowlist (filename=${filename})`,
-    );
+    ) as UploadFail;
   }
-  const contentType = detectContentType(filename);
+  return {
+    ok: true,
+    absPath,
+    filename,
+    contentType: detectContentType(filename),
+    sizeBytes: stat.size,
+  };
+}
+
+export async function runUploadAsset(
+  input: UploadAssetInput,
+  serverCwd: string = process.cwd(),
+): Promise<UploadAssetResult> {
+  const cwd = input.projectDir ?? serverCwd;
+
+  const gate = checkUploadProject(cwd);
+  if (!gate.ok) return gate;
+  const { token, verse } = gate;
+
+  const checked = checkUploadFile(input.filePath, cwd, input.filename);
+  if (!checked.ok) return checked;
+  const { absPath, filename, contentType } = checked;
 
   // 7. Resolve cdnPath
   const resolvedCdn = resolveCdnPath({ cdnPath: input.cdnPath });
@@ -202,7 +249,7 @@ export async function runUploadAsset(
     filename,
     cdnPath: resolvedCdn.cdnPath,
     verse,
-    sizeBytes: stat.size,
+    sizeBytes: checked.sizeBytes,
     contentType,
   };
 }

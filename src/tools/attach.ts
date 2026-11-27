@@ -265,7 +265,7 @@ export function applyAttachmentArtifacts(
   const selection = selectProjectSkills(listSkillResources(), projectDir, vendorPluginsRoot());
   const journal = new RollbackJournal();
   // INV-14: Attach writes never leave the project folder
-  const writer = projectWriter(projectDir);
+  const writer = projectWriter(projectDir, { tool: "verse8_attach" });
   let preCommitHook: "created" | "already-present" = "already-present";
   let commitMsgHook: "created" | "already-present" = "already-present";
   const { hooksWriter, hooksWriteDir } = pickHooksWriter(projectDir, hooksDir, writer);
@@ -332,6 +332,7 @@ export function applyAttachmentArtifacts(
     const envSnapshot = snapshotFile(envPath);
     const env = ensureVerse8EnvFile(projectDir, opts.walletAddress ?? null, {
       overwrite: opts.overwriteEnv === true,
+      tool: "verse8_attach",
     });
     if (
       env.status === "created" ||
@@ -398,7 +399,7 @@ function pickHooksWriter(
   writer: ProjectWriter,
 ): { hooksWriter: ProjectWriter; hooksWriteDir: string } {
   if (!isPathInside(projectDir, hooksDir)) {
-    return { hooksWriter: projectWriter(hooksDir), hooksWriteDir: hooksDir };
+    return { hooksWriter: projectWriter(hooksDir, { tool: "verse8_attach" }), hooksWriteDir: hooksDir };
   }
   if (isPathInside(path.join(projectDir, ".git"), hooksDir)) {
     // Two readings (win32) that disagree fall through to the project
@@ -406,7 +407,7 @@ function pickHooksWriter(
     const readings = resolveCandidates(hooksDir);
     const realHooks = readings[0];
     if (readings.length === 1 && !isPathInside(resolveLoose(projectDir), realHooks)) {
-      return { hooksWriter: projectWriter(realHooks), hooksWriteDir: realHooks };
+      return { hooksWriter: projectWriter(realHooks, { tool: "verse8_attach" }), hooksWriteDir: realHooks };
     }
   }
   return { hooksWriter: writer, hooksWriteDir: hooksDir };

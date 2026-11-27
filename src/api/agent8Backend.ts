@@ -179,17 +179,24 @@ async function postJson<T>(
   return { ok: false, status: res.status, body: safeHint(raw) };
 }
 
-async function getJson<T>(url: string, token: string): Promise<ApiResult<T>> {
+async function getJson<T>(url: string, token: string, signal?: AbortSignal): Promise<ApiResult<T>> {
   let res: Response;
   try {
     res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
+      signal,
     });
   } catch (e) {
     return { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
   }
-  const raw = await res.text();
+  // Keep the status when the body cannot be read: a 401 must stay a 401.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    return { ok: false, status: res.status, body: safeHint(`the answer could not be read (${(e as Error).message})`) };
+  }
   if (res.status >= 200 && res.status < 300) {
     const data = tolerantJsonParse<T>(raw);
     if (data !== undefined) {
@@ -280,6 +287,8 @@ export interface UploadAttachmentInput {
   cdnPath: string;
   verse: string;
   token: string;
+  /** Stops the request (and the read of its answer). */
+  signal?: AbortSignal;
 }
 
 export type UploadAttachmentResult =
@@ -292,7 +301,9 @@ export type UploadAttachmentResult =
         | "forbidden"
         | "bad_request"
         | "upload_failed"
-        | "upload_response_malformed";
+        | "upload_response_malformed"
+        /** 2xx whose answer could not be read: the file may be on the CDN, its URL is unknown. */
+        | "upload_status_unknown";
       status: number;
       hint: string;
     };
@@ -326,8 +337,9 @@ function classifyUploadStatus(
  *   - Handler 400/500 responses are JSON {success:false, error}.
  *   - Network / JSON-parse failures are mapped to upload_failed.
  *
- * This function does NOT call meme-api's /v1/activity/upload-asset — that
- * bookkeeping endpoint is out of scope for the MCP tool.
+ * This function does NOT call meme-api's /v1/activity/upload-asset; the
+ * batch upload in `verse8_assets` records it once per call, as the web
+ * editor does once per batch (`recordUploadAssetActivity` in v8MemeApi.ts).
  */
 export async function uploadAttachment(
   input: UploadAttachmentInput,
@@ -343,6 +355,7 @@ export async function uploadAttachment(
       method: "POST",
       headers: { Authorization: `Bearer ${input.token}` },
       body: form,
+      signal: input.signal,
     });
   } catch (e) {
     return {
@@ -353,7 +366,19 @@ export async function uploadAttachment(
     };
   }
 
-  const raw = await res.text();
+  // The status is already known; a body that cannot be read (connection
+  // dropped, call cancelled) must not lose it, or a 401/402/403 would look
+  // like a per-file failure and the next file would be sent.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    const why = `HTTP ${res.status}; the answer could not be read (${(e as Error).message})`;
+    if (res.status >= 200 && res.status < 300) {
+      return { ok: false, error: "upload_status_unknown", status: res.status, hint: safeHint(`${why}; the file may be on the CDN`) };
+    }
+    return { ok: false, error: classifyUploadStatus(res.status), status: res.status, hint: safeHint(why) };
+  }
 
   if (res.status >= 200 && res.status < 300) {
     const data = tolerantJsonParse<{ success?: boolean; url?: string; error?: string }>(raw);
@@ -375,6 +400,121 @@ export async function uploadAttachment(
     status: res.status,
     hint: redactHead(raw, 200) || `HTTP ${res.status}`,
   };
+}
+
+export interface ResourceItem {
+  /** As the backend sent it (a number today); `String(id)` is the lookup key. */
+  id: string | number;
+  url: string;
+  description: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResourcePagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+export type SearchResourcesResult =
+  | { ok: true; items: ResourceItem[]; pagination: ResourcePagination }
+  | { ok: false; status: number; body: string };
+
+/** How long a library search may take before the tool gives up. */
+export const SEARCH_TIMEOUT_MS = 15_000;
+
+/**
+ * GET /api/resources — the asset library (public game-asset catalog) the
+ * web editor's Resource panel searches. The query is built the way the web
+ * editor's `fetchResources` builds it (planetarium/agent8
+ * apps/frontend/src/lib/api/agent8.ts): `tags` comma-joined, `page`,
+ * `limit`, and `keyword` only when it is non-blank after trimming. The
+ * answer is `{success, data, pagination}`; a 2xx with `success: false` is
+ * a failure too.
+ */
+export async function searchResources(params: {
+  tags: readonly string[];
+  page: number;
+  limit: number;
+  keyword?: string;
+  token: string;
+  /** The tool call's signal: a cancelled call stops waiting. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): Promise<SearchResourcesResult> {
+  const qs = new URLSearchParams({
+    tags: params.tags.join(","),
+    page: String(params.page),
+    limit: String(params.limit),
+  });
+  const keyword = params.keyword?.trim();
+  if (keyword) qs.append("keyword", keyword);
+  // A search that never answers must not hold the tool call: stop at the
+  // time limit or when the call is cancelled. A plain timer (see
+  // recordUploadAssetActivity for why not AbortSignal.timeout).
+  const timeoutMs = params.timeoutMs ?? SEARCH_TIMEOUT_MS;
+  const ac = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ac.abort();
+  }, timeoutMs);
+  const onCancel = () => ac.abort();
+  if (params.signal?.aborted) ac.abort();
+  else params.signal?.addEventListener("abort", onCancel, { once: true });
+  let r: Awaited<ReturnType<typeof getJson<{
+    success?: boolean;
+    error?: unknown;
+    data?: unknown;
+    pagination?: ResourcePagination;
+  }>>>;
+  try {
+    r = await getJson(`${getAgent8BackendBaseUrl()}/api/resources?${qs.toString()}`, params.token, ac.signal);
+  } catch (e) {
+    r = { ok: false, status: 0, body: safeHint(`fetch failed: ${(e as Error).message}`) };
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener("abort", onCancel);
+  }
+  // Stopped before any status arrived: say why. A status that did arrive
+  // (the body read was cut off) is kept, so a 401 stays a 401.
+  if (!r.ok && r.status === 0 && ac.signal.aborted) {
+    return { ok: false, status: 0, body: timedOut ? `no answer within ${timeoutMs} ms` : "cancelled" };
+  }
+  if (!r.ok) return r;
+  // A 2xx body of `null` or a non-object is a malformed answer, not a crash.
+  if (!r.data || typeof r.data !== "object" || r.data.success !== true || !Array.isArray(r.data.data)) {
+    return { ok: false, status: r.status, body: redactHead(JSON.stringify(r.data), 300) };
+  }
+  const items: ResourceItem[] = [];
+  for (const raw of r.data.data) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    if (typeof o.url !== "string" || o.url.length === 0) continue;
+    if (typeof o.id !== "string" && typeof o.id !== "number") continue;
+    items.push({
+      id: o.id,
+      url: o.url,
+      description: typeof o.description === "string" ? o.description : "",
+      metadata:
+        o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)
+          ? (o.metadata as Record<string, unknown>)
+          : {},
+    });
+  }
+  const p = r.data.pagination;
+  const pagination: ResourcePagination = {
+    page: typeof p?.page === "number" ? p.page : params.page,
+    limit: typeof p?.limit === "number" ? p.limit : params.limit,
+    total: typeof p?.total === "number" ? p.total : items.length,
+    totalPages: typeof p?.totalPages === "number" ? p.totalPages : 0,
+    hasNext: p?.hasNext === true,
+    hasPrev: p?.hasPrev === true,
+  };
+  return { ok: true, items, pagination };
 }
 
 /**

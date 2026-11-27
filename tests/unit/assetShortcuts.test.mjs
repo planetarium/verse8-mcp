@@ -56,6 +56,15 @@ test("resolveCdnPath: NUL byte rejected", () => {
 });
 
 // MCP-UP-2: `cdnPath` traversal rejected before the network
+test("resolveCdnPath: '#', '?' and '%' rejected (the backend joins the path into the URL as text)", () => {
+  for (const p of ["assets/a#b", "assets/a?b", "assets/100%"]) {
+    const r = resolveCdnPath({ cdnPath: p });
+    assert.equal(r.ok, false, p);
+    assert.equal(r.error, "cdn_path_invalid", p);
+  }
+});
+
+// MCP-UP-2: `cdnPath` traversal rejected before the network
 test("resolveCdnPath: double-slash (empty segment) rejected", () => {
   const r = resolveCdnPath({ cdnPath: "assets//double" });
   assert.equal(r.ok, false);
