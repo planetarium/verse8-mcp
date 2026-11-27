@@ -373,13 +373,13 @@ applies). Its tool description has the full flow:
 3. Otherwise propose productId, name, price (100 VX ≈ 1 USD), stock and
    limits; on their yes, \`upsert\` (preview, then \`planId\`). It is created
    hidden: nobody can buy it, and \`getItem\` misses it, on PREVIEW too.
-4. Put the returned \`productId\` exactly in \`getItem\` / \`buyItem\` and
-   \`$onItemPurchased\` (an external-only delivery receiver instead, if the
-   game uses one).
+4. Put the returned \`productId\` exactly in the client's \`getItem\` /
+   \`buyItem\`, always; grant it in \`$onItemPurchased\`, or in the external
+   receiver if the game uses external-only delivery.
 5. Starting the sale (\`isActive: true\`) and repricing an item on sale ask
-   the user in a confirmation you cannot answer. On a published game the
-   granting code must be live first: tell the user a deploy is needed and
-   deploy only when they ask.
+   the user in a confirmation you cannot answer. If the game is published
+   and the granting code is not live there yet, tell the user a deploy is
+   needed and deploy only when they ask.
 `;
 
 /**

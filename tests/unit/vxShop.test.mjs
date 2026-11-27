@@ -190,12 +190,14 @@ test("create, run: the result names the productId for the code and says the item
       assert.equal(done.ok, true, JSON.stringify(done));
       assert.equal(done.productId, "gem-pack");
       assert.equal(done.item.isActive, false);
-      assert.match(done.next[0], /Use productId 'gem-pack' exactly as written in the game's code: useVXShop getItem \/ buyItem and the 'gem-pack' case/);
+      // The client code always; the grant by the delivery setting (PR #77 re-review 3, note 2).
+      assert.match(done.next[0], /Use productId 'gem-pack' exactly as written in the client code — useVXShop getItem \/ buyItem — in every game\. The grant goes in the 'gem-pack' case of the server's \$onItemPurchased \(the default delivery\), or, for a game with external-only delivery, in its external receiver instead/);
       assert.match(done.next[1], /hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either.*Starting the sale is a separate edit \(itemId 8, isActive: true\) that the user confirms/);
       // A purchase before the granting code is live is paid and not granted (#66 review).
       // Only the user asks for a deploy (an update that keeps the visibility asks nobody).
-      assert.match(done.next[2], /the code that grants the item must be published before the sale starts .*: tell the user a deploy is needed, and run verse8_deploy only when they ask for it\./);
-      assert.match(done.next[3], /external receiver \(external-only delivery, which does not call \$onItemPurchased\), add the grant for this productId there first/);
+      // A deploy only if the grant is not live yet, and only when the user asks.
+      assert.match(done.next[2], /If the game is published and the code that grants this item is not live there yet .*: tell the user a deploy is needed before the sale starts, and run verse8_deploy only when they ask for it\./);
+      assert.match(done.next[3], /external receiver \(external-only delivery, which does not call \$onItemPurchased\), the grant for this productId must be in that receiver first/);
     },
   );
 });
@@ -356,7 +358,8 @@ test("unpublished game: create, sales and revenue say to publish first too", asy
   );
   // A 404 that is not about the verse stays a plain not_found.
   // Other 404s are not "not published", though their body's path holds `verseId=` (PR #77 re-review).
-  for (const message of ["Cannot GET", "User with UID 123 not found"]) {
+  // The route-miss message holds `verseId=` itself: a loose /verse/i on the message would fail here (PR #77 re-review 3, note 5).
+  for (const message of ["Cannot GET", "User with UID 123 not found", `Cannot GET /v1/vx-shop-items/sales?verseId=${VERSE}`]) {
     await withApi({ "GET /v1/vx-shop-items/sales": () => json(404, errBody(message)), "GET /v1/vx-shop-items": () => json(404, errBody(message)) }, async () => {
       assert.equal((await run(dir, { action: "sales" })).needsPublish, undefined, message);
       assert.equal((await run(dir, { action: "list" })).needsPublish, undefined, message);
@@ -388,22 +391,33 @@ test("productId lookup: case-insensitive, and the stored value comes back (top l
   );
 });
 
-// With the on-sale flag still set, restoring is itself a sale start (PR #77 re-review).
-test("archived item found: the restore hint depends on its on-sale flag", async () => {
+// What a restore does follows the on-sale flag and the purchase dates, as the confirmation reads them (PR #77 re-reviews).
+test("archived item found: the restore hint follows its on-sale flag and sale window", async () => {
   const dir = project();
-  const hidden = { ...ITEM, id: 42, productId: "old-pack", isArchived: true, isActive: false };
-  const flagged = { ...ITEM, id: 46, productId: "flag-pack", isArchived: true, isActive: true };
+  const at = (c) => JSON.stringify({ purchaseConstraints: c });
+  const items = [
+    { ...ITEM, id: 42, productId: "old-pack", isArchived: true, isActive: false },
+    { ...ITEM, id: 46, productId: "flag-pack", isArchived: true, isActive: true },
+    { ...ITEM, id: 51, productId: "later-pack", isArchived: true, isActive: true, metadata: at({ purchaseStartDate: "2999-01-01T00:00:00Z" }) },
+    { ...ITEM, id: 52, productId: "over-pack", isArchived: true, isActive: true, metadata: at({ purchaseEndDate: "2000-01-01T00:00:00Z" }) },
+  ];
   await withApi(
-    { "GET /v1/vx-shop-items": () => json(200, { items: [hidden, flagged], total: 2 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
+    { "GET /v1/vx-shop-items": () => json(200, { items, total: items.length }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) },
     async () => {
-      const l = await run(dir, { action: "list", productId: "old-pack" });
-      assert.match(l.notes.join(" "), /restore it with action archive, itemId 42, archived: false \(an isActive edit does not restore it\); it comes back hidden/);
-      const t = await run(dir, { action: "upsert", productId: "old-pack", name: "n", price: 1, stock: 1 });
-      assert.match(t.hint, /archived\).*restore it with action archive, itemId 42, archived: false/);
-      for (const r of [await run(dir, { action: "list", productId: "flag-pack" }), await run(dir, { action: "upsert", productId: "flag-pack", name: "n", price: 1, stock: 1 })]) {
-        const text = r.notes ? r.notes.join(" ") : r.hint;
-        assert.match(text, /on-sale flag still set, so restoring it starts the sale.*only once the code that grants it is live — or first edit it to isActive: false, then restore it/);
+      const both = async (productId) => {
+        const l = await run(dir, { action: "list", productId });
+        const t = await run(dir, { action: "upsert", productId, name: "n", price: 1, stock: 1 });
+        return [l.notes.join(" "), t.hint];
+      };
+      for (const text of await both("old-pack")) assert.match(text, /restore it \(action archive, itemId 42, archived: false; an isActive edit does not restore it\)\. It comes back hidden/);
+      for (const text of await both("flag-pack")) {
+        assert.match(text, /on-sale flag still set, so restoring it starts its sale.*only once the code that grants it is live — or first edit it to isActive: false, then restore it/);
         assert.doesNotMatch(text, /comes back hidden/);
+      }
+      for (const text of await both("later-pack")) assert.match(text, /restoring it schedules its sale/);
+      for (const text of await both("over-pack")) {
+        assert.match(text, /its sale window has closed, so it comes back without selling/);
+        assert.doesNotMatch(text, /starts its sale|only once the code that grants it is live/);
       }
     },
   );
@@ -434,21 +448,71 @@ test("saleState: a purchase date the server cannot read is unknown, not on sale"
   });
 });
 
-// Where a sale can start (the on-sale flag edit, a restore with the flag set), the preview says what must be live first.
-test("sale-start previews carry the before-the-sale steps: deploy only when the user asks; external receiver", async () => {
+// The before-the-sale warning and the confirmation share one test (vxSaleKind): the warning is there
+// exactly when the confirmation asks "start selling" / "put it back on sale" (PR #77 re-review 3, note 1).
+const SALE_START_Q = /Start selling|start selling|put it back on sale/;
+// Loose on purpose: any wording of the deploy step / receiver step counts as "warned".
+const BEFORE = /tell the user a deploy is needed.*run verse8_deploy only when they ask for it/;
+const EXT = /grant for this productId .*(receiver|there) first/;
+const SALE_ITEMS = (() => {
+  const at = (c) => JSON.stringify({ purchaseConstraints: c });
+  return [
+    { ...ITEM, id: 60, isActive: false }, // hidden
+    { ...ITEM, id: 61, stock: 0 }, // on sale, sold out
+    { ...ITEM, id: 62, stock: 0, metadata: at({ purchaseStartDate: "2999-01-01T00:00:00Z" }) }, // scheduled, sold out
+    { ...ITEM, id: 63, metadata: at({ purchaseStartDate: "2999-01-01T00:00:00Z" }) }, // scheduled
+    { ...ITEM, id: 64, isArchived: true, isActive: false }, // archived, hidden
+    { ...ITEM, id: 65, isArchived: true }, // archived, flag set, window open
+    { ...ITEM, id: 66, isArchived: true, metadata: at({ purchaseEndDate: "2000-01-01T00:00:00Z" }) }, // archived, window closed
+    { ...ITEM, id: 67 }, // on sale
+  ];
+})();
+for (const [name, input, opens] of [
+  ["create on sale", { action: "upsert", productId: "fresh", name: "n", price: 1, stock: 1, isActive: true }, true],
+  ["create hidden", { action: "upsert", productId: "fresh", name: "n", price: 1, stock: 1 }, false],
+  ["create with the flag but a closed window", { action: "upsert", productId: "fresh", name: "n", price: 1, stock: 1, isActive: true, purchaseConstraints: { purchaseEndDate: "2000-01-01T00:00:00Z" } }, false],
+  ["flag on for a hidden item", { action: "upsert", itemId: 60, isActive: true }, true],
+  ["stock 0 → 5 on an item on sale", { action: "upsert", itemId: 61, stock: 5 }, true],
+  ["stock 0 → 5 on a scheduled item", { action: "upsert", itemId: 62, stock: 5 }, true],
+  ["move a future start date into the past", { action: "upsert", itemId: 63, purchaseConstraints: { purchaseStartDate: "2000-01-01T00:00:00Z" } }, true],
+  ["flag on for an archived item (editing does not restore)", { action: "upsert", itemId: 64, isActive: true }, false],
+  ["restore an archived item whose flag is set", { action: "archive", itemId: 65, archived: false }, true],
+  ["restore an archived item whose window has closed", { action: "archive", itemId: 66, archived: false }, false],
+  ["restore an archived hidden item", { action: "archive", itemId: 64, archived: false }, false],
+  ["reprice an item on sale (asks, but starts no sale)", { action: "upsert", itemId: 67, price: 99 }, false],
+]) {
+  test(`before-the-sale warning follows the confirmation's sale-start test: ${name} → ${opens ? "warned" : "not warned"}`, async () => {
+    const dir = project();
+    await withApi(
+      { "GET /v1/vx-shop-items": () => json(200, { items: SALE_ITEMS, total: SALE_ITEMS.length }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: true }) },
+      async () => {
+        const pre = await run(dir, input);
+        assert.equal(pre.ok, true, JSON.stringify(pre));
+        const warned = pre.warnings.some((w) => BEFORE.test(w));
+        assert.equal(warned, opens, JSON.stringify(pre.warnings));
+        assert.equal(pre.warnings.some((w) => EXT.test(w)), opens);
+        assert.equal(warned, SALE_START_Q.test(pre.confirmation ?? ""), `the warning and the confirmation disagree: ${pre.confirmation}`);
+      },
+    );
+  });
+}
+
+test("stock 0 edit: says stock 0 does not stop the sale, isActive: false does", async () => {
   const dir = project();
-  const hiddenItem = { ...ITEM, id: 48, isActive: false };
-  const archivedOnSale = { ...ITEM, id: 49, isArchived: true, isActive: true };
-  const archivedHidden = { ...ITEM, id: 50, isArchived: true, isActive: false };
-  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [hiddenItem, archivedOnSale, archivedHidden], total: 3 }) }, async () => {
-    const before = /tell the user a deploy is needed, and run verse8_deploy only when they ask for it/;
-    const ext = /add the grant for this productId there first/;
-    const start = await run(dir, { action: "upsert", itemId: 48, isActive: true });
-    assert.ok(start.warnings.some((w) => before.test(w)) && start.warnings.some((w) => ext.test(w)), JSON.stringify(start.warnings));
-    const restore = await run(dir, { action: "archive", itemId: 49, archived: false });
-    assert.ok(restore.warnings.some((w) => before.test(w)), JSON.stringify(restore.warnings));
-    const quiet = await run(dir, { action: "archive", itemId: 50, archived: false });
-    assert.ok(!quiet.warnings.some((w) => before.test(w)), "a restore that stays hidden starts no sale");
+  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: SALE_ITEMS, total: SALE_ITEMS.length }) }, async () => {
+    const pre = await run(dir, { action: "upsert", itemId: 67, stock: 0 });
+    assert.ok(pre.warnings.includes("stock 0 does not stop the sale (a refund or an expired reservation brings units back and they sell); to stop selling, set isActive: false."), JSON.stringify(pre.warnings));
+    const other = await run(dir, { action: "upsert", itemId: 67, stock: 7 });
+    assert.ok(!other.warnings.some((w) => /stock 0 does not stop/.test(w)));
+  });
+});
+
+test("product_id_taken names an unreadable sale state as 'sale state unknown'", async () => {
+  const dir = project();
+  const odd = { ...ITEM, id: 68, productId: "odd", metadata: JSON.stringify({ purchaseConstraints: { purchaseStartDate: "2026-12 20:00" } }) };
+  await withApi({ "GET /v1/vx-shop-items": () => json(200, { items: [odd], total: 1 }), "GET /v1/vx-shop-items/check-product-id": () => json(200, { available: false }) }, async () => {
+    const r = await run(dir, { action: "upsert", productId: "odd", name: "n", price: 1, stock: 1 });
+    assert.match(r.hint, /stock 100, sale state unknown\)/);
   });
 });
 
@@ -475,7 +539,9 @@ test("sale state: scheduled and closed items are not called on sale (list, produ
       const host = { canAsk: true, ask: async () => ({ action: "accept", content: { choice: "Run" } }), isCancelled: () => false };
       const done = await runVxShop(vxShopInputSchema.parse({ projectDir: dir, ...input, planId: pre.planId }), dir, host);
       assert.equal(done.ok, true, JSON.stringify(done));
-      assert.equal(done.next[1], "The item is scheduled.");
+      // Created selling (here scheduled): the deploy-first moment has passed — said as such (PR #77 re-review 3, note 1).
+      assert.match(done.next[1], /^The item is scheduled already\. If the game is published and the code that grants it is not live yet, purchases made now are paid but not granted: tell the user at once/);
+      assert.ok(!done.next.some((n) => /before the sale starts/.test(n)), "no 'before the sale starts' once it has started");
     },
   );
 });

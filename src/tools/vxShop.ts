@@ -3,7 +3,7 @@ import { v8Request } from "../api/v8MemeApi.js";
 import { VX_SHOP_MEDIA_CATEGORY } from "../api/verse8Web.js";
 import { SELLER_APPLY_URL, VERSE8_DISCORD_URL } from "../constants.js";
 import { safeErrorHint } from "../util/redact.js";
-import { apiFail, vxSaleLevel, unreadableWindow, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
+import { apiFail, vxSaleKind, vxSaleLevel, unreadableWindow, checkPlan, diff, isApproved, mediaPath, opFail, planGate, planIdField, planStillHolds, PROBED, purchaseDateProblem, rereadWith, withRejectedTokenHint, type ConfirmHost, type OpFail, type Plan, type PlanProbe } from "./creatorOps.js";
 import { uploadLocalMedia, validateLocalMedia } from "./uploadThumbnail.js";
 import { projectDirField, resolveVerseContext, verseIdField, type VerseContext } from "./verseContext.js";
 
@@ -221,28 +221,47 @@ export async function findItem(verseId: string, token: string, itemId: number): 
 const findByProductId = (verseId: string, token: string, productId: string) =>
   scanItems(verseId, token, (i) => i.productId.toLowerCase() === productId.toLowerCase());
 
-/**
- * How to bring back an archived item (an on-sale flag edit does not
- * restore it). With its on-sale flag still set, the restore itself starts
- * the sale: it must wait until the code that grants it is live, or the
- * flag goes off first.
- */
-const RESTORE_HINT = (i: Pick<VxShopItem, "id" | "isActive">) =>
-  i.isActive
-    ? `It is archived with its on-sale flag still set, so restoring it starts the sale (the user is asked to confirm). Restore it (action archive, itemId ${i.id}, archived: false) only once the code that grants it is live — or first edit it to isActive: false, then restore it, and start the sale later. An isActive edit alone does not restore it.`
-    : `It is archived: to use it, restore it with action archive, itemId ${i.id}, archived: false (an isActive edit does not restore it); it comes back hidden, and the sale starts later with an edit the user confirms.`;
+/** A sale state as words: "unknown" alone would not say what is unknown. */
+const stateText = (s: ReturnType<typeof saleState>): string => (s === "unknown" ? "sale state unknown" : s);
 
 /**
- * What to do before a sale starts on a published game: the code that grants
- * the item must be live first. Only the user asks for a deploy — an update
- * that keeps the visibility asks nobody, so the agent must not run it on its
- * own. Games that deliver purchases to an external receiver never get
- * $onItemPurchased: the new productId goes there instead.
+ * How to bring back an archived item (an on-sale flag edit does not
+ * restore it). What a restore does is read the way the confirmation reads
+ * it: the item as it would be once restored — on-sale flag and purchase
+ * dates. Restoring an item that would be on sale or scheduled (or whose
+ * dates cannot be read) starts its sale; one whose window has closed, or
+ * whose flag is off, does not.
+ */
+const RESTORE_HINT = (i: Pick<VxShopItem, "id" | "isActive" | "metadata">) => {
+  const how = `action archive, itemId ${i.id}, archived: false`;
+  const after = saleState({ ...i, isArchived: false });
+  if (after === "hidden") return `It is archived: to use it, restore it (${how}; an isActive edit does not restore it). It comes back hidden, and the sale starts later with an edit the user confirms.`;
+  if (after === "sale window closed") return `It is archived: to use it, restore it (${how}; an isActive edit does not restore it). Its on-sale flag is set but its sale window has closed, so it comes back without selling; new purchase dates would start the sale (the user confirms).`;
+  const starts = after === "scheduled" ? "schedules its sale" : "starts its sale";
+  return `It is archived with its on-sale flag still set, so restoring it ${starts} (the user is asked to confirm)${after === "unknown" ? " — a purchase date of it cannot be read, so treat it as starting" : ""}. Restore it (${how}) only once the code that grants it is live — or first edit it to isActive: false, then restore it, and start the sale later. An isActive edit alone does not restore it.`;
+};
+
+/**
+ * Before a sale starts: the code that grants the item must be live on the
+ * published game — if it is not yet (a new item, or a grant never
+ * deployed), only the user asks for the deploy: an update that keeps the
+ * visibility asks nobody, so the agent must not run it on its own. Games
+ * that deliver purchases to an external receiver never get
+ * $onItemPurchased: the grant goes there instead. Attached wherever the
+ * confirmation rule (vxSaleKind) says the change starts a sale — the one
+ * source for both.
  */
 const BEFORE_SALE = [
-  "If the game is already published, the code that grants the item must be published before the sale starts (a purchase made before that is paid but not granted): tell the user a deploy is needed, and run verse8_deploy only when they ask for it.",
-  "If the game delivers purchases to an external receiver (external-only delivery, which does not call $onItemPurchased), add the grant for this productId there first.",
+  "If the game is published and the code that grants this item is not live there yet (a purchase made before that is paid but not granted): tell the user a deploy is needed before the sale starts, and run verse8_deploy only when they ask for it.",
+  "If the game delivers purchases to an external receiver (external-only delivery, which does not call $onItemPurchased), the grant for this productId must be in that receiver first.",
 ];
+
+/** Where the productId goes: the client code always; the grant by the game's delivery setting. */
+const WIRE = (productId: string) =>
+  `Use productId '${productId}' exactly as written in the client code — useVXShop getItem / buyItem — in every game. The grant goes in the '${productId}' case of the server's $onItemPurchased (the default delivery), or, for a game with external-only delivery, in its external receiver instead ($onItemPurchased is not called there).`;
+
+/** The confirmation rule's answer for a plan: does it start a sale? */
+const opensSale = (plan: Plan): boolean => vxSaleKind(plan).opens;
 
 const NOT_SELLER =
   `This account is not an approved VX seller (GET /v1/vx-wallet isSeller=false): the VX Shop sells only for creators a Verse8 admin approved, and the web creator page hides it until then. Stop the VX Shop work and tell the user to request seller access on the web — the Creator Partners Program section of ${SELLER_APPLY_URL} links to the program on the official Verse8 Discord (${VERSE8_DISCORD_URL}). Come back once the account is approved.`;
@@ -359,7 +378,7 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
         existing = null;
       }
       const use = existing
-        ? ` It is item ${existing.id} ('${existing.name}', productId '${existing.productId}', ${existing.price} VX, stock ${existing.stock}, ${saleState(existing)}): show the user its values and use it — edit it with itemId ${existing.id} if they want other values — or pick another productId.` +
+        ? ` It is item ${existing.id} ('${existing.name}', productId '${existing.productId}', ${existing.price} VX, stock ${existing.stock}, ${stateText(saleState(existing))}): show the user its values and use it — edit it with itemId ${existing.id} if they want other values — or pick another productId.` +
           (existing.productId !== input.productId ? ` Product ids match regardless of case: use '${existing.productId}' exactly in the code.` : "") +
           (existing.isArchived ? ` ${RESTORE_HINT(existing)}` : "")
         : "";
@@ -389,6 +408,9 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
       body,
       files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
     };
+    // Same answer as the confirmation: does creating it start a sale?
+    const opens = opensSale(plan);
+    if (opens) warnings.push(...BEFORE_SALE);
     if (probe) {
       probe.plan = plan;
       return PROBED;
@@ -412,13 +434,23 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     const productId = typeof made?.productId === "string" ? made.productId : input.productId!;
     // Where it stands from what was sent, not from the on-sale flag alone (dates may put the sale ahead or behind).
     const state = saleState(r.data ?? { isActive, isArchived: false, metadata: body.purchaseConstraints ? JSON.stringify({ purchaseConstraints: body.purchaseConstraints }) : null });
-    const next = [
-      `Use productId '${productId}' exactly as written in the game's code: useVXShop getItem / buyItem and the '${productId}' case of the server's $onItemPurchased.`,
-      state === "hidden"
-        ? `The item is hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either, so the buy button stays unavailable until the sale starts. Starting the sale is a separate edit (itemId ${made?.id ?? "<from list>"}, isActive: true) that the user confirms in the host's prompt.`
-        : `The item is ${state}.`,
-      ...BEFORE_SALE,
-    ];
+    const itemRef = made?.id ?? "<from list>";
+    const next = [WIRE(productId)];
+    if (state === "hidden") {
+      next.push(
+        `The item is hidden: players cannot buy it, and getItem does not return it on the PREVIEW stage either, so the buy button stays unavailable until the sale starts. Starting the sale is a separate edit (itemId ${itemRef}, isActive: true) that the user confirms in the host's prompt.`,
+        ...BEFORE_SALE,
+      );
+    } else if (opens) {
+      // Already selling (or scheduled): the time to deploy first has passed.
+      next.push(
+        `The item is ${stateText(state)} already. If the game is published and the code that grants it is not live yet, purchases made now are paid but not granted: tell the user at once — they can stop the sale with an edit to isActive: false until the deploy they ask for is done.`,
+        BEFORE_SALE[1],
+      );
+    } else {
+      // Flag set, window already closed (the only create that sets the flag and opens nothing).
+      next.push("The item is created with its on-sale flag set but its sale window has already closed: it does not sell until its purchase dates change, which is a sale start the user confirms.", ...BEFORE_SALE);
+    }
     return { ok: true, action: "upsert", mode: "create", dryRun: false, verseId, productId, item: made, warnings, next };
   }
 
@@ -454,8 +486,9 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
   if (price) warnings.push(`Price changes from ${price.from} to ${price.to} VX for every purchase made after this edit.`);
   const active = changes.find((c) => c.field === "isActive");
   if (active) warnings.push(active.to ? "The on-sale flag is turned on: the item sells whenever it has stock, is not archived and is inside its purchase dates." : "The item stops selling.");
-  // Turning the flag on is where the sale can start: what must be live first.
-  if (active?.to === true) warnings.push(...BEFORE_SALE);
+  // Stock 0 is "sold out", not "off sale": refunds and expired reservations bring units back.
+  const stock = changes.find((c) => c.field === "stock");
+  if (stock && stock.to === 0) warnings.push("stock 0 does not stop the sale (a refund or an expired reservation brings units back and they sell); to stop selling, set isActive: false.");
   if (input.clearPurchaseConstraints && parsed.purchaseConstraints) warnings.push("All purchase limits are removed.");
   if (cur.isArchived) warnings.push("This item is archived; editing does not restore it.");
   // The current value of every field asked about; the limits and the
@@ -486,6 +519,8 @@ async function runUpsert(input: VxShopInput, projectDir: string, verseId: string
     state,
     files: input.imagePath ? { imagePath: mediaPath(projectDir, input.imagePath) } : {},
   };
+  // Same answer as the confirmation: flag on, new dates, stock from 0 on an item on sale or scheduled.
+  if (opensSale(plan)) warnings.push(...BEFORE_SALE);
   if (probe) {
     probe.plan = plan;
     return PROBED;
@@ -587,7 +622,9 @@ async function runArchive(input: VxShopInput, verseId: string, token: string, ho
   }
   const warnings = want
     ? ["Archived items are not sold and are hidden from buyers; restore brings them back. Its productId stays reserved."]
-    : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`, ...(cur.isActive ? BEFORE_SALE : [])];
+    : [`Restored. It sells again only if isActive is true (now ${cur.isActive}).`];
+  // Same answer as the confirmation: a restore of an item whose flag is set and whose window is open or ahead.
+  if (opensSale(plan)) warnings.push(...BEFORE_SALE);
   if (probe) {
     probe.plan = plan;
     return PROBED;
