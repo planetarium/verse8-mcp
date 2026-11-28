@@ -2,6 +2,7 @@
   "name": "@verse8/mcp",
   "version": "0.10.0",
   "description": "Verse8 MCP meta-server — auto-detects gitlab.verse8.io projects and exposes verse8 skills, image MCP proxy, and git checkpoint tools to host LLMs (Claude, Codex, Cursor, opencode, etc.)",
+  "mcpName": "io.github.planetarium/verse8-mcp",
   "keywords": [
     "mcp",
     "verse8",
@@ -45,7 +46,7 @@
     "check:subtree-sha": "bash scripts/check-subtree-sha.sh",
     "sync:agent8-skills": "node scripts/sync-agent8-skills.mjs",
     "audit": "npm audit --audit-level=high",
-    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs",
+    "prepublishOnly": "npm run build && bash scripts/prepublish-guard.sh && node --test tests/unit/pluginManifest.test.mjs tests/unit/serverJson.test.mjs",
     "test:mod": "claude plugin validate plugins/verse8 && claude plugin test plugins/verse8"
   },
   "engines": {

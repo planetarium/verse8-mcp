@@ -1,0 +1,75 @@
+name: MCP Registry
+
+# Lists @verse8/mcp on the official MCP Registry
+# (https://registry.modelcontextprotocol.io) as io.github.planetarium/verse8-mcp.
+#
+# Run it from the Actions tab (workflow_dispatch) after `npm publish` of a
+# version that carries `mcpName` (0.10.1+). There is deliberately no tag
+# trigger: a tag pushed before npm publish finished would leave a failed run.
+# Signing in uses GitHub OIDC from this repository, which is what grants the
+# io.github.planetarium/* namespace — no personal token or org-owner login.
+# Directories that follow the registry pick the server up from there.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: mcp-registry
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish server.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Change both together. The hash is mcp-publisher_linux_amd64.tar.gz's
+      # line in that release's registry_<version>_checksums.txt.
+      MCP_PUBLISHER_VERSION: v1.8.8
+      MCP_PUBLISHER_SHA256: 09f1fa70ee146b640584274a1a6b2b8a0310b05d4321fa9224e6df6a016d67f4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: server.json matches package.json
+        run: node --test tests/unit/serverJson.test.mjs
+
+      # npm can take a little while to serve a version it just accepted.
+      - name: Wait for this version on npm, with mcpName
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          name="$(node -p "require('./package.json').mcpName")"
+          for attempt in $(seq 1 30); do
+            published="$(npm view "@verse8/mcp@${version}" mcpName 2>/dev/null || true)"
+            if [ "$published" = "$name" ]; then
+              echo "@verse8/mcp@${version} is on npm with mcpName ${published}"
+              exit 0
+            fi
+            echo "waiting for @verse8/mcp@${version} with mcpName (attempt ${attempt})"
+            sleep 20
+          done
+          echo "::error::@verse8/mcp@${version} is not on npm with mcpName=${name}; run npm publish first"
+          exit 1
+
+      # This job can mint an OIDC token, so nothing downloaded runs before its
+      # SHA-256 matches the pin. ubuntu-latest is linux/amd64.
+      - name: Install mcp-publisher (SHA-256 checked)
+        run: |
+          archive="${RUNNER_TEMP}/mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar xzf "$archive" mcp-publisher
+          ./mcp-publisher --help > /dev/null
+
+      - name: Sign in (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
